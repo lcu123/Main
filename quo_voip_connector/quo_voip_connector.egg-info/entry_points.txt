@@ -1,0 +1,2 @@
+[console_scripts]
+quo-voip = cli.main:main

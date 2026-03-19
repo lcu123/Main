@@ -1,0 +1,230 @@
+# QUO VOIP Connector for Claude
+
+A production-ready Python connector that bridges **QUO VOIP** call transcription data with **Claude AI**, enabling you to query, analyse, and act on your call data using natural language.
+
+---
+
+## Features
+
+| Capability | Details |
+|---|---|
+| **Core API client** | Authenticated requests, auto-retry, HMAC signing, response caching |
+| **Transcription service** | Fetch, list, search, filter by sentiment, bulk export |
+| **MCP server** | Plug directly into Claude Code or Claude Desktop via Model Context Protocol |
+| **Claude direct API** | Conversational assistant using Anthropic tool-use (no MCP needed) |
+| **Webhook listener** | Real-time event handling when calls end / transcripts complete |
+| **CLI** | Full command-line interface for every operation |
+
+---
+
+## Quick Start
+
+### 1. Install
+
+```bash
+cd quo_voip_connector
+pip install -e ".[all]"
+```
+
+### 2. Configure
+
+```bash
+cp .env.example .env
+# Edit .env and fill in your QUO_API_KEY and ANTHROPIC_API_KEY
+```
+
+### 3. Verify
+
+```bash
+quo-voip config-check
+```
+
+---
+
+## Usage
+
+### CLI
+
+```bash
+# Fetch a transcription as formatted text
+quo-voip transcript get txn_abc123
+
+# Fetch the transcript for a call
+quo-voip transcript call call_xyz456
+
+# List recent transcriptions
+quo-voip transcript list --page-size 10
+
+# Search for mentions of "refund"
+quo-voip transcript search "refund"
+
+# Export to CSV
+quo-voip transcript export txn_001 txn_002 --format csv -o transcripts.csv
+
+# Wait for a just-completed call to be transcribed
+quo-voip transcript wait call_xyz456 --timeout 120
+
+# List calls that have transcripts
+quo-voip calls list --has-transcript
+
+# Start MCP server (for Claude Code / Claude Desktop)
+quo-voip mcp-server
+
+# Start webhook listener
+quo-voip webhook-server --port 8080
+```
+
+### Python API
+
+```python
+from quo_voip import TranscriptionService, QUOConfig
+
+config = QUOConfig(
+    api_key="your_key",
+    account_id="acct_123",
+)
+svc = TranscriptionService(config)
+
+# Fetch a single transcription
+tx = svc.get("txn_abc123")
+print(tx.render_transcript())
+
+# List with filters
+from datetime import datetime
+result = svc.list(
+    from_date=datetime(2024, 6, 1),
+    call_direction="inbound",
+)
+for tx in result.items:
+    print(tx.id, tx.word_count)
+
+# Iterate ALL transcriptions (auto-pagination)
+for tx in svc.iter_all(call_direction="inbound"):
+    print(tx.id)
+
+# Search full text
+result = svc.search("pricing objection")
+
+# Export to CSV
+csv_text = svc.export_csv(result.items)
+
+# Wait for a new call to be transcribed
+tx = svc.wait_for_transcription("call_xyz456", timeout=120)
+```
+
+### Ask Claude about your calls
+
+```python
+from claude_integration import QUOClaudeAssistant
+
+assistant = QUOClaudeAssistant()
+
+# One-shot question
+print(assistant.ask("What were the top 3 customer complaints this week?"))
+
+# Interactive REPL
+assistant.chat()
+```
+
+### MCP Server (Claude Code / Claude Desktop)
+
+Add to your Claude MCP config (`~/.claude/mcp_config.json` or `.claude_mcp_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "quo-voip": {
+      "command": "python",
+      "args": ["-m", "mcp.server"],
+      "cwd": "/path/to/quo_voip_connector",
+      "env": {
+        "QUO_API_KEY": "your_api_key",
+        "QUO_BASE_URL": "https://api.quo.voip/v1"
+      }
+    }
+  }
+}
+```
+
+Claude will then have access to these tools:
+
+| Tool | Description |
+|---|---|
+| `quo_get_transcription` | Fetch a transcription by ID |
+| `quo_get_call_transcription` | Fetch transcript for a call |
+| `quo_list_transcriptions` | List with filters (date, phone, language, direction) |
+| `quo_search_transcriptions` | Full-text search |
+| `quo_list_calls` | List call records |
+| `quo_export_transcript_text` | Get formatted plain-text transcript |
+| `quo_wait_for_transcription` | Poll until transcript is ready |
+
+### Real-time Webhooks
+
+```python
+from webhooks.server import WebhookHandler, EVENT_TRANSCRIPTION_COMPLETED
+
+handler = WebhookHandler()
+
+@handler.on(EVENT_TRANSCRIPTION_COMPLETED)
+def on_new_transcript(event, transcription):
+    print(f"New transcript for call {transcription.call_id}:")
+    print(transcription.render_transcript())
+
+handler.serve(port=8080)
+```
+
+Configure QUO to POST to `http://your-server:8080/webhook`.
+
+---
+
+## Configuration Reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `QUO_API_KEY` | – | **Required.** QUO VOIP API key |
+| `QUO_API_SECRET` | – | Optional secret for HMAC signing |
+| `QUO_BASE_URL` | `https://api.quo.voip/v1` | API base URL |
+| `QUO_ACCOUNT_ID` | – | Account ID (sent as header) |
+| `QUO_TIMEOUT` | `30` | Request timeout in seconds |
+| `QUO_MAX_RETRIES` | `3` | Auto-retry attempts |
+| `QUO_RETRY_BACKOFF` | `1.5` | Exponential back-off factor |
+| `ANTHROPIC_API_KEY` | – | Required for Claude integration |
+| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Claude model to use |
+| `QUO_WEBHOOK_PORT` | `8080` | Webhook listener port |
+| `QUO_WEBHOOK_SECRET` | – | HMAC secret for webhook verification |
+| `QUO_ENABLE_CACHE` | `true` | Enable GET response caching |
+| `QUO_CACHE_TTL` | `300` | Cache TTL in seconds |
+
+---
+
+## Running Tests
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+---
+
+## Project Structure
+
+```
+quo_voip_connector/
+├── quo_voip/               # Core package
+│   ├── client.py           # HTTP client (auth, retry, cache)
+│   ├── config.py           # Configuration (env vars, defaults)
+│   ├── exceptions.py       # Exception hierarchy
+│   ├── models.py           # Data models (Call, Transcription, …)
+│   └── transcription.py    # High-level transcription service
+├── mcp/
+│   └── server.py           # MCP stdio server for Claude integration
+├── webhooks/
+│   └── server.py           # Real-time webhook listener
+├── cli/
+│   └── main.py             # CLI (quo-voip command)
+├── claude_integration.py   # Direct Claude API + tool-use assistant
+├── tests/                  # Pytest test suite
+├── .env.example            # Environment variable template
+├── .claude_mcp_config.json # MCP config snippet for Claude
+└── pyproject.toml          # Package metadata & dependencies
+```
