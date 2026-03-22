@@ -1,0 +1,17 @@
+{
+  "_comment": "Remote MCP config — copy this to ~/.claude.json (Claude Code) on each laptop.",
+  "_instructions": [
+    "1. Replace <YOUR_RENDER_URL> with your Render service URL (e.g. https://quo-voip-mcp.onrender.com)",
+    "2. Replace <YOUR_QUO_SERVER_TOKEN> with the QUO_SERVER_TOKEN you set in Render",
+    "3. That's it — no QUO API key needed on each laptop, the server handles that"
+  ],
+  "mcpServers": {
+    "quo-voip": {
+      "type": "sse",
+      "url": "https://<YOUR_RENDER_URL>/sse",
+      "headers": {
+        "Authorization": "Bearer <YOUR_QUO_SERVER_TOKEN>"
+      }
+    }
+  }
+}

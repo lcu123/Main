@@ -24,8 +24,15 @@ claude = [
 mcp = [
     "mcp>=1.0.0",
 ]
+server = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "mcp>=1.0.0",
+]
 all = [
     "anthropic>=0.40.0",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
     "mcp>=1.0.0",
 ]
 dev = [
@@ -41,7 +48,7 @@ quo-voip = "cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["quo_voip*", "mcp*", "cli*", "webhooks*"]
+include = ["quo_voip*", "mcp*", "cli*", "webhooks*", "server*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
