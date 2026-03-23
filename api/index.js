@@ -70,6 +70,37 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({ status: "ok", service: "openphone-mcp" });
   }
 
+  // ── /calls-detail (temporary) ────────────────────────────────────────────
+  if (url.pathname === "/calls-detail") {
+    if (!requireBearer(req, res)) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const date  = url.searchParams.get("date") || today;
+    const calls = await openphoneGet("/v1/calls", {
+      phoneNumberId: PN_ID,
+      maxResults: 100,
+      createdAfter:  `${date}T00:00:00.000Z`,
+      createdBefore: `${date}T23:59:59.999Z`,
+    });
+    // Fetch transcript + summary for each call in parallel
+    const enriched = await Promise.all((calls.data || []).map(async (call) => {
+      const [transcript, summary] = await Promise.allSettled([
+        openphoneGet(`/v1/call-transcripts/${call.id}`, {}),
+        openphoneGet(`/v1/call-summaries/${call.id}`, {}),
+      ]);
+      return {
+        id: call.id,
+        direction: call.direction,
+        status: call.status,
+        duration: call.duration,
+        createdAt: call.createdAt,
+        participants: call.participants,
+        transcript: transcript.status === "fulfilled" ? transcript.value?.data : null,
+        summary:    summary.status    === "fulfilled" ? summary.value?.data    : null,
+      };
+    }));
+    return res.status(200).json({ date, calls: enriched });
+  }
+
   // ── /call-volume ──────────────────────────────────────────────────────────
   if (url.pathname === "/call-volume") {
     if (!requireBearer(req, res)) return;
