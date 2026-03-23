@@ -9,7 +9,7 @@
  *   QUO_API_KEY                 OpenPhone API key (sent as raw Authorization header)
  *   QUO_SERVER_TOKEN            Bearer token to protect this endpoint
  *   OPENPHONE_PHONE_NUMBER_ID   PN... phone number ID (required by OpenPhone /v1/calls)
- *   OPENPHONE_PARTICIPANT       Default E.164 participant number to filter by
+ *   OPENPHONE_PARTICIPANT       (optional) E.164 number to filter calls by a specific party
  *   QUO_BASE_URL                Override base URL (default: https://api.openphone.com)
  */
 
@@ -74,9 +74,9 @@ module.exports = async function handler(req, res) {
   if (url.pathname === "/call-volume") {
     if (!requireBearer(req, res)) return;
 
-    if (!PN_ID || !PARTICIPANT) {
+    if (!PN_ID) {
       return res.status(500).json({
-        error: "OPENPHONE_PHONE_NUMBER_ID and OPENPHONE_PARTICIPANT env vars are required",
+        error: "OPENPHONE_PHONE_NUMBER_ID env var is required",
       });
     }
 
@@ -88,14 +88,11 @@ module.exports = async function handler(req, res) {
     const createdBefore = `${date}T23:59:59.999Z`;
 
     try {
-      // Fetch first page with maxResults=1 just to get totalItems
-      const data = await openphoneGet("/v1/calls", {
-        phoneNumberId: PN_ID,
-        participants:  PARTICIPANT,
-        maxResults:    1,
-        createdAfter,
-        createdBefore,
-      });
+      // Fetch with maxResults=1 to get totalItems cheaply.
+      // participants is optional — omit it to count all calls for the phone number.
+      const params = { phoneNumberId: PN_ID, maxResults: 1, createdAfter, createdBefore };
+      if (PARTICIPANT) params.participants = PARTICIPANT;
+      const data = await openphoneGet("/v1/calls", params);
       return res.status(200).json({
         date,
         call_volume: data.totalItems ?? null,
