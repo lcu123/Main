@@ -70,6 +70,17 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({ status: "ok", service: "openphone-mcp" });
   }
 
+  // ── /list-phone-numbers (temporary — remove after getting PN ID) ─────────
+  if (url.pathname === "/list-phone-numbers") {
+    if (!requireBearer(req, res)) return;
+    try {
+      const data = await openphoneGet("/v1/phone-numbers", {});
+      return res.status(200).json(data);
+    } catch (err) {
+      return res.status(err.status || 502).json({ error: err.message });
+    }
+  }
+
   // ── /call-volume ──────────────────────────────────────────────────────────
   if (url.pathname === "/call-volume") {
     if (!requireBearer(req, res)) return;
