@@ -76,14 +76,26 @@ module.exports = async function handler(req, res) {
     try {
       const today = new Date().toISOString().slice(0, 10);
       const date  = url.searchParams.get("date") || today;
-      const participant = url.searchParams.get("participant") || PARTICIPANT;
-      const callParams = {
-        phoneNumberId: PN_ID,
-        maxResults: 100,
-        createdAfter:  `${date}T00:00:00.000Z`,
-        createdBefore: `${date}T23:59:59.999Z`,
-      };
-      if (participant) callParams.participants = participant;
+      // participant query param overrides env var; pass "all" to fetch without filter
+      const participantParam = url.searchParams.get("participant");
+      const participant = (participantParam === null) ? PARTICIPANT : (participantParam === "all" ? "" : participantParam);
+      // Try all known phone number IDs
+      const phoneIds = [PN_ID, "PNiWNztXf7"].filter(Boolean);
+      let allCalls = [];
+      for (const phoneId of phoneIds) {
+        const callParams = {
+          phoneNumberId: phoneId,
+          maxResults: 100,
+          createdAfter:  `${date}T00:00:00.000Z`,
+          createdBefore: `${date}T23:59:59.999Z`,
+        };
+        if (participant) callParams.participants = participant;
+        try {
+          const r = await openphoneGet("/v1/calls", callParams);
+          allCalls = allCalls.concat(r.data || []);
+        } catch (e) { /* skip if this number errors */ }
+      }
+      const calls = { data: allCalls };
       const calls = await openphoneGet("/v1/calls", callParams);
       // Fetch transcript + summary for each call in parallel
       const enriched = await Promise.all((calls.data || []).map(async (call) => {
