@@ -1,7 +1,6 @@
 {
   "rewrites": [
     { "source": "/health", "destination": "/api/index" },
-    { "source": "/call-volume", "destination": "/api/index" },
-    { "source": "/list-phone-numbers", "destination": "/api/index" }
+    { "source": "/call-volume", "destination": "/api/index" }
   ]
 }
