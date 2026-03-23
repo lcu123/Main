@@ -1,9 +1,0 @@
-[build]
-dockerfilePath = "quo_voip_connector/Dockerfile"
-watchPatterns = ["quo_voip_connector/**"]
-
-[deploy]
-healthcheckPath = "/health"
-healthcheckTimeout = 30
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 3
