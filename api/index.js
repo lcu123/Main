@@ -79,13 +79,16 @@ module.exports = async function handler(req, res) {
       // ?participant=all → no filter; otherwise use query param or env default
       const pParam = url.searchParams.get("participant");
       const participant = (pParam === "all") ? "" : (pParam !== null ? pParam : PARTICIPANT);
+      // ?nodate=1 → skip date filter (pull most recent calls regardless of date)
+      const noDate = url.searchParams.get("nodate") === "1";
       const createdAfter  = `${date}T00:00:00.000Z`;
       const createdBefore = `${date}T23:59:59.999Z`;
       // Try both phone number IDs on the account
       const phoneIds = [PN_ID, "PNiWNztXf7"].filter(Boolean);
       const results = [];
       for (let i = 0; i < phoneIds.length; i++) {
-        const p = { phoneNumberId: phoneIds[i], maxResults: 50, createdAfter, createdBefore };
+        const p = { phoneNumberId: phoneIds[i], maxResults: 50 };
+        if (!noDate) { p.createdAfter = createdAfter; p.createdBefore = createdBefore; }
         if (participant) p.participants = participant;
         let r;
         try { r = await openphoneGet("/v1/calls", p); } catch (e) { continue; }
