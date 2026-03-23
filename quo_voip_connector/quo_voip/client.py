@@ -111,15 +111,12 @@ class QUOClient:
 
         session.headers.update(
             {
-                "Authorization": f"Bearer {self.config.api_key}",
+                # OpenPhone uses a raw API key in the Authorization header (no Bearer prefix)
+                "Authorization": self.config.api_key,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "X-QUO-SDK": "python-quo-voip-connector/1.0.0",
             }
         )
-
-        if self.config.account_id:
-            session.headers["X-QUO-Account-ID"] = self.config.account_id
 
         return session
 

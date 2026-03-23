@@ -1,23 +1,20 @@
 """
-High-level transcription service built on top of QUOClient.
+Service layer wrapping the OpenPhone REST API.
 
-Provides:
-  - Fetch single / list transcriptions
-  - Full-text search across segments
-  - Keyword & sentiment filtering
-  - Bulk export (JSON, CSV, plain text)
-  - Async transcription polling
+OpenPhone endpoints used:
+  GET /v1/calls                     list calls
+  GET /v1/calls/{callId}            single call
+  GET /v1/call-transcripts/{id}     transcript for a call
+  GET /v1/call-summaries/{callId}   AI summary for a call
+  GET /v1/call-recordings/{callId}  recordings for a call
 """
 
 from __future__ import annotations
 
-import csv
-import io
-import json
 import logging
 import time
 from datetime import datetime
-from typing import Callable, Iterator, Optional
+from typing import Callable, Optional
 
 from .client import QUOClient
 from .config import QUOConfig
@@ -25,25 +22,24 @@ from .exceptions import QUOTranscriptionError
 from .models import (
     Call,
     CallListResult,
-    Transcription,
-    TranscriptionListResult,
+    CallRecordingListResult,
+    CallSummary,
+    Transcript,
     TranscriptionStatus,
 )
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PAGE_SIZE = 50
-
 
 class TranscriptionService:
     """
-    Service layer for QUO VOIP transcription operations.
+    High-level service for OpenPhone call and transcript operations.
 
     Example
     -------
-    >>> from quo_voip import TranscriptionService, QUOConfig
-    >>> svc = TranscriptionService(QUOConfig(api_key="..."))
-    >>> tx = svc.get("txn_abc123")
+    >>> svc = TranscriptionService(QUOConfig(api_key="...", phone_number_id="PN..."))
+    >>> calls = svc.list_calls(max_results=20)
+    >>> tx = svc.get_transcript(calls.items[0].id)
     >>> print(tx.render_transcript())
     """
 
@@ -51,177 +47,102 @@ class TranscriptionService:
         self.config = config or QUOConfig.from_env()
         self.client = QUOClient(self.config)
 
-    # ── Single resource ───────────────────────────────────────────────────────
-
-    def get(self, transcription_id: str) -> Transcription:
-        """Fetch a single transcription by ID."""
-        data = self.client.get(f"/transcriptions/{transcription_id}")
-        return Transcription.from_dict(data)
-
-    def get_for_call(self, call_id: str) -> Transcription:
-        """Fetch the transcription associated with a call."""
-        data = self.client.get(f"/calls/{call_id}/transcription")
-        return Transcription.from_dict(data)
+    # ── Calls ─────────────────────────────────────────────────────────────────
 
     def get_call(self, call_id: str) -> Call:
-        """Fetch a single call record."""
-        data = self.client.get(f"/calls/{call_id}")
-        return Call.from_dict(data)
-
-    # ── Listing ───────────────────────────────────────────────────────────────
-
-    def list(
-        self,
-        page: int = 1,
-        page_size: int = DEFAULT_PAGE_SIZE,
-        status: Optional[TranscriptionStatus] = None,
-        from_date: Optional[datetime] = None,
-        to_date: Optional[datetime] = None,
-        phone_number: Optional[str] = None,
-        language: Optional[str] = None,
-        call_direction: Optional[str] = None,
-    ) -> TranscriptionListResult:
-        """List transcriptions with optional filters."""
-        params: dict = {"page": page, "page_size": page_size}
-        if status:
-            params["status"] = status.value
-        if from_date:
-            params["from"] = from_date.isoformat()
-        if to_date:
-            params["to"] = to_date.isoformat()
-        if phone_number:
-            params["phone_number"] = phone_number
-        if language:
-            params["language"] = language
-        if call_direction:
-            params["direction"] = call_direction
-
-        data = self.client.get("/transcriptions", params=params)
-        return TranscriptionListResult.from_dict(data)
+        """Fetch a single call by its ID (AC...)."""
+        data = self.client.get(f"/v1/calls/{call_id}")
+        return Call.from_dict(data.get("data", data))
 
     def list_calls(
         self,
-        page: int = 1,
-        page_size: int = DEFAULT_PAGE_SIZE,
-        status: Optional[str] = None,
-        from_date: Optional[datetime] = None,
-        to_date: Optional[datetime] = None,
-        phone_number: Optional[str] = None,
-        has_transcription: Optional[bool] = None,
+        phone_number_id: Optional[str] = None,
+        participants: Optional[list[str]] = None,
+        user_id: Optional[str] = None,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None,
+        max_results: int = 10,
+        page_token: Optional[str] = None,
     ) -> CallListResult:
-        """List call records with optional filters."""
-        params: dict = {"page": page, "page_size": page_size}
-        if status:
-            params["status"] = status
-        if from_date:
-            params["from"] = from_date.isoformat()
-        if to_date:
-            params["to"] = to_date.isoformat()
-        if phone_number:
-            params["phone_number"] = phone_number
-        if has_transcription is not None:
-            params["has_transcription"] = str(has_transcription).lower()
+        """
+        List calls. ``phone_number_id`` and ``participants`` are both required
+        by the OpenPhone API — if not supplied, the values from config are used.
 
-        data = self.client.get("/calls", params=params)
+        Parameters
+        ----------
+        phone_number_id:
+            OpenPhone phone number ID (PN...). Falls back to config.phone_number_id.
+        participants:
+            List containing exactly one E.164 phone number to filter by.
+        max_results:
+            Number of results to return (1–100, default 10).
+        """
+        pn_id = phone_number_id or self.config.phone_number_id
+        if not pn_id:
+            raise ValueError(
+                "phone_number_id is required. Set OPENPHONE_PHONE_NUMBER_ID "
+                "or pass phone_number_id explicitly."
+            )
+        if not participants:
+            raise ValueError(
+                "participants is required (list with one E.164 phone number)."
+            )
+
+        params: dict = {
+            "phoneNumberId": pn_id,
+            "participants": participants[0],
+            "maxResults": max(1, min(max_results, 100)),
+        }
+        if user_id:
+            params["userId"] = user_id
+        if created_after:
+            params["createdAfter"] = created_after.isoformat()
+        if created_before:
+            params["createdBefore"] = created_before.isoformat()
+        if page_token:
+            params["pageToken"] = page_token
+
+        data = self.client.get("/v1/calls", params=params)
         return CallListResult.from_dict(data)
 
-    def iter_all(
-        self,
-        page_size: int = DEFAULT_PAGE_SIZE,
-        **filter_kwargs,
-    ) -> Iterator[Transcription]:
+    # ── Transcripts ───────────────────────────────────────────────────────────
+
+    def get_transcript(self, call_id: str) -> Transcript:
         """
-        Lazily iterate over ALL transcriptions matching the filters,
-        automatically handling pagination.
+        Fetch the transcript for a call by its call ID (AC...).
+        Requires Business or Scale plan.
         """
-        page = 1
-        while True:
-            result = self.list(page=page, page_size=page_size, **filter_kwargs)
-            yield from result.items
-            if not result.has_more:
-                break
-            page += 1
+        data = self.client.get(f"/v1/call-transcripts/{call_id}")
+        return Transcript.from_dict(data)
 
-    # ── Search ────────────────────────────────────────────────────────────────
+    # ── Summaries ─────────────────────────────────────────────────────────────
 
-    def search(
-        self,
-        query: str,
-        from_date: Optional[datetime] = None,
-        to_date: Optional[datetime] = None,
-        page: int = 1,
-        page_size: int = DEFAULT_PAGE_SIZE,
-    ) -> TranscriptionListResult:
+    def get_summary(self, call_id: str) -> CallSummary:
         """
-        Full-text search across transcription segments.
-        Returns transcriptions that contain the query string.
+        Fetch the AI-generated summary for a call.
+        Requires Business or Scale plan.
         """
-        params: dict = {
-            "q": query,
-            "page": page,
-            "page_size": page_size,
-        }
-        if from_date:
-            params["from"] = from_date.isoformat()
-        if to_date:
-            params["to"] = to_date.isoformat()
+        data = self.client.get(f"/v1/call-summaries/{call_id}")
+        return CallSummary.from_dict(data)
 
-        data = self.client.get("/transcriptions/search", params=params)
-        return TranscriptionListResult.from_dict(data)
+    # ── Recordings ────────────────────────────────────────────────────────────
 
-    def search_local(
-        self,
-        transcriptions: list[Transcription],
-        query: str,
-        case_sensitive: bool = False,
-    ) -> list[tuple[Transcription, list[str]]]:
-        """
-        Client-side search across a list of Transcription objects.
-        Returns list of (transcription, matching_segment_texts).
-        """
-        results = []
-        needle = query if case_sensitive else query.lower()
-
-        for tx in transcriptions:
-            matches = []
-            for seg in tx.segments:
-                haystack = seg.text if case_sensitive else seg.text.lower()
-                if needle in haystack:
-                    matches.append(seg.text)
-            if matches:
-                results.append((tx, matches))
-
-        return results
-
-    def filter_by_sentiment(
-        self,
-        transcriptions: list[Transcription],
-        sentiment: str,                        # "positive" | "neutral" | "negative"
-        threshold: float = 0.5,                # fraction of segments that must match
-    ) -> list[Transcription]:
-        """Filter transcriptions where at least `threshold` of segments match the sentiment."""
-        result = []
-        for tx in transcriptions:
-            if not tx.segments:
-                continue
-            matching = sum(
-                1 for s in tx.segments if s.sentiment and s.sentiment.value == sentiment
-            )
-            if matching / len(tx.segments) >= threshold:
-                result.append(tx)
-        return result
+    def get_recordings(self, call_id: str) -> CallRecordingListResult:
+        """Fetch all recordings attached to a call."""
+        data = self.client.get(f"/v1/call-recordings/{call_id}")
+        return CallRecordingListResult.from_dict(data)
 
     # ── Polling ───────────────────────────────────────────────────────────────
 
-    def wait_for_transcription(
+    def wait_for_transcript(
         self,
         call_id: str,
         poll_interval: float = 5.0,
         timeout: float = 300.0,
         on_status_change: Optional[Callable[[TranscriptionStatus], None]] = None,
-    ) -> Transcription:
+    ) -> Transcript:
         """
-        Poll until the transcription for `call_id` is completed.
+        Poll until the transcript for ``call_id`` reaches status 'completed'.
         Raises QUOTranscriptionError on timeout or failure.
         """
         deadline = time.time() + timeout
@@ -229,9 +150,9 @@ class TranscriptionService:
 
         while time.time() < deadline:
             try:
-                tx = self.get_for_call(call_id)
+                tx = self.get_transcript(call_id)
             except Exception as exc:
-                logger.warning("Poll error: %s – retrying in %.1fs", exc, poll_interval)
+                logger.warning("Poll error: %s — retrying in %.1fs", exc, poll_interval)
                 time.sleep(poll_interval)
                 continue
 
@@ -243,78 +164,33 @@ class TranscriptionService:
             if tx.status == TranscriptionStatus.COMPLETED:
                 return tx
             if tx.status == TranscriptionStatus.FAILED:
-                raise QUOTranscriptionError(f"Transcription failed for call {call_id}")
+                raise QUOTranscriptionError(f"Transcript failed for call {call_id}")
 
-            logger.debug("Transcription status: %s – waiting %.1fs", tx.status.value, poll_interval)
+            logger.debug("Transcript status: %s — waiting %.1fs", tx.status.value, poll_interval)
             time.sleep(poll_interval)
 
         raise QUOTranscriptionError(
-            f"Timed out waiting for transcription of call {call_id} after {timeout}s"
+            f"Timed out waiting for transcript of call {call_id} after {timeout}s"
         )
 
-    # ── Export ────────────────────────────────────────────────────────────────
-
-    def export_json(
-        self,
-        transcriptions: list[Transcription] | Transcription,
-        pretty: bool = True,
-    ) -> str:
-        """Serialize one or more transcriptions to JSON."""
-        if isinstance(transcriptions, Transcription):
-            data = transcriptions.to_dict()
-        else:
-            data = [t.to_dict() for t in transcriptions]
-        return json.dumps(data, indent=2 if pretty else None, default=str)
-
-    def export_csv(self, transcriptions: list[Transcription]) -> str:
-        """
-        Export all transcription segments to CSV.
-        Columns: call_id, transcription_id, timestamp, speaker, text, confidence, sentiment
-        """
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(
-            ["call_id", "transcription_id", "timestamp", "speaker_id", "speaker_name",
-             "text", "confidence", "sentiment"]
-        )
-        for tx in transcriptions:
-            speaker_map = {sp.id: sp for sp in tx.speakers}
-            for seg in tx.segments:
-                speaker = speaker_map.get(seg.speaker_id)
-                writer.writerow([
-                    tx.call_id,
-                    tx.id,
-                    seg.formatted_timestamp(),
-                    seg.speaker_id,
-                    speaker.name or speaker.role if speaker else "",
-                    seg.text,
-                    f"{seg.confidence:.3f}",
-                    seg.sentiment.value if seg.sentiment else "",
-                ])
-        return output.getvalue()
+    # ── Convenience export ────────────────────────────────────────────────────
 
     def export_text(
         self,
-        transcription: Transcription,
+        transcript: Transcript,
         include_timestamps: bool = True,
         include_speakers: bool = True,
         include_metadata: bool = True,
     ) -> str:
-        """Export a single transcription as human-readable plain text."""
+        """Return a human-readable plain-text export of a transcript."""
         lines = []
-
         if include_metadata:
-            lines.append(f"Call ID:      {transcription.call_id}")
-            lines.append(f"Transcript ID:{transcription.id}")
-            lines.append(f"Language:     {transcription.language}")
-            lines.append(f"Duration:     {transcription.duration_seconds or '?'}s")
-            if transcription.summary:
-                lines.append(f"\nSummary:\n{transcription.summary}")
-            lines.append("\n" + "─" * 60)
-
-        lines.append(transcription.render_transcript(
+            lines.append(f"Call ID:  {transcript.call_id}")
+            lines.append(f"Status:   {transcript.status.value}")
+            lines.append(f"Duration: {transcript.duration}s")
+            lines.append("─" * 60)
+        lines.append(transcript.render_transcript(
             include_timestamps=include_timestamps,
             include_speakers=include_speakers,
         ))
-
         return "\n".join(lines)

@@ -32,10 +32,11 @@ class QUOConfig:
     api_key: str = field(default_factory=lambda: os.environ.get("QUO_API_KEY", ""))
     api_secret: str = field(default_factory=lambda: os.environ.get("QUO_API_SECRET", ""))
     base_url: str = field(
-        default_factory=lambda: os.environ.get("QUO_BASE_URL", "https://api.quo.voip/v1")
+        default_factory=lambda: os.environ.get("QUO_BASE_URL", "https://api.openphone.com")
     )
-    account_id: Optional[str] = field(
-        default_factory=lambda: os.environ.get("QUO_ACCOUNT_ID")
+    # OpenPhone phone number ID (PN...) used as a default filter for call listing
+    phone_number_id: Optional[str] = field(
+        default_factory=lambda: os.environ.get("OPENPHONE_PHONE_NUMBER_ID")
     )
 
     # ── HTTP behaviour ────────────────────────────────────────────────────────

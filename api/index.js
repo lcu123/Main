@@ -1,11 +1,28 @@
+/**
+ * Vercel serverless entry point for the OpenPhone connector.
+ *
+ * Endpoints:
+ *   GET /health                           → liveness check
+ *   GET /call-volume?date=YYYY-MM-DD      → total calls for a date (requires Bearer auth)
+ *
+ * Environment variables:
+ *   QUO_API_KEY                 OpenPhone API key (sent as raw Authorization header)
+ *   QUO_SERVER_TOKEN            Bearer token to protect this endpoint
+ *   OPENPHONE_PHONE_NUMBER_ID   PN... phone number ID (required by OpenPhone /v1/calls)
+ *   OPENPHONE_PARTICIPANT       Default E.164 participant number to filter by
+ *   QUO_BASE_URL                Override base URL (default: https://api.openphone.com)
+ */
+
 const https = require("https");
 const http = require("http");
 const { URL } = require("url");
 const crypto = require("crypto");
 
-const TOKEN = process.env.QUO_SERVER_TOKEN || "";
-const API_KEY = process.env.QUO_API_KEY || "";
-const BASE_URL = (process.env.QUO_BASE_URL || "https://api.quo.voip/v1").replace(/\/$/, "");
+const API_KEY    = process.env.QUO_API_KEY || "";
+const TOKEN      = process.env.QUO_SERVER_TOKEN || "";
+const PN_ID      = process.env.OPENPHONE_PHONE_NUMBER_ID || "";
+const PARTICIPANT= process.env.OPENPHONE_PARTICIPANT || "";
+const BASE_URL   = (process.env.QUO_BASE_URL || "https://api.openphone.com").replace(/\/$/, "");
 
 function requireBearer(req, res) {
   const auth = req.headers["authorization"] || "";
@@ -21,40 +38,68 @@ function requireBearer(req, res) {
   return true;
 }
 
-function quoGet(path, params) {
+function openphoneGet(path, params) {
   return new Promise((resolve, reject) => {
-    const url = new URL(`${BASE_URL}/${path.replace(/^\//, "")}`);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    const url = new URL(`${BASE_URL}${path}`);
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
     const mod = url.protocol === "https:" ? https : http;
-    mod.get(url.toString(), { headers: { Authorization: `Bearer ${API_KEY}`, Accept: "application/json" } }, (resp) => {
-      let data = "";
-      resp.on("data", (c) => (data += c));
-      resp.on("end", () => {
-        if (resp.statusCode >= 400) return reject(Object.assign(new Error(data), { status: resp.statusCode }));
-        try { resolve(JSON.parse(data)); } catch { resolve(data); }
-      });
-    }).on("error", reject);
+    const req = mod.get(
+      url.toString(),
+      // OpenPhone uses a raw API key — no "Bearer" prefix
+      { headers: { Authorization: API_KEY, Accept: "application/json" } },
+      (resp) => {
+        let data = "";
+        resp.on("data", (c) => (data += c));
+        resp.on("end", () => {
+          if (resp.statusCode >= 400) {
+            return reject(Object.assign(new Error(data), { status: resp.statusCode }));
+          }
+          try { resolve(JSON.parse(data)); } catch { resolve(data); }
+        });
+      }
+    );
+    req.on("error", reject);
   });
 }
 
 module.exports = async function handler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
+  // ── /health ───────────────────────────────────────────────────────────────
   if (url.pathname === "/health" || url.pathname === "/api/index") {
-    return res.status(200).json({ status: "ok", service: "quo-voip-mcp" });
+    return res.status(200).json({ status: "ok", service: "openphone-mcp" });
   }
 
+  // ── /call-volume ──────────────────────────────────────────────────────────
   if (url.pathname === "/call-volume") {
     if (!requireBearer(req, res)) return;
-    const today = new Date().toISOString().slice(0, 10);
-    const date = url.searchParams.get("date") || today;
-    try {
-      const data = await quoGet("/calls", {
-        from_date: `${date}T00:00:00`,
-        to_date: `${date}T23:59:59`,
-        page_size: 1,
+
+    if (!PN_ID || !PARTICIPANT) {
+      return res.status(500).json({
+        error: "OPENPHONE_PHONE_NUMBER_ID and OPENPHONE_PARTICIPANT env vars are required",
       });
-      return res.status(200).json({ date, call_volume: data.total ?? null });
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const date  = url.searchParams.get("date") || today;
+
+    // Build ISO 8601 bounds for the requested date (UTC)
+    const createdAfter  = `${date}T00:00:00.000Z`;
+    const createdBefore = `${date}T23:59:59.999Z`;
+
+    try {
+      // Fetch first page with maxResults=1 just to get totalItems
+      const data = await openphoneGet("/v1/calls", {
+        phoneNumberId: PN_ID,
+        participants:  PARTICIPANT,
+        maxResults:    1,
+        createdAfter,
+        createdBefore,
+      });
+      return res.status(200).json({
+        date,
+        call_volume: data.totalItems ?? null,
+      });
     } catch (err) {
       return res.status(err.status || 502).json({ error: err.message });
     }
