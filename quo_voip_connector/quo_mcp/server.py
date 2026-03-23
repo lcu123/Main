@@ -75,7 +75,7 @@ def run_mcp_server(config: Optional[QUOConfig] = None) -> None:
     asyncio.run(main())
 
 
-# Allow: python -m mcp.server
+# Allow: python -m quo_mcp.server
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     run_mcp_server()

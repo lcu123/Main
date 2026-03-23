@@ -319,7 +319,7 @@ def calls_list(ctx, page, page_size, status, from_date, to_date, phone, has_tran
 @click.pass_context
 def mcp_server(ctx):
     """Start the MCP stdio server for Claude integration."""
-    from mcp.server import run_mcp_server
+    from quo_mcp.server import run_mcp_server
     run_mcp_server(ctx.obj["config"])
 
 

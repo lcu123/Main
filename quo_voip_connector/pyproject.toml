@@ -48,7 +48,7 @@ quo-voip = "cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["quo_voip*", "mcp*", "cli*", "webhooks*", "server*"]
+include = ["quo_voip*", "quo_mcp*", "cli*", "webhooks*", "server*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

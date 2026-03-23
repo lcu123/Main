@@ -26,7 +26,7 @@ except ImportError:
 
 from quo_voip import QUOConfig, TranscriptionService
 from quo_voip.models import TranscriptionStatus
-from mcp.server import TOOLS, QUOMCPHandler
+from quo_mcp.server import TOOLS, QUOMCPHandler
 
 logger = logging.getLogger(__name__)
 
