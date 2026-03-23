@@ -1,14 +1,14 @@
 {
   "builds": [
     {
-      "src": "quo_voip_connector/server/remote_mcp.py",
+      "src": "api/index.py",
       "use": "@vercel/python"
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "quo_voip_connector/server/remote_mcp.py"
+      "dest": "api/index.py"
     }
   ]
 }
