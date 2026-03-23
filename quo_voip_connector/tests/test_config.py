@@ -10,7 +10,7 @@ from quo_voip.config import QUOConfig
 class TestQUOConfig:
     def test_defaults(self):
         config = QUOConfig(api_key="test")
-        assert config.base_url == "https://api.quo.voip/v1"
+        assert config.base_url == "https://api.openphone.com"
         assert config.timeout == 30
         assert config.max_retries == 3
         assert config.enable_cache is True
@@ -31,10 +31,10 @@ class TestQUOConfig:
 
     def test_from_env(self, monkeypatch):
         monkeypatch.setenv("QUO_API_KEY", "env-key")
-        monkeypatch.setenv("QUO_ACCOUNT_ID", "acct_123")
+        monkeypatch.setenv("OPENPHONE_PHONE_NUMBER_ID", "PN123abc")
         config = QUOConfig.from_env()
         assert config.api_key == "env-key"
-        assert config.account_id == "acct_123"
+        assert config.phone_number_id == "PN123abc"
 
     def test_repr_masks_key(self):
         config = QUOConfig(api_key="abcdefgh")

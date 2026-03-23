@@ -44,7 +44,7 @@ class QUOClient:
     Example
     -------
     >>> from quo_voip import QUOClient, QUOConfig
-    >>> config = QUOConfig(api_key="your-key", account_id="acct_123")
+    >>> config = QUOConfig(api_key="your-key", phone_number_id="PNxxxxxxx")
     >>> client = QUOClient(config)
     >>> calls = client.get("/calls", params={"status": "completed"})
     """

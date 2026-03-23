@@ -1,188 +1,305 @@
 """
-Unit tests for QUO VOIP data models.
+Unit tests for QUO VOIP data models (OpenPhone schema).
 """
 
 import pytest
 from datetime import datetime, timezone
 from quo_voip.models import (
-    Call, CallStatus,
-    Transcription, TranscriptionStatus, TranscriptionSegment,
-    Speaker, SentimentLabel,
+    Call,
+    CallDirection,
+    CallListResult,
+    CallRecording,
+    CallRecordingListResult,
+    CallStatus,
+    CallSummary,
+    RecordingStatus,
+    Transcript,
+    TranscriptDialogueSegment,
+    TranscriptionStatus,
+    Transcription,  # alias for Transcript
 )
 
 NOW_ISO = "2024-06-01T10:00:00"
 NOW_ISO2 = "2024-06-01T10:30:00"
 
 
-def make_speaker(id="sp1", name="Alice", role="agent"):
-    return {
-        "id": id,
-        "name": name,
-        "phone_number": "+15551234567",
-        "role": role,
-    }
-
-
-def make_segment(id="seg1", speaker_id="sp1", text="Hello there", start=0.0, end=3.0, confidence=0.95):
-    return {
-        "id": id,
-        "speaker_id": speaker_id,
-        "text": text,
-        "start_time": start,
-        "end_time": end,
-        "confidence": confidence,
-        "sentiment": "positive",
-        "keywords": ["hello"],
-    }
-
-
-def make_transcription(**overrides):
-    base = {
-        "id": "txn_001",
-        "call_id": "call_001",
-        "status": "completed",
-        "language": "en",
-        "segments": [make_segment()],
-        "speakers": [make_speaker()],
-        "created_at": NOW_ISO,
-        "updated_at": NOW_ISO2,
-    }
-    base.update(overrides)
-    return base
-
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def make_call(**overrides):
     base = {
-        "id": "call_001",
+        "id": "ACtest001",
+        "phoneNumberId": "PNtest001",
+        "direction": "incoming",
         "status": "completed",
-        "direction": "inbound",
-        "from_number": "+15559876543",
-        "to_number": "+15551234567",
-        "started_at": NOW_ISO,
-        "ended_at": NOW_ISO2,
-        "duration_seconds": 1800.0,
-        "recording_url": None,
-        "transcription_id": "txn_001",
+        "createdAt": NOW_ISO,
+        "participants": ["+15559876543"],
+        "duration": 90,
     }
     base.update(overrides)
     return base
 
 
-# ── Speaker ───────────────────────────────────────────────────────────────────
+def make_segment(**overrides):
+    base = {
+        "content": "Hello there",
+        "start": 0.0,
+        "end": 3.0,
+        "identifier": "+15559876543",
+        "userId": None,
+    }
+    base.update(overrides)
+    return base
 
-class TestSpeaker:
+
+def make_transcript(**overrides):
+    base = {
+        "data": {
+            "callId": "ACtest001",
+            "status": "completed",
+            "createdAt": NOW_ISO,
+            "duration": 90,
+            "dialogue": [make_segment()],
+        }
+    }
+    if overrides:
+        base["data"].update(overrides)
+    return base
+
+
+def make_recording(**overrides):
+    base = {
+        "id": "RCtest001",
+        "status": "completed",
+        "duration": 90,
+        "type": "audio/mpeg",
+        "url": "https://example.com/recording.mp3",
+        "startTime": NOW_ISO,
+    }
+    base.update(overrides)
+    return base
+
+
+# ── TranscriptDialogueSegment ─────────────────────────────────────────────────
+
+class TestTranscriptDialogueSegment:
     def test_from_dict(self):
-        sp = Speaker.from_dict(make_speaker())
-        assert sp.id == "sp1"
-        assert sp.name == "Alice"
-        assert sp.role == "agent"
+        seg = TranscriptDialogueSegment.from_dict(make_segment())
+        assert seg.content == "Hello there"
+        assert seg.start == 0.0
+        assert seg.end == 3.0
+        assert seg.identifier == "+15559876543"
 
-    def test_roundtrip(self):
-        data = make_speaker()
-        assert Speaker.from_dict(data).to_dict() == data
-
-
-# ── TranscriptionSegment ──────────────────────────────────────────────────────
-
-class TestTranscriptionSegment:
-    def test_from_dict(self):
-        seg = TranscriptionSegment.from_dict(make_segment())
-        assert seg.text == "Hello there"
-        assert seg.confidence == 0.95
-        assert seg.sentiment == SentimentLabel.POSITIVE
-
-    def test_formatted_timestamp(self):
-        seg = TranscriptionSegment.from_dict(make_segment(start=75.0))
-        assert seg.formatted_timestamp() == "01:15"
-
-    def test_timestamp_zero(self):
-        seg = TranscriptionSegment.from_dict(make_segment(start=0.0))
+    def test_formatted_timestamp_zero(self):
+        seg = TranscriptDialogueSegment.from_dict(make_segment(start=0.0))
         assert seg.formatted_timestamp() == "00:00"
+
+    def test_formatted_timestamp_non_zero(self):
+        seg = TranscriptDialogueSegment.from_dict(make_segment(start=75.0))
+        assert seg.formatted_timestamp() == "01:15"
 
     def test_roundtrip(self):
         data = make_segment()
-        seg = TranscriptionSegment.from_dict(data)
+        seg = TranscriptDialogueSegment.from_dict(data)
         d2 = seg.to_dict()
-        assert d2["text"] == data["text"]
-        assert d2["sentiment"] == "positive"
+        assert d2["content"] == data["content"]
+        assert d2["start"] == data["start"]
+        assert d2["identifier"] == data["identifier"]
+
+    def test_optional_fields_none(self):
+        seg = TranscriptDialogueSegment.from_dict({"content": "Hi", "start": 0.0, "end": 1.0})
+        assert seg.identifier is None
+        assert seg.user_id is None
 
 
-# ── Transcription ─────────────────────────────────────────────────────────────
+# ── Transcript ────────────────────────────────────────────────────────────────
 
-class TestTranscription:
+class TestTranscript:
     def test_from_dict_basic(self):
-        tx = Transcription.from_dict(make_transcription())
-        assert tx.id == "txn_001"
-        assert tx.call_id == "call_001"
+        tx = Transcript.from_dict(make_transcript())
+        assert tx.call_id == "ACtest001"
         assert tx.status == TranscriptionStatus.COMPLETED
-        assert len(tx.segments) == 1
-        assert len(tx.speakers) == 1
+        assert len(tx.dialogue) == 1
 
-    def test_auto_full_text(self):
-        tx = Transcription.from_dict(make_transcription())
+    def test_full_text(self):
+        tx = Transcript.from_dict(make_transcript())
         assert tx.full_text == "Hello there"
 
-    def test_auto_word_count(self):
-        tx = Transcription.from_dict(make_transcription())
-        assert tx.word_count == 2
+    def test_full_text_multiple_segments(self):
+        segs = [make_segment(content=f"Word {i}") for i in range(3)]
+        tx = Transcript.from_dict(make_transcript(dialogue=segs))
+        for i in range(3):
+            assert f"Word {i}" in tx.full_text
 
-    def test_average_confidence(self):
-        data = make_transcription(segments=[
-            make_segment(id="s1", confidence=0.8),
-            make_segment(id="s2", confidence=0.9),
-        ])
-        tx = Transcription.from_dict(data)
-        assert abs(tx.average_confidence - 0.85) < 0.001
+    def test_full_text_none_when_no_dialogue(self):
+        tx = Transcript.from_dict(make_transcript(dialogue=None))
+        assert tx.full_text is None
 
-    def test_render_transcript_with_timestamps(self):
-        tx = Transcription.from_dict(make_transcription())
+    def test_render_transcript_with_timestamps_and_speakers(self):
+        tx = Transcript.from_dict(make_transcript())
         rendered = tx.render_transcript(include_timestamps=True, include_speakers=True)
         assert "[00:00]" in rendered
-        assert "Alice:" in rendered
+        assert "+15559876543:" in rendered
         assert "Hello there" in rendered
 
-    def test_render_transcript_no_timestamps(self):
-        tx = Transcription.from_dict(make_transcription())
+    def test_render_transcript_no_timestamps_no_speakers(self):
+        tx = Transcript.from_dict(make_transcript())
         rendered = tx.render_transcript(include_timestamps=False, include_speakers=False)
         assert "[" not in rendered
         assert rendered.strip() == "Hello there"
 
-    def test_roundtrip_dict(self):
-        data = make_transcription()
-        tx = Transcription.from_dict(data)
-        d2 = tx.to_dict()
-        assert d2["id"] == data["id"]
-        assert d2["call_id"] == data["call_id"]
+    def test_render_transcript_absent(self):
+        tx = Transcript.from_dict(make_transcript(status="absent", dialogue=None))
+        rendered = tx.render_transcript()
+        assert "absent" in rendered
 
-    def test_multiple_segments(self):
-        segs = [
-            make_segment(id=f"s{i}", text=f"Word {i}", start=float(i), end=float(i+1))
-            for i in range(5)
-        ]
-        tx = Transcription.from_dict(make_transcription(segments=segs))
-        assert len(tx.segments) == 5
-        assert "Word 0" in tx.full_text
+    def test_roundtrip_dict(self):
+        data = make_transcript()
+        tx = Transcript.from_dict(data)
+        d2 = tx.to_dict()
+        assert d2["callId"] == "ACtest001"
+        assert d2["status"] == "completed"
+
+    def test_transcription_alias(self):
+        """Transcription is a backward-compat alias for Transcript."""
+        tx = Transcription.from_dict(make_transcript())
+        assert isinstance(tx, Transcript)
 
 
 # ── Call ──────────────────────────────────────────────────────────────────────
 
 class TestCall:
-    def test_from_dict(self):
+    def test_from_dict_basic(self):
         c = Call.from_dict(make_call())
-        assert c.id == "call_001"
+        assert c.id == "ACtest001"
+        assert c.phone_number_id == "PNtest001"
+        assert c.direction == CallDirection.INCOMING
         assert c.status == CallStatus.COMPLETED
-        assert c.direction == "inbound"
-        assert c.duration_seconds == 1800.0
+        assert c.duration == 90
+        assert c.participants == ["+15559876543"]
 
-    def test_optional_fields(self):
-        data = make_call(recording_url=None, transcription_id=None, ended_at=None)
-        c = Call.from_dict(data)
-        assert c.recording_url is None
-        assert c.ended_at is None
+    def test_direction_outgoing(self):
+        c = Call.from_dict(make_call(direction="outgoing"))
+        assert c.direction == CallDirection.OUTGOING
+
+    def test_optional_fields_absent(self):
+        c = Call.from_dict(make_call())
+        assert c.answered_at is None
+        assert c.completed_at is None
+        assert c.user_id is None
+
+    def test_optional_fields_present(self):
+        c = Call.from_dict(make_call(answeredAt=NOW_ISO, completedAt=NOW_ISO2, userId="UStest"))
+        assert c.answered_at is not None
+        assert c.completed_at is not None
+        assert c.user_id == "UStest"
 
     def test_roundtrip(self):
         data = make_call()
         c = Call.from_dict(data)
         d2 = c.to_dict()
         assert d2["id"] == data["id"]
+        assert d2["phoneNumberId"] == data["phoneNumberId"]
+        assert d2["status"] == "completed"
+        assert d2["direction"] == "incoming"
+
+    def test_all_statuses_parse(self):
+        for s in ("queued", "initiated", "ringing", "in-progress", "completed",
+                  "busy", "failed", "no-answer", "canceled", "missed",
+                  "answered", "forwarded"):
+            c = Call.from_dict(make_call(status=s))
+            assert c.status.value == s
+
+
+# ── CallListResult ────────────────────────────────────────────────────────────
+
+class TestCallListResult:
+    def test_from_dict_empty(self):
+        result = CallListResult.from_dict({"data": [], "totalItems": 0})
+        assert result.items == []
+        assert result.total_items == 0
+        assert result.has_more is False
+
+    def test_from_dict_with_items(self):
+        result = CallListResult.from_dict({
+            "data": [make_call()],
+            "totalItems": 1,
+            "nextPageToken": None,
+        })
+        assert len(result.items) == 1
+        assert isinstance(result.items[0], Call)
+
+    def test_has_more_true(self):
+        result = CallListResult.from_dict({
+            "data": [make_call()],
+            "totalItems": 2,
+            "nextPageToken": "tok123",
+        })
+        assert result.has_more is True
+        assert result.next_page_token == "tok123"
+
+
+# ── CallRecording ─────────────────────────────────────────────────────────────
+
+class TestCallRecording:
+    def test_from_dict(self):
+        r = CallRecording.from_dict(make_recording())
+        assert r.id == "RCtest001"
+        assert r.status == RecordingStatus.COMPLETED
+        assert r.duration == 90
+        assert r.url == "https://example.com/recording.mp3"
+
+    def test_optional_url_none(self):
+        r = CallRecording.from_dict(make_recording(url=None))
+        assert r.url is None
+
+    def test_roundtrip(self):
+        data = make_recording()
+        r = CallRecording.from_dict(data)
+        d2 = r.to_dict()
+        assert d2["id"] == data["id"]
+        assert d2["status"] == "completed"
+
+    def test_list_result(self):
+        result = CallRecordingListResult.from_dict({"data": [make_recording()]})
+        assert len(result.items) == 1
+        assert isinstance(result.items[0], CallRecording)
+
+
+# ── CallSummary ───────────────────────────────────────────────────────────────
+
+class TestCallSummary:
+    def test_from_dict_basic(self):
+        data = {
+            "data": {
+                "callId": "ACtest001",
+                "status": "completed",
+                "summary": ["Customer asked about pricing."],
+                "nextSteps": ["Send follow-up email."],
+                "jobs": None,
+            }
+        }
+        s = CallSummary.from_dict(data)
+        assert s.call_id == "ACtest001"
+        assert s.status == TranscriptionStatus.COMPLETED
+        assert s.summary == ["Customer asked about pricing."]
+        assert s.next_steps == ["Send follow-up email."]
+
+    def test_from_dict_absent_status(self):
+        data = {"data": {"callId": "ACtest001", "status": "absent"}}
+        s = CallSummary.from_dict(data)
+        assert s.status == TranscriptionStatus.ABSENT
+
+    def test_to_dict_roundtrip(self):
+        data = {
+            "data": {
+                "callId": "ACtest001",
+                "status": "completed",
+                "summary": ["Summary line."],
+                "nextSteps": None,
+                "jobs": None,
+            }
+        }
+        s = CallSummary.from_dict(data)
+        d2 = s.to_dict()
+        assert d2["callId"] == "ACtest001"
         assert d2["status"] == "completed"

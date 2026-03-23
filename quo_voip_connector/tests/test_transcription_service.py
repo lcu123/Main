@@ -1,59 +1,97 @@
 """
-Unit tests for TranscriptionService – mocking the HTTP client.
+Unit tests for TranscriptionService — mocking the HTTP client.
 """
 
-import json
 import pytest
+import time
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 from quo_voip import QUOConfig, TranscriptionService
-from quo_voip.models import Transcription, TranscriptionStatus, Call, CallStatus
+from quo_voip.models import (
+    Call,
+    CallListResult,
+    CallRecordingListResult,
+    CallSummary,
+    Transcript,
+    TranscriptionStatus,
+)
+from quo_voip.exceptions import QUOTranscriptionError
 
 NOW_ISO = "2024-06-01T10:00:00"
 NOW_ISO2 = "2024-06-01T10:30:00"
 
 
-def _tx_payload(**overrides):
+# ── Payload builders ──────────────────────────────────────────────────────────
+
+def _call_payload(**overrides):
     base = {
-        "id": "txn_001",
-        "call_id": "call_001",
+        "id": "ACtest001",
+        "phoneNumberId": "PNtest001",
+        "direction": "incoming",
         "status": "completed",
-        "language": "en",
-        "segments": [
-            {
-                "id": "seg1",
-                "speaker_id": "sp1",
-                "text": "Hello customer",
-                "start_time": 0.0,
-                "end_time": 2.0,
-                "confidence": 0.95,
-            }
-        ],
-        "speakers": [
-            {"id": "sp1", "name": "Agent", "phone_number": None, "role": "agent"}
-        ],
-        "created_at": NOW_ISO,
-        "updated_at": NOW_ISO2,
+        "createdAt": NOW_ISO,
+        "participants": ["+15559876543"],
+        "duration": 90,
     }
     base.update(overrides)
     return base
 
 
-def _list_payload(items=None):
-    items = items or [_tx_payload()]
+def _calls_list_payload(items=None, total=None, next_token=None):
+    items = items or [_call_payload()]
     return {
-        "items": items,
-        "total": len(items),
-        "page": 1,
-        "page_size": 20,
-        "has_more": False,
+        "data": items,
+        "totalItems": total if total is not None else len(items),
+        "nextPageToken": next_token,
     }
 
 
+def _transcript_payload(**overrides):
+    inner = {
+        "callId": "ACtest001",
+        "status": "completed",
+        "createdAt": NOW_ISO,
+        "duration": 90,
+        "dialogue": [
+            {"content": "Hello customer", "start": 0.0, "end": 2.0, "identifier": "+15559876543"}
+        ],
+    }
+    inner.update(overrides)
+    return {"data": inner}
+
+
+def _summary_payload(**overrides):
+    inner = {
+        "callId": "ACtest001",
+        "status": "completed",
+        "summary": ["Customer inquired about pricing."],
+        "nextSteps": ["Send pricing sheet."],
+        "jobs": None,
+    }
+    inner.update(overrides)
+    return {"data": inner}
+
+
+def _recordings_payload(items=None):
+    items = items or [
+        {
+            "id": "RCtest001",
+            "status": "completed",
+            "duration": 90,
+            "type": "audio/mpeg",
+            "url": "https://example.com/rec.mp3",
+            "startTime": NOW_ISO,
+        }
+    ]
+    return {"data": items}
+
+
+# ── Fixtures ──────────────────────────────────────────────────────────────────
+
 @pytest.fixture
 def config():
-    return QUOConfig(api_key="test-key", base_url="https://api.quo.test/v1")
+    return QUOConfig(api_key="test-key", phone_number_id="PNtest001")
 
 
 @pytest.fixture
@@ -63,135 +101,222 @@ def svc(config):
     return svc
 
 
-class TestGetTranscription:
-    def test_get_returns_transcription(self, svc):
-        svc.client.get.return_value = _tx_payload()
-        tx = svc.get("txn_001")
-        assert isinstance(tx, Transcription)
-        assert tx.id == "txn_001"
-        svc.client.get.assert_called_once_with("/transcriptions/txn_001")
+# ── list_calls ────────────────────────────────────────────────────────────────
 
-    def test_get_for_call(self, svc):
-        svc.client.get.return_value = _tx_payload()
-        tx = svc.get_for_call("call_001")
-        assert tx.call_id == "call_001"
-        svc.client.get.assert_called_once_with("/calls/call_001/transcription")
-
-
-class TestListTranscriptions:
-    def test_list_basic(self, svc):
-        svc.client.get.return_value = _list_payload()
-        result = svc.list()
-        assert result.total == 1
+class TestListCalls:
+    def test_returns_call_list_result(self, svc):
+        svc.client.get.return_value = _calls_list_payload()
+        result = svc.list_calls(participants=["+15559876543"])
+        assert isinstance(result, CallListResult)
         assert len(result.items) == 1
-        assert isinstance(result.items[0], Transcription)
+        assert isinstance(result.items[0], Call)
 
-    def test_list_with_filters(self, svc):
-        svc.client.get.return_value = _list_payload()
-        svc.list(
-            status=TranscriptionStatus.COMPLETED,
-            language="en",
-            call_direction="inbound",
+    def test_passes_correct_params(self, svc):
+        svc.client.get.return_value = _calls_list_payload()
+        svc.list_calls(
+            participants=["+15559876543"],
+            max_results=25,
         )
-        call_params = svc.client.get.call_args[1]["params"]
-        assert call_params["status"] == "completed"
-        assert call_params["language"] == "en"
-        assert call_params["direction"] == "inbound"
-
-    def test_iter_all_single_page(self, svc):
-        svc.client.get.return_value = _list_payload()
-        items = list(svc.iter_all())
-        assert len(items) == 1
-
-    def test_iter_all_multiple_pages(self, svc):
-        page1 = {**_list_payload(), "has_more": True}
-        page2 = _list_payload([_tx_payload(id="txn_002", call_id="call_002")])
-        svc.client.get.side_effect = [page1, page2]
-        items = list(svc.iter_all())
-        assert len(items) == 2
-
-
-class TestSearch:
-    def test_search(self, svc):
-        svc.client.get.return_value = _list_payload()
-        result = svc.search("hello")
         svc.client.get.assert_called_once()
-        call_params = svc.client.get.call_args[1]["params"]
-        assert call_params["q"] == "hello"
+        _, kwargs = svc.client.get.call_args
+        params = kwargs["params"]
+        assert params["phoneNumberId"] == "PNtest001"
+        assert params["participants"] == "+15559876543"
+        assert params["maxResults"] == 25
 
-    def test_search_local_match(self, svc):
-        svc.client.get.return_value = _tx_payload()
-        tx = Transcription.from_dict(_tx_payload())
-        results = svc.search_local([tx], "hello")
-        assert len(results) == 1
-        assert results[0][0].id == "txn_001"
+    def test_date_filters_passed(self, svc):
+        svc.client.get.return_value = _calls_list_payload()
+        after = datetime.fromisoformat("2024-06-01T00:00:00")
+        before = datetime.fromisoformat("2024-06-01T23:59:59")
+        svc.list_calls(participants=["+15559876543"], created_after=after, created_before=before)
+        _, kwargs = svc.client.get.call_args
+        params = kwargs["params"]
+        assert "createdAfter" in params
+        assert "createdBefore" in params
 
-    def test_search_local_no_match(self, svc):
-        tx = Transcription.from_dict(_tx_payload())
-        results = svc.search_local([tx], "nonexistent_xyz")
-        assert results == []
+    def test_raises_without_participants(self, svc):
+        with pytest.raises(ValueError, match="participants"):
+            svc.list_calls()
 
-    def test_search_local_case_insensitive(self, svc):
-        tx = Transcription.from_dict(_tx_payload())
-        results = svc.search_local([tx], "HELLO")
-        assert len(results) == 1
+    def test_raises_without_phone_number_id(self, config):
+        config.phone_number_id = None
+        svc = TranscriptionService(config)
+        svc.client = MagicMock()
+        with pytest.raises(ValueError, match="phone_number_id"):
+            svc.list_calls(participants=["+15559876543"])
+
+    def test_total_items(self, svc):
+        svc.client.get.return_value = _calls_list_payload(total=42)
+        result = svc.list_calls(participants=["+15559876543"])
+        assert result.total_items == 42
+
+    def test_next_page_token(self, svc):
+        svc.client.get.return_value = _calls_list_payload(next_token="tok_abc")
+        result = svc.list_calls(participants=["+15559876543"])
+        assert result.has_more is True
+        assert result.next_page_token == "tok_abc"
+
+    def test_page_token_passed(self, svc):
+        svc.client.get.return_value = _calls_list_payload()
+        svc.list_calls(participants=["+15559876543"], page_token="tok_xyz")
+        _, kwargs = svc.client.get.call_args
+        assert kwargs["params"]["pageToken"] == "tok_xyz"
+
+    def test_max_results_clamped(self, svc):
+        svc.client.get.return_value = _calls_list_payload()
+        svc.list_calls(participants=["+15559876543"], max_results=200)
+        _, kwargs = svc.client.get.call_args
+        assert kwargs["params"]["maxResults"] == 100
+
+    def test_max_results_min_one(self, svc):
+        svc.client.get.return_value = _calls_list_payload()
+        svc.list_calls(participants=["+15559876543"], max_results=0)
+        _, kwargs = svc.client.get.call_args
+        assert kwargs["params"]["maxResults"] == 1
 
 
-class TestExport:
-    def test_export_json_single(self, svc):
-        tx = Transcription.from_dict(_tx_payload())
-        output = svc.export_json(tx)
-        data = json.loads(output)
-        assert data["id"] == "txn_001"
+# ── get_call ──────────────────────────────────────────────────────────────────
 
-    def test_export_json_list(self, svc):
-        tx = Transcription.from_dict(_tx_payload())
-        output = svc.export_json([tx, tx])
-        data = json.loads(output)
-        assert isinstance(data, list)
-        assert len(data) == 2
+class TestGetCall:
+    def test_returns_call(self, svc):
+        svc.client.get.return_value = {"data": _call_payload()}
+        c = svc.get_call("ACtest001")
+        assert isinstance(c, Call)
+        assert c.id == "ACtest001"
 
-    def test_export_csv_headers(self, svc):
-        tx = Transcription.from_dict(_tx_payload())
-        csv_output = svc.export_csv([tx])
-        assert "call_id" in csv_output
-        assert "Hello customer" in csv_output
+    def test_calls_correct_path(self, svc):
+        svc.client.get.return_value = {"data": _call_payload()}
+        svc.get_call("ACtest001")
+        svc.client.get.assert_called_once_with("/v1/calls/ACtest001")
 
-    def test_export_text(self, svc):
-        tx = Transcription.from_dict(_tx_payload())
+
+# ── get_transcript ────────────────────────────────────────────────────────────
+
+class TestGetTranscript:
+    def test_returns_transcript(self, svc):
+        svc.client.get.return_value = _transcript_payload()
+        tx = svc.get_transcript("ACtest001")
+        assert isinstance(tx, Transcript)
+        assert tx.call_id == "ACtest001"
+        assert tx.status == TranscriptionStatus.COMPLETED
+
+    def test_calls_correct_path(self, svc):
+        svc.client.get.return_value = _transcript_payload()
+        svc.get_transcript("ACtest001")
+        svc.client.get.assert_called_once_with("/v1/call-transcripts/ACtest001")
+
+    def test_dialogue_parsed(self, svc):
+        svc.client.get.return_value = _transcript_payload()
+        tx = svc.get_transcript("ACtest001")
+        assert len(tx.dialogue) == 1
+        assert tx.dialogue[0].content == "Hello customer"
+
+    def test_absent_transcript(self, svc):
+        svc.client.get.return_value = _transcript_payload(status="absent", dialogue=None)
+        tx = svc.get_transcript("ACtest001")
+        assert tx.status == TranscriptionStatus.ABSENT
+        assert tx.dialogue is None
+
+
+# ── get_summary ───────────────────────────────────────────────────────────────
+
+class TestGetSummary:
+    def test_returns_call_summary(self, svc):
+        svc.client.get.return_value = _summary_payload()
+        s = svc.get_summary("ACtest001")
+        assert isinstance(s, CallSummary)
+        assert s.call_id == "ACtest001"
+
+    def test_calls_correct_path(self, svc):
+        svc.client.get.return_value = _summary_payload()
+        svc.get_summary("ACtest001")
+        svc.client.get.assert_called_once_with("/v1/call-summaries/ACtest001")
+
+    def test_summary_and_next_steps(self, svc):
+        svc.client.get.return_value = _summary_payload()
+        s = svc.get_summary("ACtest001")
+        assert s.summary == ["Customer inquired about pricing."]
+        assert s.next_steps == ["Send pricing sheet."]
+
+
+# ── get_recordings ────────────────────────────────────────────────────────────
+
+class TestGetRecordings:
+    def test_returns_recording_list(self, svc):
+        svc.client.get.return_value = _recordings_payload()
+        result = svc.get_recordings("ACtest001")
+        assert isinstance(result, CallRecordingListResult)
+        assert len(result.items) == 1
+
+    def test_calls_correct_path(self, svc):
+        svc.client.get.return_value = _recordings_payload()
+        svc.get_recordings("ACtest001")
+        svc.client.get.assert_called_once_with("/v1/call-recordings/ACtest001")
+
+    def test_empty_recordings(self, svc):
+        svc.client.get.return_value = {"data": []}
+        result = svc.get_recordings("ACtest001")
+        assert result.items == []
+
+
+# ── wait_for_transcript ───────────────────────────────────────────────────────
+
+class TestWaitForTranscript:
+    def test_returns_immediately_when_completed(self, svc):
+        svc.client.get.return_value = _transcript_payload()
+        tx = svc.wait_for_transcript("ACtest001", poll_interval=0.01, timeout=5.0)
+        assert tx.status == TranscriptionStatus.COMPLETED
+
+    def test_polls_until_completed(self, svc):
+        in_progress = _transcript_payload(status="in-progress", dialogue=None)
+        completed = _transcript_payload()
+        svc.client.get.side_effect = [in_progress, completed]
+        with patch("time.sleep"):
+            tx = svc.wait_for_transcript("ACtest001", poll_interval=0.01, timeout=5.0)
+        assert tx.status == TranscriptionStatus.COMPLETED
+        assert svc.client.get.call_count == 2
+
+    def test_raises_on_failed_status(self, svc):
+        svc.client.get.return_value = _transcript_payload(status="failed", dialogue=None)
+        with patch("time.sleep"), pytest.raises(QUOTranscriptionError, match="failed"):
+            svc.wait_for_transcript("ACtest001", poll_interval=0.01, timeout=5.0)
+
+    def test_raises_on_timeout(self, svc):
+        svc.client.get.return_value = _transcript_payload(status="in-progress", dialogue=None)
+        with patch("time.sleep"), patch("time.time", side_effect=[0, 0, 10, 10]):
+            with pytest.raises(QUOTranscriptionError, match="Timed out"):
+                svc.wait_for_transcript("ACtest001", poll_interval=0.01, timeout=5.0)
+
+    def test_on_status_change_callback(self, svc):
+        in_progress = _transcript_payload(status="in-progress", dialogue=None)
+        completed = _transcript_payload()
+        svc.client.get.side_effect = [in_progress, completed]
+        statuses = []
+        with patch("time.sleep"):
+            svc.wait_for_transcript(
+                "ACtest001",
+                poll_interval=0.01,
+                timeout=5.0,
+                on_status_change=lambda s: statuses.append(s),
+            )
+        assert TranscriptionStatus.IN_PROGRESS in statuses
+        assert TranscriptionStatus.COMPLETED in statuses
+
+
+# ── export_text ───────────────────────────────────────────────────────────────
+
+class TestExportText:
+    def test_export_with_metadata(self, svc):
+        svc.client.get.return_value = _transcript_payload()
+        tx = svc.get_transcript("ACtest001")
         text = svc.export_text(tx)
-        assert "call_001" in text
+        assert "ACtest001" in text
         assert "Hello customer" in text
+        assert "completed" in text
 
-    def test_export_text_no_metadata(self, svc):
-        tx = Transcription.from_dict(_tx_payload())
+    def test_export_without_metadata(self, svc):
+        svc.client.get.return_value = _transcript_payload()
+        tx = svc.get_transcript("ACtest001")
         text = svc.export_text(tx, include_metadata=False)
         assert "Call ID" not in text
         assert "Hello customer" in text
-
-
-class TestFilterSentiment:
-    def test_filter_positive(self, svc):
-        from quo_voip.models import SentimentLabel
-        payload = _tx_payload(segments=[
-            {
-                "id": "s1", "speaker_id": "sp1",
-                "text": "Great!", "start_time": 0.0, "end_time": 1.0,
-                "confidence": 1.0, "sentiment": "positive",
-            }
-        ])
-        tx = Transcription.from_dict(payload)
-        result = svc.filter_by_sentiment([tx], "positive")
-        assert len(result) == 1
-
-    def test_filter_below_threshold(self, svc):
-        payload = _tx_payload(segments=[
-            {"id": "s1", "speaker_id": "sp1", "text": "Bad!", "start_time": 0.0,
-             "end_time": 1.0, "confidence": 1.0, "sentiment": "negative"},
-            {"id": "s2", "speaker_id": "sp1", "text": "Ok.", "start_time": 1.0,
-             "end_time": 2.0, "confidence": 1.0, "sentiment": "positive"},
-        ])
-        tx = Transcription.from_dict(payload)
-        # Only 50% positive; threshold=0.8 → excluded
-        result = svc.filter_by_sentiment([tx], "positive", threshold=0.8)
-        assert result == []
