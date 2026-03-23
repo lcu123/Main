@@ -1,19 +1,19 @@
 """
 Vercel serverless entry point for the QUO VOIP connector.
-Exposes /health and /call-volume as lightweight REST endpoints.
+Self-contained — no local package imports so @vercel/python can build it.
 """
 import os
 import secrets
 from datetime import date as _date
 
+import requests
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from quo_voip import QUOConfig
-from quo_voip.client import QUOClient
-
 _TOKEN: str = os.environ.get("QUO_SERVER_TOKEN", "")
+_API_KEY: str = os.environ.get("QUO_API_KEY", "")
+_BASE_URL: str = os.environ.get("QUO_BASE_URL", "https://api.quo.voip/v1").rstrip("/")
 
 
 def _require_bearer(request: Request) -> None:
@@ -24,10 +24,19 @@ def _require_bearer(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Invalid token")
 
 
+def _quo_get(path: str, params: dict) -> dict:
+    resp = requests.get(
+        f"{_BASE_URL}/{path.lstrip('/')}",
+        params=params,
+        headers={"Authorization": f"Bearer {_API_KEY}", "Accept": "application/json"},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 app = FastAPI(title="QUO VOIP", docs_url=None, redoc_url=None)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["Authorization"])
-
-_client = QUOClient(QUOConfig.from_env())
 
 
 @app.get("/health")
@@ -43,11 +52,9 @@ async def call_volume(
     _require_bearer(request)
     target = date or str(_date.today())
     try:
-        data = _client.get(
-            "/calls",
-            params={"from_date": f"{target}T00:00:00", "to_date": f"{target}T23:59:59", "page_size": 1},
-        )
-        total = data.get("total") if isinstance(data, dict) else None
-        return JSONResponse({"date": target, "call_volume": total})
+        data = _quo_get("/calls", {"from_date": f"{target}T00:00:00", "to_date": f"{target}T23:59:59", "page_size": 1})
+        return JSONResponse({"date": target, "call_volume": data.get("total")})
+    except requests.HTTPError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
