@@ -106,5 +106,5 @@ class QUOConfig:
         return (
             f"QUOConfig(base_url={self.base_url!r}, "
             f"api_key={masked_key}, "
-            f"account_id={self.account_id!r})"
+            f"phone_number_id={self.phone_number_id!r})"
         )
