@@ -37,7 +37,7 @@ from typing import Any
 
 # ── FastAPI / Starlette ───────────────────────────────────────────────────────
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Query, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
     from starlette.applications import Starlette
@@ -181,6 +181,31 @@ app.add_middleware(
 async def health() -> JSONResponse:
     """Render and uptime monitors hit this endpoint."""
     return JSONResponse({"status": "ok", "service": "quo-voip-mcp"})
+
+
+@app.get("/call-volume")
+async def call_volume(
+    request: Request,
+    date: str = Query(default=None, description="Date in YYYY-MM-DD format (default: today)"),
+) -> JSONResponse:
+    """
+    Return the call volume for a given date.
+
+    Usage:
+        curl https://<host>/call-volume?date=2026-03-23 \\
+             -H "Authorization: Bearer <QUO_SERVER_TOKEN>"
+    """
+    _require_bearer(request)
+    from datetime import date as _date, datetime
+    target = date or str(_date.today())
+    try:
+        start = f"{target}T00:00:00"
+        end   = f"{target}T23:59:59"
+        result = _handler.svc.list_calls(page=1, page_size=1, from_date=datetime.fromisoformat(start), to_date=datetime.fromisoformat(end))
+        return JSONResponse({"date": target, "call_volume": result.total})
+    except Exception as exc:
+        logger.error("call_volume error: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @app.get("/sse")
