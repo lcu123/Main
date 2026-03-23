@@ -76,45 +76,31 @@ module.exports = async function handler(req, res) {
     try {
       const today = new Date().toISOString().slice(0, 10);
       const date  = url.searchParams.get("date") || today;
-      // participant query param overrides env var; pass "all" to fetch without filter
-      const participantParam = url.searchParams.get("participant");
-      const participant = (participantParam === null) ? PARTICIPANT : (participantParam === "all" ? "" : participantParam);
-      // Try all known phone number IDs
+      // ?participant=all → no filter; otherwise use query param or env default
+      const pParam = url.searchParams.get("participant");
+      const participant = (pParam === "all") ? "" : (pParam !== null ? pParam : PARTICIPANT);
+      const createdAfter  = `${date}T00:00:00.000Z`;
+      const createdBefore = `${date}T23:59:59.999Z`;
+      // Try both phone number IDs on the account
       const phoneIds = [PN_ID, "PNiWNztXf7"].filter(Boolean);
-      let allCalls = [];
-      for (const phoneId of phoneIds) {
-        const callParams = {
-          phoneNumberId: phoneId,
-          maxResults: 100,
-          createdAfter:  `${date}T00:00:00.000Z`,
-          createdBefore: `${date}T23:59:59.999Z`,
-        };
-        if (participant) callParams.participants = participant;
-        try {
-          const r = await openphoneGet("/v1/calls", callParams);
-          allCalls = allCalls.concat(r.data || []);
-        } catch (e) { /* skip if this number errors */ }
+      const results = [];
+      for (let i = 0; i < phoneIds.length; i++) {
+        const p = { phoneNumberId: phoneIds[i], maxResults: 50, createdAfter, createdBefore };
+        if (participant) p.participants = participant;
+        let r;
+        try { r = await openphoneGet("/v1/calls", p); } catch (e) { continue; }
+        const items = r.data || [];
+        for (let j = 0; j < items.length; j++) {
+          const call = items[j];
+          let transcript = null, summary = null;
+          try { transcript = (await openphoneGet(`/v1/call-transcripts/${call.id}`, {})).data; } catch (e) {}
+          try { summary    = (await openphoneGet(`/v1/call-summaries/${call.id}`,   {})).data; } catch (e) {}
+          results.push({ id: call.id, direction: call.direction, status: call.status,
+            duration: call.duration, createdAt: call.createdAt,
+            participants: call.participants, transcript, summary });
+        }
       }
-      const calls = { data: allCalls };
-      const calls = await openphoneGet("/v1/calls", callParams);
-      // Fetch transcript + summary for each call in parallel
-      const enriched = await Promise.all((calls.data || []).map(async (call) => {
-        const [transcript, summary] = await Promise.allSettled([
-          openphoneGet(`/v1/call-transcripts/${call.id}`, {}),
-          openphoneGet(`/v1/call-summaries/${call.id}`, {}),
-        ]);
-        return {
-          id: call.id,
-          direction: call.direction,
-          status: call.status,
-          duration: call.duration,
-          createdAt: call.createdAt,
-          participants: call.participants,
-          transcript: transcript.status === "fulfilled" ? transcript.value?.data : null,
-          summary:    summary.status    === "fulfilled" ? summary.value?.data    : null,
-        };
-      }));
-      return res.status(200).json({ date, calls: enriched });
+      return res.status(200).json({ date, calls: results });
     } catch (err) {
       return res.status(err.status || 502).json({ error: err.message });
     }
