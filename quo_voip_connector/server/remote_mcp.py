@@ -7,20 +7,22 @@ can connect to a single hosted instance — no local installation needed.
 Start locally:
     uvicorn server.remote_mcp:app --host 0.0.0.0 --port 8000
 
-Via Docker / Render:
-    docker compose up
-    # or just push to Render — it reads the Dockerfile automatically
+Hosted on Vercel:
+    Deploy via git push — Vercel picks up api/index.js automatically.
+    Set environment variables in Vercel → Settings → Environment Variables.
 
 Environment variables required:
-    QUO_API_KEY        — your QUO VOIP API key
-    QUO_SERVER_TOKEN   — a secret token you choose; every laptop needs this
+    QUO_API_KEY                 — your OpenPhone API key
+    QUO_SERVER_TOKEN            — a secret token you choose; every client needs this
+    OPENPHONE_PHONE_NUMBER_ID   — your PN... phone number ID
+    OPENPHONE_PARTICIPANT       — your E.164 business number (e.g. +19162502924)
 
 Claude Code config on each laptop  (~/.claude.json  or  .mcp.json):
     {
       "mcpServers": {
         "quo-voip": {
           "type": "sse",
-          "url": "https://your-app.onrender.com/sse",
+          "url": "https://your-app.vercel.app/sse",
           "headers": { "Authorization": "Bearer YOUR_QUO_SERVER_TOKEN" }
         }
       }
@@ -75,7 +77,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Server auth token — set QUO_SERVER_TOKEN in your Render env vars.
+# Server auth token — set QUO_SERVER_TOKEN in your Vercel env vars.
 # If not set we generate one on startup (lost on redeploy, fine for testing).
 _SERVER_TOKEN: str = os.environ.get("QUO_SERVER_TOKEN", "")
 if not _SERVER_TOKEN:
@@ -83,11 +85,11 @@ if not _SERVER_TOKEN:
     logger.warning(
         "QUO_SERVER_TOKEN is not set — using a temporary token for this session.\n"
         "  Token: %s\n"
-        "  Set QUO_SERVER_TOKEN in your Render environment variables to make it permanent.",
+        "  Set QUO_SERVER_TOKEN in your Vercel environment variables to make it permanent.",
         _SERVER_TOKEN,
     )
 
-# Render injects PORT; fall back to 8000 for local dev.
+# Fall back to 8000 for local dev.
 PORT: int = int(os.environ.get("PORT", 8000))
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -179,7 +181,7 @@ app.add_middleware(
 
 @app.get("/health", include_in_schema=False)
 async def health() -> JSONResponse:
-    """Render and uptime monitors hit this endpoint."""
+    """Uptime monitors and health checks hit this endpoint."""
     return JSONResponse({"status": "ok", "service": "quo-voip-mcp"})
 
 
@@ -226,7 +228,7 @@ async def sse_endpoint(request: Request) -> None:
           "mcpServers": {
             "quo-voip": {
               "type": "sse",
-              "url": "https://<your-app>.onrender.com/sse",
+              "url": "https://<your-app>.vercel.app/sse",
               "headers": { "Authorization": "Bearer <QUO_SERVER_TOKEN>" }
             }
           }
