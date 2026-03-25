@@ -1,0 +1,146 @@
+/**
+ * Vercel serverless entry point for the OpenPhone connector.
+ *
+ * Endpoints:
+ *   GET /health                                        → liveness check
+ *   GET /call-volume?date=YYYY-MM-DD                  → total calls for a date (requires Bearer auth)
+ *   GET /calls-detail?participant=E.164&date=YYYY-MM-DD → calls with transcripts+summaries (requires Bearer auth)
+ *
+ * Environment variables:
+ *   QUO_API_KEY                 OpenPhone API key (sent as raw Authorization header)
+ *   QUO_SERVER_TOKEN            Bearer token to protect this endpoint
+ *   OPENPHONE_PHONE_NUMBER_ID   PN... phone number ID (required by OpenPhone /v1/calls)
+ *   OPENPHONE_PARTICIPANT       E.164 number to filter calls (required for /calls-detail, optional for /call-volume)
+ *   QUO_BASE_URL                Override base URL (default: https://api.openphone.com)
+ */
+
+const https = require("https");
+const http = require("http");
+const { URL } = require("url");
+const crypto = require("crypto");
+
+const API_KEY    = process.env.QUO_API_KEY || "";
+const TOKEN      = process.env.QUO_SERVER_TOKEN || "";
+const PN_ID      = process.env.OPENPHONE_PHONE_NUMBER_ID || "";
+const PARTICIPANT= process.env.OPENPHONE_PARTICIPANT || "";
+const BASE_URL   = (process.env.QUO_BASE_URL || "https://api.openphone.com").replace(/\/$/, "");
+
+function requireBearer(req, res) {
+  const auth = req.headers["authorization"] || "";
+  if (!auth.startsWith("Bearer ")) {
+    res.status(401).json({ error: "Authorization: Bearer <token> required" });
+    return false;
+  }
+  const token = auth.slice(7);
+  if (!TOKEN || !crypto.timingSafeEqual(Buffer.from(token), Buffer.from(TOKEN))) {
+    res.status(403).json({ error: "Invalid token" });
+    return false;
+  }
+  return true;
+}
+
+function openphoneGet(path, params) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(`${BASE_URL}${path}`);
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+    const mod = url.protocol === "https:" ? https : http;
+    const req = mod.get(
+      url.toString(),
+      // OpenPhone uses a raw API key — no "Bearer" prefix
+      { headers: { Authorization: API_KEY, Accept: "application/json" } },
+      (resp) => {
+        let data = "";
+        resp.on("data", (c) => (data += c));
+        resp.on("end", () => {
+          if (resp.statusCode >= 400) {
+            return reject(Object.assign(new Error(data), { status: resp.statusCode }));
+          }
+          try { resolve(JSON.parse(data)); } catch { resolve(data); }
+        });
+      }
+    );
+    req.on("error", reject);
+  });
+}
+
+module.exports = async function handler(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+
+  // ── /health ───────────────────────────────────────────────────────────────
+  if (url.pathname === "/health" || url.pathname === "/api/index") {
+    return res.status(200).json({ status: "ok", service: "openphone-mcp" });
+  }
+
+  // ── /calls-detail ────────────────────────────────────────────────────────
+  if (url.pathname === "/calls-detail") {
+    if (!requireBearer(req, res)) return;
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const date  = url.searchParams.get("date") || today;
+      // ?participant=<E.164> overrides OPENPHONE_PARTICIPANT env var (required)
+      const pParam = url.searchParams.get("participant");
+      const participant = pParam !== null ? pParam : PARTICIPANT;
+      if (!participant) {
+        return res.status(400).json({ error: "participant query param (or OPENPHONE_PARTICIPANT env var) is required" });
+      }
+      // ?nodate=1 → skip date filter (pull most recent calls regardless of date)
+      const noDate = url.searchParams.get("nodate") === "1";
+      const createdAfter  = `${date}T00:00:00.000Z`;
+      const createdBefore = `${date}T23:59:59.999Z`;
+      if (!PN_ID) {
+        return res.status(500).json({ error: "OPENPHONE_PHONE_NUMBER_ID env var is required" });
+      }
+      const p = { phoneNumberId: PN_ID, maxResults: 50, participants: participant };
+      if (!noDate) { p.createdAfter = createdAfter; p.createdBefore = createdBefore; }
+      const r = await openphoneGet("/v1/calls", p);
+      const items = r.data || [];
+      const results = [];
+      for (let j = 0; j < items.length; j++) {
+        const call = items[j];
+        let transcript = null, summary = null;
+        try { transcript = (await openphoneGet(`/v1/call-transcripts/${call.id}`, {})).data; } catch (e) {}
+        try { summary    = (await openphoneGet(`/v1/call-summaries/${call.id}`,   {})).data; } catch (e) {}
+        results.push({ id: call.id, direction: call.direction, status: call.status,
+          duration: call.duration, createdAt: call.createdAt,
+          participants: call.participants, transcript, summary });
+      }
+      return res.status(200).json({ date, calls: results });
+    } catch (err) {
+      return res.status(err.status || 502).json({ error: err.message });
+    }
+  }
+
+  // ── /call-volume ──────────────────────────────────────────────────────────
+  if (url.pathname === "/call-volume") {
+    if (!requireBearer(req, res)) return;
+
+    if (!PN_ID) {
+      return res.status(500).json({
+        error: "OPENPHONE_PHONE_NUMBER_ID env var is required",
+      });
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const date  = url.searchParams.get("date") || today;
+
+    // Build ISO 8601 bounds for the requested date (UTC)
+    const createdAfter  = `${date}T00:00:00.000Z`;
+    const createdBefore = `${date}T23:59:59.999Z`;
+
+    try {
+      // Fetch with maxResults=1 to get totalItems cheaply.
+      // participants is optional — omit it to count all calls for the phone number.
+      const params = { phoneNumberId: PN_ID, maxResults: 1, createdAfter, createdBefore };
+      if (PARTICIPANT) params.participants = PARTICIPANT;
+      const data = await openphoneGet("/v1/calls", params);
+      return res.status(200).json({
+        date,
+        call_volume: data.totalItems ?? null,
+      });
+    } catch (err) {
+      return res.status(err.status || 502).json({ error: err.message });
+    }
+  }
+
+  res.status(404).json({ error: "Not found" });
+};

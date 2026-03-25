@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "quo-voip": {
+      "command": "python",
+      "args": ["-m", "mcp.server"],
+      "cwd": "/path/to/quo_voip_connector",
+      "env": {
+        "QUO_API_KEY": "your_api_key_here",
+        "QUO_BASE_URL": "https://api.quo.voip/v1",
+        "QUO_ACCOUNT_ID": "acct_your_account_id"
+      }
+    }
+  }
+}
