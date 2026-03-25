@@ -9,7 +9,7 @@
  *   QUO_API_KEY                 OpenPhone API key (sent as raw Authorization header)
  *   QUO_SERVER_TOKEN            Bearer token to protect this endpoint
  *   OPENPHONE_PHONE_NUMBER_ID   PN... phone number ID (required by OpenPhone /v1/calls)
- *   OPENPHONE_PARTICIPANT       (optional) E.164 number to filter calls by a specific party
+ *   OPENPHONE_PARTICIPANT       E.164 number to filter calls (required for /calls-detail, optional for /call-volume)
  *   QUO_BASE_URL                Override base URL (default: https://api.openphone.com)
  */
 
@@ -78,30 +78,30 @@ module.exports = async function handler(req, res) {
       const date  = url.searchParams.get("date") || today;
       // ?participant=all → no filter; otherwise use query param or env default
       const pParam = url.searchParams.get("participant");
-      const participant = (pParam === "all") ? "" : (pParam !== null ? pParam : PARTICIPANT);
+      const participant = pParam !== null ? pParam : PARTICIPANT;
+      if (!participant) {
+        return res.status(400).json({ error: "participant query param (or OPENPHONE_PARTICIPANT env var) is required" });
+      }
       // ?nodate=1 → skip date filter (pull most recent calls regardless of date)
       const noDate = url.searchParams.get("nodate") === "1";
       const createdAfter  = `${date}T00:00:00.000Z`;
       const createdBefore = `${date}T23:59:59.999Z`;
-      // Try both phone number IDs on the account
-      const phoneIds = [PN_ID, "PNiWNztXf7"].filter(Boolean);
+      if (!PN_ID) {
+        return res.status(500).json({ error: "OPENPHONE_PHONE_NUMBER_ID env var is required" });
+      }
+      const p = { phoneNumberId: PN_ID, maxResults: 50, participants: participant };
+      if (!noDate) { p.createdAfter = createdAfter; p.createdBefore = createdBefore; }
+      const r = await openphoneGet("/v1/calls", p);
+      const items = r.data || [];
       const results = [];
-      for (let i = 0; i < phoneIds.length; i++) {
-        const p = { phoneNumberId: phoneIds[i], maxResults: 50 };
-        if (!noDate) { p.createdAfter = createdAfter; p.createdBefore = createdBefore; }
-        if (participant) p.participants = participant;
-        let r;
-        try { r = await openphoneGet("/v1/calls", p); } catch (e) { continue; }
-        const items = r.data || [];
-        for (let j = 0; j < items.length; j++) {
-          const call = items[j];
-          let transcript = null, summary = null;
-          try { transcript = (await openphoneGet(`/v1/call-transcripts/${call.id}`, {})).data; } catch (e) {}
-          try { summary    = (await openphoneGet(`/v1/call-summaries/${call.id}`,   {})).data; } catch (e) {}
-          results.push({ id: call.id, direction: call.direction, status: call.status,
-            duration: call.duration, createdAt: call.createdAt,
-            participants: call.participants, transcript, summary });
-        }
+      for (let j = 0; j < items.length; j++) {
+        const call = items[j];
+        let transcript = null, summary = null;
+        try { transcript = (await openphoneGet(`/v1/call-transcripts/${call.id}`, {})).data; } catch (e) {}
+        try { summary    = (await openphoneGet(`/v1/call-summaries/${call.id}`,   {})).data; } catch (e) {}
+        results.push({ id: call.id, direction: call.direction, status: call.status,
+          duration: call.duration, createdAt: call.createdAt,
+          participants: call.participants, transcript, summary });
       }
       return res.status(200).json({ date, calls: results });
     } catch (err) {
