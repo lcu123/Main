@@ -2,8 +2,9 @@
  * Vercel serverless entry point for the OpenPhone connector.
  *
  * Endpoints:
- *   GET /health                           → liveness check
- *   GET /call-volume?date=YYYY-MM-DD      → total calls for a date (requires Bearer auth)
+ *   GET /health                                        → liveness check
+ *   GET /call-volume?date=YYYY-MM-DD                  → total calls for a date (requires Bearer auth)
+ *   GET /calls-detail?participant=E.164&date=YYYY-MM-DD → calls with transcripts+summaries (requires Bearer auth)
  *
  * Environment variables:
  *   QUO_API_KEY                 OpenPhone API key (sent as raw Authorization header)
@@ -70,13 +71,13 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({ status: "ok", service: "openphone-mcp" });
   }
 
-  // ── /calls-detail (temporary) ────────────────────────────────────────────
+  // ── /calls-detail ────────────────────────────────────────────────────────
   if (url.pathname === "/calls-detail") {
     if (!requireBearer(req, res)) return;
     try {
       const today = new Date().toISOString().slice(0, 10);
       const date  = url.searchParams.get("date") || today;
-      // ?participant=all → no filter; otherwise use query param or env default
+      // ?participant=<E.164> overrides OPENPHONE_PARTICIPANT env var (required)
       const pParam = url.searchParams.get("participant");
       const participant = pParam !== null ? pParam : PARTICIPANT;
       if (!participant) {

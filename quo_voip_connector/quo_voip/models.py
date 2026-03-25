@@ -93,7 +93,7 @@ class Call:
             direction=CallDirection(data["direction"]),
             status=CallStatus(data["status"]),
             created_at=datetime.fromisoformat(data["createdAt"]),
-            participants=data.get("participants", []),
+            participants=data.get("participants") or [],
             user_id=data.get("userId"),
             answered_at=_dt(data.get("answeredAt")),
             completed_at=_dt(data.get("completedAt")),
@@ -299,7 +299,7 @@ class CallSummary:
             "summary": self.summary,
             "nextSteps": self.next_steps,
             "jobs": [{"icon": j.icon, "name": j.name,
-                      "results": [{"name": r.name, "value": r.value} for r in j.results]}
+                      "result": {"data": [{"name": r.name, "value": r.value} for r in j.results]}}
                      for j in self.jobs] if self.jobs else None,
         }
 

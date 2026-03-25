@@ -19,7 +19,7 @@ import hmac
 import json
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Callable, Optional
 
@@ -44,7 +44,7 @@ class WebhookEvent:
         self.event_type: str = raw.get("event", "unknown")
         self.event_id: str = raw.get("id", "")
         self.occurred_at: datetime = datetime.fromisoformat(
-            raw.get("occurred_at", datetime.utcnow().isoformat())
+            raw.get("occurred_at", datetime.now(timezone.utc).isoformat())
         )
         self.payload: dict = raw.get("data", {})
         self._raw = raw
