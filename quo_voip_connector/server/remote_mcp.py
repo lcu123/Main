@@ -199,10 +199,18 @@ async def call_volume(
     from datetime import date as _date, datetime
     target = date or str(_date.today())
     try:
+        participant = os.environ.get("OPENPHONE_PARTICIPANT", "")
+        if not participant:
+            raise HTTPException(status_code=500, detail="OPENPHONE_PARTICIPANT env var is required")
         start = f"{target}T00:00:00"
         end   = f"{target}T23:59:59"
-        result = _handler.svc.list_calls(page=1, page_size=1, from_date=datetime.fromisoformat(start), to_date=datetime.fromisoformat(end))
-        return JSONResponse({"date": target, "call_volume": result.total})
+        result = _handler.svc.list_calls(
+            participants=[participant],
+            created_after=datetime.fromisoformat(start),
+            created_before=datetime.fromisoformat(end),
+            max_results=1,
+        )
+        return JSONResponse({"date": target, "call_volume": result.total_items})
     except Exception as exc:
         logger.error("call_volume error: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc))

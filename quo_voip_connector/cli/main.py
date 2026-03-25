@@ -80,7 +80,7 @@ def transcript_get(ctx, transcription_id, fmt, no_timestamps, no_speakers):
     """Fetch a transcription by its ID."""
     svc = TranscriptionService(ctx.obj["config"])
     try:
-        tx = svc.get(transcription_id)
+        tx = svc.get_transcript(transcription_id)
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
@@ -103,7 +103,7 @@ def transcript_call(ctx, call_id, fmt):
     """Fetch the transcription for a specific call."""
     svc = TranscriptionService(ctx.obj["config"])
     try:
-        tx = svc.get_for_call(call_id)
+        tx = svc.get_transcript(call_id)
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
@@ -115,53 +115,43 @@ def transcript_call(ctx, call_id, fmt):
 
 
 @transcript.command("list")
-@click.option("--page", default=1, show_default=True)
-@click.option("--page-size", default=20, show_default=True)
-@click.option("--status", type=click.Choice([s.value for s in TranscriptionStatus]))
+@click.option("--participant", required=True, help="E.164 phone number to filter calls by")
+@click.option("--max-results", default=20, show_default=True)
 @click.option("--from", "from_date", help="ISO 8601 start date")
 @click.option("--to", "to_date", help="ISO 8601 end date")
-@click.option("--phone", help="Filter by phone number")
-@click.option("--language", help="Filter by language code")
-@click.option("--direction", type=click.Choice(["inbound", "outbound"]))
 @click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table")
 @click.pass_context
-def transcript_list(ctx, page, page_size, status, from_date, to_date, phone, language, direction, fmt):
-    """List transcriptions with optional filters."""
+def transcript_list(ctx, participant, max_results, from_date, to_date, fmt):
+    """List calls and their transcripts for a participant."""
     svc = TranscriptionService(ctx.obj["config"])
     try:
-        result = svc.list(
-            page=page,
-            page_size=page_size,
-            status=TranscriptionStatus(status) if status else None,
-            from_date=datetime.fromisoformat(from_date) if from_date else None,
-            to_date=datetime.fromisoformat(to_date) if to_date else None,
-            phone_number=phone,
-            language=language,
-            call_direction=direction,
+        result = svc.list_calls(
+            participants=[participant],
+            max_results=max_results,
+            created_after=datetime.fromisoformat(from_date) if from_date else None,
+            created_before=datetime.fromisoformat(to_date) if to_date else None,
         )
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
     if fmt == "json":
-        _print_json([t.to_dict() for t in result.items])
+        _print_json([c.to_dict() for c in result.items])
     else:
         _print_table(
-            headers=["ID", "Call ID", "Status", "Language", "Duration", "Words", "Created"],
+            headers=["Call ID", "Direction", "Status", "Duration", "Created"],
             rows=[
                 [
-                    t.id,
-                    t.call_id,
-                    t.status.value,
-                    t.language,
-                    f"{t.duration_seconds or '?'}s",
-                    str(t.word_count or "?"),
-                    t.created_at.strftime("%Y-%m-%d %H:%M"),
+                    c.id,
+                    c.direction.value,
+                    c.status.value,
+                    f"{c.duration or '?'}s",
+                    c.created_at.strftime("%Y-%m-%d %H:%M"),
                 ]
-                for t in result.items
+                for c in result.items
             ],
         )
-        click.echo(f"\nPage {result.page} | {len(result.items)} of {result.total} | More: {result.has_more}")
+        click.echo(f"\n{len(result.items)} of {result.total_items} calls | More: {result.has_more}")
 
 
 @transcript.command("search")
@@ -174,25 +164,9 @@ def transcript_list(ctx, page, page_size, status, from_date, to_date, phone, lan
 @click.pass_context
 def transcript_search(ctx, query, from_date, to_date, page, page_size, fmt):
     """Search transcriptions for text content."""
-    svc = TranscriptionService(ctx.obj["config"])
-    try:
-        result = svc.search(
-            query=query,
-            from_date=datetime.fromisoformat(from_date) if from_date else None,
-            to_date=datetime.fromisoformat(to_date) if to_date else None,
-            page=page,
-            page_size=page_size,
-        )
-    except Exception as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
-
-    if fmt == "json":
-        _print_json([t.to_dict() for t in result.items])
-    else:
-        click.echo(f"Found {result.total} transcription(s) matching '{query}':\n")
-        for t in result.items:
-            click.echo(f"  [{t.id}] call={t.call_id}  {t.created_at.strftime('%Y-%m-%d %H:%M')}")
+    click.echo("Error: full-text search is not supported by the OpenPhone API.", err=True)
+    click.echo("Use 'transcript get <call_id>' to fetch a specific transcript.", err=True)
+    sys.exit(1)
 
 
 @transcript.command("export")
@@ -206,7 +180,7 @@ def transcript_export(ctx, transcription_ids, fmt, output):
     transcriptions = []
     for tid in transcription_ids:
         try:
-            transcriptions.append(svc.get(tid))
+            transcriptions.append(svc.get_transcript(tid))
         except Exception as exc:
             click.echo(f"Warning: could not fetch {tid}: {exc}", err=True)
 
@@ -215,9 +189,16 @@ def transcript_export(ctx, transcription_ids, fmt, output):
         sys.exit(1)
 
     if fmt == "json":
-        content = svc.export_json(transcriptions)
+        content = json.dumps([t.to_dict() for t in transcriptions], indent=2, default=str)
     elif fmt == "csv":
-        content = svc.export_csv(transcriptions)
+        import csv, io
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["call_id", "status", "duration", "created_at", "text"])
+        for t in transcriptions:
+            writer.writerow([t.call_id, t.status.value, t.duration,
+                             t.created_at.isoformat(), t.full_text or ""])
+        content = buf.getvalue()
     else:
         content = "\n\n".join(svc.export_text(t) for t in transcriptions)
 
@@ -244,7 +225,7 @@ def transcript_wait(ctx, call_id, timeout, poll_interval, fmt):
         click.echo(f"  → Status: {status.value}", err=True)
 
     try:
-        tx = svc.wait_for_transcription(
+        tx = svc.wait_for_transcript(
             call_id,
             poll_interval=float(poll_interval),
             timeout=float(timeout),
@@ -268,27 +249,21 @@ def calls():
 
 
 @calls.command("list")
-@click.option("--page", default=1)
-@click.option("--page-size", default=20)
-@click.option("--status")
-@click.option("--from", "from_date")
-@click.option("--to", "to_date")
-@click.option("--phone")
-@click.option("--has-transcript", is_flag=True, default=False)
+@click.option("--participant", required=True, help="E.164 phone number to filter calls by")
+@click.option("--max-results", default=20, show_default=True)
+@click.option("--from", "from_date", help="ISO 8601 start date")
+@click.option("--to", "to_date", help="ISO 8601 end date")
 @click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table")
 @click.pass_context
-def calls_list(ctx, page, page_size, status, from_date, to_date, phone, has_transcript, fmt):
+def calls_list(ctx, participant, max_results, from_date, to_date, fmt):
     """List call records."""
     svc = TranscriptionService(ctx.obj["config"])
     try:
         result = svc.list_calls(
-            page=page,
-            page_size=page_size,
-            status=status,
-            from_date=datetime.fromisoformat(from_date) if from_date else None,
-            to_date=datetime.fromisoformat(to_date) if to_date else None,
-            phone_number=phone,
-            has_transcription=True if has_transcript else None,
+            participants=[participant],
+            max_results=max_results,
+            created_after=datetime.fromisoformat(from_date) if from_date else None,
+            created_before=datetime.fromisoformat(to_date) if to_date else None,
         )
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
@@ -298,19 +273,20 @@ def calls_list(ctx, page, page_size, status, from_date, to_date, phone, has_tran
         _print_json([c.to_dict() for c in result.items])
     else:
         _print_table(
-            headers=["ID", "Status", "Direction", "From", "To", "Duration", "Has Transcript", "Date"],
+            headers=["ID", "Direction", "Status", "Participants", "Duration", "Date"],
             rows=[
                 [
-                    c.id, c.status.value, c.direction,
-                    c.from_number, c.to_number,
-                    f"{c.duration_seconds or '?'}s",
-                    "✓" if c.transcription_id else "✗",
-                    c.started_at.strftime("%Y-%m-%d %H:%M"),
+                    c.id,
+                    c.direction.value,
+                    c.status.value,
+                    ", ".join(c.participants),
+                    f"{c.duration or '?'}s",
+                    c.created_at.strftime("%Y-%m-%d %H:%M"),
                 ]
                 for c in result.items
             ],
         )
-        click.echo(f"\n{len(result.items)} of {result.total} calls")
+        click.echo(f"\n{len(result.items)} of {result.total_items} calls | More: {result.has_more}")
 
 
 # ── standalone servers ────────────────────────────────────────────────────────

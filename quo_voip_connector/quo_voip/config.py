@@ -89,6 +89,8 @@ class QUOConfig:
             errors.append("QUO_API_KEY is required")
         if not self.base_url:
             errors.append("QUO_BASE_URL is required")
+        if not self.phone_number_id:
+            errors.append("OPENPHONE_PHONE_NUMBER_ID is required")
         return errors
 
     def ensure_valid(self) -> None:

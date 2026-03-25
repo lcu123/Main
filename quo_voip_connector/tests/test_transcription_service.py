@@ -140,10 +140,8 @@ class TestListCalls:
 
     def test_raises_without_phone_number_id(self, config):
         config.phone_number_id = None
-        svc = TranscriptionService(config)
-        svc.client = MagicMock()
-        with pytest.raises(ValueError, match="phone_number_id"):
-            svc.list_calls(participants=["+15559876543"])
+        with pytest.raises(ValueError, match="OPENPHONE_PHONE_NUMBER_ID"):
+            TranscriptionService(config)
 
     def test_total_items(self, svc):
         svc.client.get.return_value = _calls_list_payload(total=42)

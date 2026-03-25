@@ -27,7 +27,7 @@ def _make_event(event_type="transcription.completed", call_id="call_001", txn_id
 
 @pytest.fixture
 def config():
-    return QUOConfig(api_key="test-key", webhook_secret="my-secret")
+    return QUOConfig(api_key="test-key", webhook_secret="my-secret", phone_number_id="PNtest001")
 
 
 @pytest.fixture
@@ -69,7 +69,7 @@ class TestWebhookHandler:
     def test_dispatch_calls_callback(self, handler):
         from quo_voip.models import Transcription
         mock_tx = MagicMock(spec=Transcription)
-        handler._svc.get.return_value = mock_tx
+        handler._svc.get_transcript.return_value = mock_tx
 
         called_with = []
 
@@ -89,7 +89,7 @@ class TestWebhookHandler:
         handler.dispatch(evt)
 
     def test_callback_exception_does_not_propagate(self, handler):
-        handler._svc.get.side_effect = Exception("API down")
+        handler._svc.get_transcript.side_effect = Exception("API down")
 
         def bad_cb(event, transcription=None):
             raise RuntimeError("Oops")

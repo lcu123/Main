@@ -105,7 +105,7 @@ class WebhookHandler:
         extra_args: tuple = ()
         if event.event_type == EVENT_TRANSCRIPTION_COMPLETED and event.transcription_id:
             try:
-                tx = self._svc.get(event.transcription_id)
+                tx = self._svc.get_transcript(event.transcription_id)
                 extra_args = (tx,)
             except Exception as exc:
                 logger.warning("Could not fetch transcription %s: %s", event.transcription_id, exc)

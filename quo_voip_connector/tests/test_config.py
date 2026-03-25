@@ -21,7 +21,7 @@ class TestQUOConfig:
         assert any("QUO_API_KEY" in e for e in errors)
 
     def test_validate_ok(self):
-        config = QUOConfig(api_key="real-key")
+        config = QUOConfig(api_key="real-key", phone_number_id="PNtest001")
         assert config.validate() == []
 
     def test_ensure_valid_raises(self):
