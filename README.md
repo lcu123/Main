@@ -67,7 +67,7 @@ The MCP URL is the password. Anyone holding it has the access below, so treat it
 7. **Attribution.** Every write carries `FR_DEFAULT_EMPLOYEE_ID`, so bot activity is visible in FieldRoutes' changelog.
 8. **Quota.** FieldRoutes allows 3,000 reads and 3,000 writes per office per day, shared with every other integration. The server counts its own calls, reports them in `health_check`, and refuses non-essential calls just short of the limit rather than letting FieldRoutes lock the office out. The counter resets at midnight in `TZ` and on restart.
 
-The server never logs request paths (they'd contain the secret) or request bodies (they'd contain the API key).
+The server never logs request paths (they'd contain the secret) or request bodies (they'd contain the API key). FieldRoutes also echoes your API key and token back inside every response; the client strips that before any tool, log, or chat can see it.
 
 ## Deploy on Railway
 

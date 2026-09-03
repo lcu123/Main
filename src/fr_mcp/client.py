@@ -24,6 +24,28 @@ GET_CHUNK_SIZE = 1000
 DEFAULT_DAILY_LIMIT = 3000
 QUOTA_REFUSE_FRACTION = 0.95  # leave ~5% headroom so a chatty session can't lock the office out
 
+# Top-level keys FieldRoutes puts on every response besides the data itself
+# (verified live). `ignoredParams` is a list and comes *before* the data key,
+# so "first list in the body" is never a safe way to find records.
+_RESPONSE_METADATA_KEYS = frozenset(
+    {
+        "success",
+        "errorMessage",
+        "idName",
+        "propertyName",
+        "propertyNameData",
+        "count",
+        "params",
+        "tokenUsage",
+        "tokenLimits",
+        "requestAPIKeyType",
+        "requestAction",
+        "endpoint",
+        "ignoredParams",
+        "processingTime",
+    }
+)
+
 
 def is_read_action(action: str) -> bool:
     """`search`, `get`, `getAddOns`, `summary`... read; everything else writes."""
@@ -128,6 +150,21 @@ class UsageCounter:
             self._reads += 1
         else:
             self._writes += 1
+
+    def sync(self, token_usage: Any) -> bool:
+        """Adopt FieldRoutes' own counts from the `tokenUsage` block it puts on every
+        response. Those are authoritative (they include other integrations' calls and
+        survive our restarts), so they beat our estimate. Returns False if absent."""
+        if not isinstance(token_usage, dict):
+            return False
+        try:
+            reads = int(token_usage["requestsReadToday"])
+            writes = int(token_usage["requestsWriteToday"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        self._roll()
+        self._reads, self._writes = reads, writes
+        return True
 
     def snapshot(self) -> dict[str, Any]:
         self._roll()
@@ -283,10 +320,18 @@ class FieldRoutesClient:
                     action=action,
                 ) from exc
 
+            # FieldRoutes echoes the whole request -- authentication key and
+            # token included -- back under "params" on every response. Strip
+            # it here so no tool output or log downstream can ever carry it.
+            if isinstance(data, dict):
+                data.pop("params", None)
+
             # A response (even a business-logic failure) means the request
             # counted against the real FieldRoutes quota; a transport error or
             # a retried 5xx above never reached FieldRoutes, so isn't counted.
-            self.usage.record(is_read)
+            # Prefer FieldRoutes' own authoritative counts when it sends them.
+            if not (isinstance(data, dict) and self.usage.sync(data.get("tokenUsage"))):
+                self.usage.record(is_read)
 
             if not data.get("success", False):
                 raise FieldRoutesError(
@@ -346,21 +391,31 @@ class FieldRoutesClient:
 
     @staticmethod
     def extract_records(entity: str, data: dict[str, Any]) -> list[dict[str, Any]]:
-        """Pull the record list out of a `get` response.
+        """Pull the record list out of a `get` or `search?includeData=1` response.
 
-        FieldRoutes nests bulk-get results under an entity-named key; fall back
-        to the first list-valued key in the body (other than metadata) so a
-        naming mismatch degrades gracefully instead of silently dropping data.
+        Verified live: the records sit under the *plural* entity name
+        (`offices`, not `office`), and the response says which key that is --
+        `propertyNameData` on a search, `propertyName` on a get (on a search,
+        `propertyName` is the ID-list key instead). Trust those first, then the
+        plural/singular names, and only then scan for a list that isn't one of
+        FieldRoutes' metadata fields (`ignoredParams` is a list and precedes
+        the data, which is exactly how the old "first list wins" guess failed).
         """
-        records = data.get(entity)
-        if isinstance(records, list):
-            return records
+        candidates: list[str] = []
+        for name_key in ("propertyNameData", "propertyName"):
+            key = data.get(name_key)
+            if isinstance(key, str) and not key.endswith("IDs"):
+                candidates.append(key)
+        candidates += [f"{entity}s", entity]
+        for key in candidates:
+            records = data.get(key)
+            if isinstance(records, list):
+                return records
         for key, value in data.items():
-            if key in ("success", "errorMessage", "idName", "propertyName", "count"):
+            if key in _RESPONSE_METADATA_KEYS or key.endswith("IDs") or "NoDataExported" in key:
                 continue
-            if key.endswith("IDs") or "NoDataExported" in key or not isinstance(value, list):
-                continue
-            return value
+            if isinstance(value, list):
+                return value
         return []
 
     async def search_and_get(

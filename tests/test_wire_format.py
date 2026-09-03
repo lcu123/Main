@@ -160,6 +160,9 @@ class FakeFR:
         self.requests: list[Req] = []
         self.fail_with: str | None = None
         self.next_status: int | None = None
+        # FieldRoutes' own per-office counters, reported back on every response.
+        self.reads_today = 0
+        self.writes_today = 0
 
     # -- request plumbing ----------------------------------------------
 
@@ -176,14 +179,13 @@ class FakeFR:
             status, self.next_status = self.next_status, None
             return httpx.Response(status, text="upstream error")
         if form.get("authenticationKey") != ["key"] or form.get("authenticationToken") != ["token"]:
-            return httpx.Response(200, json={"success": False, "errorMessage": "Invalid authentication"})
-        if self.fail_with:
+            body: dict[str, Any] = {"success": False, "errorMessage": "Invalid authentication"}
+        elif self.fail_with:
             msg, self.fail_with = self.fail_with, None
-            return httpx.Response(200, json={"success": False, "errorMessage": msg})
-
-        if action == "search":
-            return httpx.Response(200, json=self._search(entity, form))
-        if action == "get":
+            body = {"success": False, "errorMessage": msg}
+        elif action == "search":
+            body = self._search(entity, form)
+        elif action == "get":
             id_field = server._id_param(entity)
             ids = [int(i) for i in form.get(f"{id_field}[]", [])]
             assert len(ids) <= 1000, "get must be chunked at 1000"
@@ -193,8 +195,43 @@ class FakeFR:
                 records = [r for r in self.data.get(entity, {}).values() if r.get("customerID") in ids]
             else:
                 records = [self.data[entity][i] for i in ids if i in self.data.get(entity, {})]
-            return httpx.Response(200, json={"success": True, entity: records})
-        return httpx.Response(200, json=self._write(entity, action, form))
+            # Verified live: records sit under the plural name, and the
+            # response says so via propertyName.
+            body = {"success": True, "count": len(records), "propertyName": f"{entity}s", f"{entity}s": records}
+        else:
+            body = self._write(entity, action, form)
+        return httpx.Response(200, json=self._envelope(entity, action, form, body))
+
+    def _envelope(self, entity: str, action: str, form: dict[str, list[str]], body: dict[str, Any]) -> dict[str, Any]:
+        """Wrap a body the way the real API does (verified live on office/get and
+        office/search): it echoes the whole request -- auth key and token included --
+        under `params`, reports its own quota counters, and puts the list-valued
+        `ignoredParams` *before* the data key."""
+        if action in ("search", "summary") or action.startswith("get"):
+            self.reads_today += 1
+        else:
+            self.writes_today += 1
+        return {
+            "params": {"endpoint": entity, "action": action, **{k: v[0] for k, v in form.items()}},
+            "tokenUsage": {
+                "requestsReadToday": self.reads_today,
+                "requestsWriteToday": self.writes_today,
+                "requestsReadInLastMinute": 1,
+                "requestsWriteInLastMinute": 0,
+            },
+            "tokenLimits": {
+                "limitReadRequestsPerMinute": 60,
+                "limitReadRequestsPerDay": 3000,
+                "limitWriteRequestsPerMinute": 60,
+                "limitWriteRequestsPerDay": 3000,
+            },
+            "requestAPIKeyType": "standard",
+            "requestAction": action,
+            "endpoint": entity,
+            "ignoredParams": [],
+            "processingTime": "1 milliseconds",
+            **body,
+        }
 
     # -- search semantics ----------------------------------------------
 
@@ -205,16 +242,20 @@ class FakeFR:
                 continue
             records = [r for r in records if self._matches(r, key, values[0])]
         ids = [self._id_of(entity, r) for r in records]
+        # Verified live: on a search, propertyName names the ID list; with
+        # includeData the records sit under the plural name and
+        # propertyNameData names that key.
         out: dict[str, Any] = {
             "success": True,
-            "idName": f"{entity}ID",
-            "propertyName": f"{entity}IDs",
+            "idName": f"{entity}IDs",
+            "count": len(ids),
             f"{entity}IDs": ids,
+            "propertyName": f"{entity}IDs",
         }
         if form.get("includeData") == ["1"]:
-            out[entity] = records[:1000]
-            if len(records) > 1000:
-                out[f"{entity}IDsNoDataExported"] = ids[1000:]
+            out[f"{entity}IDsNoDataExported"] = ids[1000:]
+            out[f"{entity}s"] = records[:1000]
+            out["propertyNameData"] = f"{entity}s"
         return out
 
     @staticmethod
@@ -395,6 +436,50 @@ async def test_search_and_get_paginates_in_chunks_of_1000() -> None:
     assert len(rows) == 2500
     gets = [r for r in fake.requests if r.action == "get"]
     assert [len(r.form["widgetIDs[]"]) for r in gets] == [1000, 1000, 500]
+
+
+async def test_call_strips_auth_echo_from_every_response() -> None:
+    fake = FakeFR()
+    async with _client_for(fake) as client:
+        data = await client.call("office", "search")
+        written = await client.call("note", "create", {"customerID": 1})
+    for body in (data, written):
+        assert "params" not in body
+        dumped = json.dumps(body)
+        assert "authenticationKey" not in dumped and "authenticationToken" not in dumped
+    # the rest of the envelope is harmless and stays
+    assert data["tokenUsage"]["requestsReadToday"] == 1
+
+
+async def test_get_finds_records_under_the_plural_data_key() -> None:
+    fake = FakeFR()
+    async with _client_for(fake) as client:
+        rows = await client.get("office", [7])
+    assert rows[0]["officeName"] == "Zest Lawn & Pest"
+
+
+def test_extract_records_trusts_property_name_and_never_a_metadata_list() -> None:
+    get = {"success": True, "ignoredParams": [], "count": 1, "propertyName": "offices", "offices": [{"officeID": 1}]}
+    assert FieldRoutesClient.extract_records("office", get) == [{"officeID": 1}]
+    search = {
+        "success": True, "ignoredParams": [], "officeIDs": [1], "propertyName": "officeIDs",
+        "officeIDsNoDataExported": [], "offices": [{"officeID": 1}], "propertyNameData": "offices",
+    }
+    assert FieldRoutesClient.extract_records("office", search) == [{"officeID": 1}]
+    # no name hints at all: plural fallback, and a metadata list is never mistaken for data
+    assert FieldRoutesClient.extract_records("office", {"ignoredParams": [], "offices": [{"a": 1}]}) == [{"a": 1}]
+    assert FieldRoutesClient.extract_records("office", {"ignoredParams": [], "officeIDs": [1]}) == []
+
+
+async def test_usage_counter_adopts_fieldroutes_authoritative_counts() -> None:
+    fake = FakeFR()
+    fake.reads_today = 40  # other integrations already spent some of today's shared quota
+    async with _client_for(fake) as client:
+        await client.call("office", "search")
+        assert client.usage.snapshot()["reads"] == 41
+        await client.call("note", "create", {"customerID": 1})
+        snap = client.usage.snapshot()
+    assert snap["reads"] == 41 and snap["writes"] == 1
 
 
 async def test_search_include_data_returns_first_1000() -> None:
