@@ -1,0 +1,37 @@
+{
+  "_comment": "Captured live from https://zestlawnpest.fieldroutes.com/api/office/search with no filters (FR_OFFICE_ID=1 auto-applied) on 2026-09-03. authenticationKey/Token scrubbed; everything else verbatim.",
+  "entity": "office",
+  "action": "search",
+  "request_params": {"officeID": 1},
+  "response": {
+    "params": {
+      "endpoint": "office",
+      "action": "search",
+      "officeID": "1",
+      "authenticationKey": "SCRUBBED",
+      "authenticationToken": "SCRUBBED"
+    },
+    "tokenUsage": {
+      "requestsReadToday": 7,
+      "requestsWriteToday": 0,
+      "requestsReadInLastMinute": 1,
+      "requestsWriteInLastMinute": 0
+    },
+    "tokenLimits": {
+      "limitReadRequestsPerMinute": 60,
+      "limitReadRequestsPerDay": 3000,
+      "limitWriteRequestsPerMinute": 60,
+      "limitWriteRequestsPerDay": 3000
+    },
+    "requestAPIKeyType": "standard",
+    "requestAction": "search",
+    "endpoint": "office",
+    "success": true,
+    "ignoredParams": [],
+    "idName": "officeIDs",
+    "processingTime": "25 milliseconds",
+    "count": 1,
+    "officeIDs": [1],
+    "propertyName": "officeIDs"
+  }
+}

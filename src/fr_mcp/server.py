@@ -429,6 +429,19 @@ def _emp_list(names: dict[int, str], value: Any) -> list[str]:
     return [n for n in (_emp(names, v) for v in raw) if n]
 
 
+def _id_list(value: Any) -> list[int]:
+    """Parse an ID-list field that may arrive as a JSON array or a comma-separated
+    string. Confirmed live: `customer.subscriptionIDs` and `customer.appointmentIDs`
+    are comma-separated strings (e.g. "10002,10006,16404"), not arrays, despite the
+    swagger's declared `type: array` -- same pattern as `additionalTechs`. Iterating
+    a raw string like that character-by-character (the old bug here) silently turns
+    "12,34" into IDs 1, 2, 3, 4 instead of 12 and 34 -- always parse through this."""
+    if value in (None, ""):
+        return []
+    raw = value if isinstance(value, (list, tuple)) else str(value).split(",")
+    return [i for i in (_int(v) for v in raw) if i is not None]
+
+
 async def _customers_by_id(ids: list[Any]) -> dict[int, dict[str, Any]]:
     rows = await _get_rows("customer", ids)
     return {cid: r for r in rows if (cid := _int(r.get("customerID"))) is not None}
@@ -709,7 +722,7 @@ async def customer_360(customer_id: int) -> str:
 
     subs = c.get("subscriptions") if isinstance(c.get("subscriptions"), list) else None
     if subs is None:
-        subs = await _get_rows("subscription", c.get("subscriptionIDs") or [])
+        subs = await _get_rows("subscription", _id_list(c.get("subscriptionIDs")))
 
     appts = await _search_rows("appointment", {"customerIDs": [customer_id]})
     today = _today().isoformat()
@@ -824,7 +837,7 @@ async def property_assignments(customer_id: int | None = None, address: str | No
             raise ToolError(f"Customer {customer_id} not found.")
         c = rows[0]
 
-    subs = await _get_rows("subscription", c.get("subscriptionIDs") or [])
+    subs = await _get_rows("subscription", _id_list(c.get("subscriptionIDs")))
     upcoming = await _search_rows(
         "appointment", {"customerIDs": [customer_id], "status": 0, "dateStart": _today().isoformat()}
     )

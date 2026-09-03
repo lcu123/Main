@@ -78,7 +78,10 @@ def _seed() -> dict[str, dict[int, dict[str, Any]]]:
                 "phone1": "9165551234", "email": "jane@example.com", "address": "123 Main St",
                 "city": "Folsom", "state": "CA", "zip": "95630", "lat": 38.67, "lng": -121.17,
                 "balance": 150.0, "balanceAge": 45, "aPay": 1, "preferredTechID": 11,
-                "subscriptionIDs": [100], "specialScheduling": "Gate on left side", "status": 1,
+                # Comma-separated string, not a JSON array -- confirmed live on the real
+                # API despite the swagger's declared type: array. A multi-digit id here
+                # (100, not e.g. 1) catches the old character-by-character iteration bug.
+                "subscriptionIDs": "100", "specialScheduling": "Gate on left side", "status": 1,
             },
             2: {
                 "customerID": 2, "officeID": 7, "active": 1, "fname": "John", "lname": "Smithers",
@@ -527,6 +530,18 @@ async def test_rate_limiter_is_a_sliding_window() -> None:
     assert time.monotonic() - start < 0.1
     await limiter.acquire()
     assert time.monotonic() - start >= 0.25
+
+
+def test_id_list_parses_comma_strings_not_character_by_character() -> None:
+    # This is the exact live bug: customer.subscriptionIDs/appointmentIDs come back
+    # as comma-separated strings, not JSON arrays. Iterating the raw string used to
+    # silently turn "12,34" into ids 1, 2, 3, 4 -- always route through _id_list().
+    assert server._id_list("100") == [100]
+    assert server._id_list("10002,10006,16404") == [10002, 10006, 16404]
+    assert server._id_list([100, 101]) == [100, 101]
+    assert server._id_list(None) == []
+    assert server._id_list("") == []
+    assert server._id_list("12, 34") == [12, 34]  # tolerate a space after the comma
 
 
 def test_is_read_action() -> None:

@@ -1,0 +1,58 @@
+{
+  "_comment": "Captured live from https://zestlawnpest.fieldroutes.com/api/office/get with officeIDs=[1] on 2026-09-03. authenticationKey/Token in the params echo are scrubbed; everything else is verbatim.",
+  "entity": "office",
+  "action": "get",
+  "request_params": {"officeIDs": [1]},
+  "response": {
+    "params": {
+      "endpoint": "office",
+      "action": "get",
+      "officeIDs": ["1"],
+      "authenticationKey": "SCRUBBED",
+      "authenticationToken": "SCRUBBED"
+    },
+    "tokenUsage": {
+      "requestsReadToday": 5,
+      "requestsWriteToday": 0,
+      "requestsReadInLastMinute": 3,
+      "requestsWriteInLastMinute": 0
+    },
+    "tokenLimits": {
+      "limitReadRequestsPerMinute": 60,
+      "limitReadRequestsPerDay": 3000,
+      "limitWriteRequestsPerMinute": 60,
+      "limitWriteRequestsPerDay": 3000
+    },
+    "requestAPIKeyType": "standard",
+    "requestAction": "get",
+    "endpoint": "office",
+    "success": true,
+    "ignoredParams": [],
+    "processingTime": "30 milliseconds",
+    "count": 1,
+    "offices": [
+      {
+        "officeID": "1",
+        "officeName": "Zest Lawn & Pest",
+        "companyID": "1",
+        "licenseNumber": "",
+        "contactNumber": "9162502924",
+        "contactEmail": "hi@zestlawnpest.com",
+        "website": "https://zestlawnpest.com/",
+        "timeZone": "America/Los_Angeles",
+        "address": "6948 West 2nd St",
+        "city": "Rio Linda",
+        "state": "CA",
+        "zip": "95673",
+        "invoiceAddress": "6948 West 2nd St",
+        "invoiceCity": "Rio Linda",
+        "invoiceState": "CA",
+        "invoiceZip": "95673",
+        "cautionStatements": "<p>{{officeName}} is committed to the safety of our customers and our environment. All materials used by {{officeName}} have been registered by the Environmental Protection Agency. Please avoid unnecessary contact with materials and comply with all instructions and recommendations from our technicians. Thanks for your patronage! National Emergency Poison Control: (800)222-1222</p>",
+        "officeLatitude": "38.6948281",
+        "officeLongitude": "-121.4657749"
+      }
+    ],
+    "propertyName": "offices"
+  }
+}
