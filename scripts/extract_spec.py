@@ -49,7 +49,20 @@ def fetch_swagger(source: str | None) -> dict:
     return json.loads(json_text)
 
 
-def slim_param(p: dict) -> dict:
+def slim_param(p: dict) -> dict | None:
+    """Return `None` for params too malformed to use as a tool argument.
+
+    FieldRoutes' own swagger has at least one real defect: `compassCustomer/search`
+    carries three params with `name: 0`, `name: 1`, `name: 2` (types `"o"`,
+    `"c"`, `"d"` -- evidently a string that got exploded character-by-character
+    somewhere in their spec generator, probably meant to be one param named
+    `ocd`). Skip anything whose name isn't a usable Python identifier rather
+    than let it crash tool registration; the entity is still reachable through
+    the generic `call`/`search` tools with a raw param dict.
+    """
+    name = p.get("name")
+    if not isinstance(name, str) or not name.isidentifier():
+        return None
     out = {
         "name": p["name"],
         "type": p.get("type", "string"),
@@ -81,12 +94,36 @@ def build_endpoints(spec: dict) -> dict:
                 "method": method.upper(),
                 "summary": op.get("summary", action),
                 "description": op.get("description", ""),
-                "params": [slim_param(p) for p in op.get("parameters", []) if p.get("in") in ("query", "formData")],
+                "params": [
+                    sp
+                    for p in op.get("parameters", [])
+                    if p.get("in") in ("query", "formData") and (sp := slim_param(p)) is not None
+                ],
             }
     return endpoints
 
 
-def build_entities(spec: dict) -> dict:
+def build_get_id_params(endpoints: dict) -> dict:
+    """The param name each entity's `get` takes for its bulk-ID list.
+
+    Most endpoints follow `{entity}IDs` (e.g. `customerIDs` for `customer/get`),
+    but a substantial minority don't -- `serviceType/get` takes `typeIDs`,
+    `customerFlag/get` takes `customerIDs` (it has no ID of its own),
+    `cancellationReason/get` takes `reasonIDs`, and so on. Every `get`
+    endpoint has exactly one array-typed param; that's always the right one,
+    confirmed against the live spec (see extract_spec.py's own checks).
+    """
+    out = {}
+    for ep in endpoints.values():
+        if ep["action"] != "get":
+            continue
+        array_params = [p["name"] for p in ep["params"] if p["type"] == "array"]
+        if len(array_params) == 1:
+            out[ep["entity"]] = array_params[0]
+    return out
+
+
+def build_entities(spec: dict, endpoints: dict) -> dict:
     entities = {}
     endpoint_entities = set()
     for path in spec["paths"]:
@@ -97,6 +134,7 @@ def build_entities(spec: dict) -> dict:
             endpoint_entities.add(parts[0])
 
     defs = spec["definitions"]
+    id_params = build_get_id_params(endpoints)
     for name in endpoint_entities:
         definition = defs.get(name)
         if not definition or definition.get("type") != "object":
@@ -107,7 +145,11 @@ def build_entities(spec: dict) -> dict:
                 "type": fdef.get("type", "object"),
                 "description": fdef.get("description", ""),
             }
-        entities[name] = {"fields": fields}
+        entry = {"fields": fields}
+        get_id_param = id_params.get(name)
+        if get_id_param and get_id_param != f"{name}IDs":
+            entry["getIdParam"] = get_id_param
+        entities[name] = entry
     return entities
 
 
@@ -116,7 +158,7 @@ def main() -> None:
     spec = fetch_swagger(source)
 
     endpoints = build_endpoints(spec)
-    entities = build_entities(spec)
+    entities = build_entities(spec, endpoints)
 
     out = {
         "info": {

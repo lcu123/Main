@@ -183,6 +183,30 @@ def _require_writes(tool: str) -> None:
         raise ToolError(f"{tool}: writes are disabled on this deployment (FR_WRITES=off).")
 
 
+def _write_allowlist() -> set[int] | None:
+    """`FR_WRITE_CUSTOMER_IDS`: when set, writes are refused unless they target one of these
+    customers. Used to test full write capability against the live office without touching a
+    real customer's record. Unset (the normal, post-testing state) means no restriction."""
+    raw = os.environ.get("FR_WRITE_CUSTOMER_IDS", "").strip()
+    if not raw:
+        return None
+    ids = {i for i in (_int(x) for x in raw.split(",")) if i is not None}
+    return ids or None
+
+
+def _require_customer_allowed(tool: str, customer_id: int | None) -> None:
+    """Fail closed: if the allowlist is set, a write must resolve to an allowed customer."""
+    allowlist = _write_allowlist()
+    if allowlist is None:
+        return
+    if customer_id is None or customer_id not in allowlist:
+        where = f"customer {customer_id}" if customer_id is not None else "an unresolved customer"
+        raise ToolError(
+            f"{tool}: writes are restricted to customer(s) {sorted(allowlist)} "
+            f"(FR_WRITE_CUSTOMER_IDS is set); this write targets {where}."
+        )
+
+
 def _office_id() -> int | None:
     return _int(os.environ.get("FR_OFFICE_ID"))
 
@@ -198,6 +222,16 @@ def _default_note_type() -> int | None:
 def _endpoint_params(entity: str, action: str) -> set[str]:
     ep = SPEC["endpoints"].get(f"{entity}/{action}")
     return {p["name"] for p in ep["params"]} if ep else set()
+
+
+def _id_param(entity: str) -> str:
+    """The param name `{entity}/get` takes for its bulk-ID list.
+
+    Usually `{entity}IDs`, but roughly a quarter of entities deviate (e.g.
+    `serviceType/get` takes `typeIDs`); `extract_spec.py` records the real
+    one in `getIdParam` when it's not the default.
+    """
+    return SPEC["entities"].get(entity, {}).get("getIdParam") or f"{entity}IDs"
 
 
 def _with_office(entity: str, filters: dict[str, Any]) -> dict[str, Any]:
@@ -242,7 +276,7 @@ async def _search_rows(
     entity: str, filters: dict[str, Any], *, limit: int | None = None, extra_get: dict[str, Any] | None = None
 ) -> list[dict[str, Any]]:
     return await client().search_and_get(
-        entity, _with_office(entity, filters), limit=limit, extra_get_params=extra_get
+        entity, _with_office(entity, filters), limit=limit, extra_get_params=extra_get, id_field=_id_param(entity)
     )
 
 
@@ -250,7 +284,53 @@ async def _get_rows(entity: str, ids: list[int], extra: dict[str, Any] | None = 
     ids = sorted({i for i in (_int(x) for x in ids) if i is not None})
     if not ids:
         return []
-    return await client().get(entity, ids, extra_params=extra)
+    return await client().get(entity, ids, extra_params=extra, id_field=_id_param(entity))
+
+
+def _pk_param(entity: str) -> str:
+    """The param name a write uses for the entity's own row, e.g. `appointmentID`.
+
+    `note` is the one exception: its write endpoints call the note's own ID
+    `contactID`, not `noteID` (confirmed against the real spec).
+    """
+    return "contactID" if entity == "note" else f"{entity}ID"
+
+
+async def _resolve_write_customer(entity: str, params: dict[str, Any]) -> int | None:
+    """Best-effort customerID a write touches, for the FR_WRITE_CUSTOMER_IDS allowlist.
+
+    Cheap path: the write already names `customerID`/`customerIDs` directly
+    (true for `customer`, `note`, `task`, `ticket`, `contract`, `payment`, ...).
+    Otherwise, if the write names the entity's own row (`appointmentID`,
+    `subscriptionID`, `contactID`, ...) and that entity has a `get` endpoint,
+    fetch the row and read its `customerID`. Entities with neither (route,
+    spot, employee, service type, office, ...) aren't customer-scoped at all
+    and resolve to None -- which the allowlist then treats as unresolved and
+    refuses, not as "safe to skip".
+    """
+    for key in ("customerID", "customerIDs"):
+        if key in params:
+            value = params[key]
+            value = value[0] if isinstance(value, list) and value else value
+            cid = _int(value)
+            if cid is not None:
+                return cid
+    if f"{entity}/get" not in SPEC["endpoints"]:
+        return None
+    record_id = _int(params.get(_pk_param(entity)))
+    if record_id is None:
+        return None
+    rows = await _get_rows(entity, [record_id])
+    return _int(rows[0].get("customerID")) if rows else None
+
+
+async def _write_target_customer(entity: str, record_id: int) -> int | None:
+    """Look up an existing record's customerID for the allowlist check -- but only when the
+    allowlist is actually set, so this costs nothing in normal (unrestricted) operation."""
+    if _write_allowlist() is None:
+        return None
+    rows = await _get_rows(entity, [record_id])
+    return _int(rows[0].get("customerID")) if rows else None
 
 
 def _tool(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
@@ -359,10 +439,18 @@ async def _routes_by_id(ids: list[Any]) -> dict[int, dict[str, Any]]:
     return {rid: r for r in rows if (rid := _int(r.get("routeID"))) is not None}
 
 
-async def _shape_appointments(appts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Trim appointments and attach customer name/address, service type, route and tech names."""
+async def _shape_appointments(
+    appts: list[dict[str, Any]], customers: dict[int, dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Trim appointments and attach customer name/address, service type, route and tech names.
+
+    Pass `customers` when the caller already has the record (e.g. customer_360
+    already fetched the one customer every appointment belongs to) to avoid a
+    redundant `customer/get` call.
+    """
     names, types = await _emp_names(), await _service_type_names()
-    customers = await _customers_by_id([a.get("customerID") for a in appts])
+    if customers is None:
+        customers = await _customers_by_id([a.get("customerID") for a in appts])
     routes = await _routes_by_id([a.get("routeID") for a in appts])
     out = []
     for a in appts:
@@ -498,6 +586,7 @@ async def call(entity: str, action: str, params: dict[str, Any] | None = None) -
     params = dict(params or {})
     if not is_read_action(action):
         _require_writes("call")
+        _require_customer_allowed(f"call({key})", await _resolve_write_customer(entity, params))
     if action == "delete" and not _allow_delete():
         raise ToolError("call: delete actions are disabled (set FR_ALLOW_DELETE=1 to enable).")
     if key == "payment/create" and str(params.get("doCharge")) in ("1", "true", "True") and not _allow_charges():
@@ -518,6 +607,7 @@ async def health_check() -> str:
             "ok": True,
             "baseUrl": client().base_url,
             "offices": [_pick(o, OFFICE_KEYS) for o in offices],
+            "dailyUsage": client().usage.snapshot(),
             "config": {
                 "officeID": _office_id(),
                 "defaultEmployeeID": _default_employee(),
@@ -525,6 +615,7 @@ async def health_check() -> str:
                 "writes": _writes_enabled(),
                 "allowDelete": _allow_delete(),
                 "allowCharges": _allow_charges(),
+                "writeCustomerAllowlist": sorted(_write_allowlist()) if _write_allowlist() else None,
                 "generatedTools": len(_generated_tools),
             },
         }
@@ -571,7 +662,6 @@ async def find_customer(
                 {"lname": {"operator": "STARTSWITH", "value": query}},
                 {"fname": {"operator": "STARTSWITH", "value": query}},
             ]
-        searches.append({"companyName": {"operator": "CONTAINS", "value": query}})
         for f in searches:
             for r in await _search_rows("customer", {**base, **f}, limit=limit):
                 cid = _int(r.get("customerID"))
@@ -580,6 +670,12 @@ async def find_customer(
                     rows.append(r)
             if len(rows) >= limit:
                 break
+        if not rows:
+            for r in await _search_rows("customer", {**base, "companyName": {"operator": "CONTAINS", "value": query}}, limit=limit):
+                cid = _int(r.get("customerID"))
+                if cid is not None and cid not in seen:
+                    seen.add(cid)
+                    rows.append(r)
     else:
         raise ToolError("Give one of query, phone, email, address, or customer_id.")
 
@@ -629,15 +725,16 @@ async def customer_360(customer_id: int) -> str:
 
     flags = c.get("customerFlag") if isinstance(c.get("customerFlag"), list) else c.get("customerFlags")
     contacts = c.get("additionalContacts") if isinstance(c.get("additionalContacts"), list) else None
+    self_only = {customer_id: c}
 
     return _j(
         {
             "customer": profile,
             "flags": flags or [],
             "additionalContacts": contacts or [],
-            "subscriptions": await _shape_subscriptions(subs),
-            "upcomingAppointments": await _shape_appointments(upcoming[:10]),
-            "recentAppointments": await _shape_appointments(past[:5]),
+            "subscriptions": await _shape_subscriptions(subs, self_only),
+            "upcomingAppointments": await _shape_appointments(upcoming[:10], self_only),
+            "recentAppointments": await _shape_appointments(past[:5], self_only),
             "openTasks": [_task_row(t, names) for t in tasks],
             "recentNotes": [_note_row(n, names) for n in notes[:10]],
         }
@@ -981,6 +1078,7 @@ async def add_note(
 ) -> str:
     """Add a note to a customer's account. Keep it to two sentences. note_type_id defaults to FR_DEFAULT_NOTE_TYPE_ID; show_tech puts it on the tech's mobile app."""
     _require_writes("add_note")
+    _require_customer_allowed("add_note", customer_id)
     note_type = note_type_id or _default_note_type()
     if note_type is None:
         raise ToolError("add_note: give note_type_id or set FR_DEFAULT_NOTE_TYPE_ID (Admin > Preferences > Note Types).")
@@ -1012,6 +1110,7 @@ async def update_note(
     if not rows:
         raise ToolError(f"Note {note_id} not found.")
     n = rows[0]
+    _require_customer_allowed("update_note", _int(n.get("customerID")))
     params: dict[str, Any] = {
         "contactID": note_id,
         "customerID": n.get("customerID"),
@@ -1031,6 +1130,7 @@ async def update_note(
 async def set_red_notes(customer_id: int, text: str) -> str:
     """Replace a customer's Red Notes (the always-visible account warning). This overwrites the existing Red Notes, which the API cannot read back, so confirm the full new text with the user first."""
     _require_writes("set_red_notes")
+    _require_customer_allowed("set_red_notes", customer_id)
     return _j(await client().call("customer", "update", {"customerID": customer_id, "notes": text}))
 
 
@@ -1048,6 +1148,7 @@ async def create_task(
 ) -> str:
     """Create a task, or an alert (alert=True) that pops for the office/tech on the account. Categories: Billing 1, Customer Care 10, Appt Status 15."""
     _require_writes("create_task")
+    _require_customer_allowed("create_task", customer_id)
     params: dict[str, Any] = {
         "type": 1 if alert else 0,
         "customerID": customer_id,
@@ -1080,6 +1181,7 @@ async def schedule_appointment(
 ) -> str:
     """Book an appointment into a spot (from open_slots) or onto a route. Pass the reservation token from reserve_slot if you held the spot. Fails rather than double-booking unless allow_double_booking."""
     _require_writes("schedule_appointment")
+    _require_customer_allowed("schedule_appointment", customer_id)
     if spot_id is None and route_id is None:
         raise ToolError("schedule_appointment: give spot_id (preferred; see open_slots) or route_id.")
     params: dict[str, Any] = {
@@ -1114,6 +1216,7 @@ async def reschedule_appointment(
 ) -> str:
     """Move an existing appointment to another spot or route, or change its time window, duration, or tech. Confirm the new slot with the user first."""
     _require_writes("reschedule_appointment")
+    _require_customer_allowed("reschedule_appointment", await _write_target_customer("appointment", appointment_id))
     if all(v is None for v in (spot_id, route_id, start, end, duration, tech)):
         raise ToolError("reschedule_appointment: give at least one of spot_id, route_id, start, end, duration, tech.")
     params: dict[str, Any] = {
@@ -1136,6 +1239,7 @@ async def update_appointment_notes(
 ) -> str:
     """Set the visit's notes (the text shown on the appointment/visit, i.e. what the tech sees) and/or the office-only notes. Leave a field out to keep it."""
     _require_writes("update_appointment_notes")
+    _require_customer_allowed("update_appointment_notes", await _write_target_customer("appointment", appointment_id))
     if notes is None and office_notes is None:
         raise ToolError("update_appointment_notes: give notes and/or office_notes.")
     params: dict[str, Any] = {"appointmentID": appointment_id, "notes": notes}
@@ -1148,6 +1252,7 @@ async def update_appointment_notes(
 async def cancel_appointment(appointment_id: int, reason: str | None = None) -> str:
     """Cancel an appointment. Destructive: confirm the appointment (customer, date, service) with the user before calling."""
     _require_writes("cancel_appointment")
+    _require_customer_allowed("cancel_appointment", await _write_target_customer("appointment", appointment_id))
     params: dict[str, Any] = {"appointmentID": appointment_id, "cancelReason": reason, "cancelledBy": _default_employee()}
     return _j(await client().call("appointment", "cancel", params))
 
@@ -1166,6 +1271,7 @@ async def complete_appointment(
 ) -> str:
     """Mark an appointment completed (or a no-show), optionally with notes, check-in/out times, and money collected. Generates the invoice in FieldRoutes, so confirm with the user first."""
     _require_writes("complete_appointment")
+    _require_customer_allowed("complete_appointment", await _write_target_customer("appointment", appointment_id))
     params: dict[str, Any] = {
         "appointmentID": appointment_id,
         "status": 2 if no_show else 1,
@@ -1184,6 +1290,8 @@ async def complete_appointment(
 @_tool
 async def reserve_slot(spot_id: int | None = None, spot_ids: list[int] | None = None, minutes: int = 15) -> str:
     """Hold a spot (or the first available of several) for a few minutes while confirming with the customer; returns the reservation token for schedule_appointment."""
+    # Exempt from FR_WRITE_CUSTOMER_IDS: a spot hold is routing capacity, not
+    # customer data -- it names no customer and expires on its own.
     _require_writes("reserve_slot")
     if spot_id is None and not spot_ids:
         raise ToolError("reserve_slot: give spot_id or spot_ids.")
@@ -1222,6 +1330,7 @@ async def update_subscription(
 ) -> str:
     """Change a subscription's setup: job/visit frequency (days; -1 one-time, 0 as-needed, multiples of 30 = months; or custom_schedule_id for a custom schedule), billing_frequency, custom_date (next visit), seasonal window, region, preferred tech/day (0=Sun..6=Sat)/time window, duration, call-ahead, sales reps, source, contract length, expiration, PO. Only the fields you pass change. active=0 freezes the subscription: confirm with the user first."""
     _require_writes("update_subscription")
+    _require_customer_allowed("update_subscription", await _write_target_customer("subscription", subscription_id))
     params: dict[str, Any] = {
         "subscriptionID": subscription_id,
         "frequency": frequency,
@@ -1268,6 +1377,8 @@ _generated_tools: list[str] = register_generated_tools(
     writes_enabled=_writes_enabled,
     allow_delete=_allow_delete,
     allow_charges=_allow_charges,
+    resolve_write_customer=_resolve_write_customer,
+    check_customer_allowed=_require_customer_allowed,
 )
 
 
@@ -1320,8 +1431,12 @@ def main() -> None:
         import uvicorn
 
         port = int(os.environ.get("PORT", "8080"))
-        print(f"fr-mcp: serving http on :{port}{_mcp_path()}", file=sys.stderr)
-        uvicorn.run(build_http_app(), host="0.0.0.0", port=port, log_level="info")
+        path_note = "/<secret>/mcp" if os.environ.get("MCP_PATH_SECRET", "").strip() else _mcp_path()
+        print(f"fr-mcp: serving http on :{port}{path_note}", file=sys.stderr)
+        # access_log=False: uvicorn's default access log prints each request's
+        # path, which would put the secret path segment in Railway's logs on
+        # every single call.
+        uvicorn.run(build_http_app(), host="0.0.0.0", port=port, log_level="info", access_log=False)
     else:
         mcp.run("stdio")
 

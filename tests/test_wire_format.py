@@ -30,7 +30,14 @@ from mcp.server.mcpserver import MCPServer  # noqa: E402
 from mcp.server.mcpserver.exceptions import ToolError  # noqa: E402
 
 from fr_mcp import generated, server  # noqa: E402
-from fr_mcp.client import FieldRoutesClient, FieldRoutesError, RateLimiter, encode_form  # noqa: E402
+from fr_mcp.client import (  # noqa: E402
+    FieldRoutesClient,
+    FieldRoutesError,
+    RateLimiter,
+    UsageCounter,
+    encode_form,
+    is_read_action,
+)
 
 TODAY = date.today().isoformat()
 
@@ -177,9 +184,15 @@ class FakeFR:
         if action == "search":
             return httpx.Response(200, json=self._search(entity, form))
         if action == "get":
-            ids = [int(i) for i in form.get(f"{entity}IDs[]", [])]
+            id_field = server._id_param(entity)
+            ids = [int(i) for i in form.get(f"{id_field}[]", [])]
             assert len(ids) <= 1000, "get must be chunked at 1000"
-            records = [self.data[entity][i] for i in ids if i in self.data.get(entity, {})]
+            if entity == "customerFlag":
+                # customerFlag has no ID of its own; get takes customerIDs and
+                # returns every flag row for those customers.
+                records = [r for r in self.data.get(entity, {}).values() if r.get("customerID") in ids]
+            else:
+                records = [self.data[entity][i] for i in ids if i in self.data.get(entity, {})]
             return httpx.Response(200, json={"success": True, entity: records})
         return httpx.Response(200, json=self._write(entity, action, form))
 
@@ -206,7 +219,7 @@ class FakeFR:
 
     @staticmethod
     def _id_of(entity: str, record: dict[str, Any]) -> int:
-        for key in (f"{entity}ID", f"{entity}IDs", "typeID", "taskIDs", "regionID"):
+        for key in (f"{entity}ID", f"{entity}IDs", "typeID", "taskIDs", "regionID", "customerID"):
             if key in record:
                 return int(record[key])
         raise KeyError(f"no id field on {entity} record")
@@ -431,6 +444,42 @@ async def test_rate_limiter_is_a_sliding_window() -> None:
     assert time.monotonic() - start >= 0.25
 
 
+def test_is_read_action() -> None:
+    assert is_read_action("search") and is_read_action("get") and is_read_action("getAddOns")
+    assert is_read_action("summary")
+    assert not is_read_action("create") and not is_read_action("update") and not is_read_action("delete")
+
+
+def test_usage_counter_refuses_at_95_percent_and_resets_per_kind() -> None:
+    usage = UsageCounter(read_limit=100, write_limit=10)
+    for _ in range(94):
+        usage.check(True)
+        usage.record(True)
+    usage.check(True)  # 94 used, threshold is 95: still fine
+    for _ in range(9):
+        usage.check(False)
+        usage.record(False)
+    with pytest.raises(FieldRoutesError, match="Daily write quota"):
+        usage.check(False)  # 9 writes used, threshold is 9 (int(10*0.95)=9)
+    usage.record(True)  # 95th read
+    with pytest.raises(FieldRoutesError, match="Daily read quota"):
+        usage.check(True)
+    # a snapshot always reports usage regardless of whether the threshold is hit
+    snap = usage.snapshot()
+    assert snap == {"date": snap["date"], "reads": 95, "readLimit": 100, "writes": 9, "writeLimit": 10}
+
+
+async def test_client_call_refuses_near_quota() -> None:
+    # read_limit=2 -> threshold is int(2*0.95)=1, so the second call is refused
+    # before it reaches the server, and the refusal itself isn't counted.
+    fake = FakeFR()
+    async with _client_for(fake, usage=UsageCounter(read_limit=2, write_limit=100)) as client:
+        await client.call("office", "search")
+        with pytest.raises(FieldRoutesError, match="Daily read quota"):
+            await client.call("office", "search")
+    assert len(fake.requests) == 1
+
+
 # ---------------------------------------------------------------------------
 # Office scoping + generic tools
 # ---------------------------------------------------------------------------
@@ -488,6 +537,8 @@ async def test_health_check(fake: FakeFR) -> None:
     assert out["ok"] is True
     assert out["offices"][0]["officeName"] == "Zest Lawn & Pest"
     assert out["config"]["officeID"] == 7 and out["config"]["writes"] is True
+    assert out["dailyUsage"]["reads"] == 2 and out["dailyUsage"]["readLimit"] == 3000
+    assert out["dailyUsage"]["writes"] == 0 and out["dailyUsage"]["date"] == TODAY
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +599,7 @@ async def test_customer_360(fake: FakeFR) -> None:
     assert out["customer"]["preferredTechName"] == "Carlos Quijas"
     assert _last(fake, "customer", "get").one("includeSubscriptions") == "1"
     assert out["subscriptions"][0]["service"] == "Fall Aeration and Seeding"
-    assert out["subscriptions"][0]["frequencyText"] == "every 12 months"
+    assert out["subscriptions"][0]["frequencyText"] == "every 365 days"
     assert out["subscriptions"][0]["region"] == "Folsom"
     assert out["subscriptions"][0]["soldByName"] == "Iggy Artemenko"
     assert [a["appointmentID"] for a in out["upcomingAppointments"]] == [500]
@@ -776,6 +827,86 @@ async def test_writes_off_blocks_every_write_but_not_reads(fake: FakeFR, monkeyp
     assert loads(await server.find_customer("Jane Smith"))["count"] == 1
 
 
+async def test_write_allowlist_blocks_other_customers_direct(fake: FakeFR, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FR_WRITE_CUSTOMER_IDS", "1")
+    with pytest.raises(ToolError, match="FR_WRITE_CUSTOMER_IDS"):
+        await server.add_note(2, "x")
+    with pytest.raises(ToolError, match="FR_WRITE_CUSTOMER_IDS"):
+        await server.set_red_notes(2, "x")
+    with pytest.raises(ToolError, match="FR_WRITE_CUSTOMER_IDS"):
+        await server.create_task(2, "x")
+    with pytest.raises(ToolError, match="FR_WRITE_CUSTOMER_IDS"):
+        await server.schedule_appointment(2, 3, spot_id=32)
+    assert not [r for r in fake.requests if r.action not in ("search", "get")]
+
+    await server.add_note(1, "allowed")
+    assert _last(fake, "note", "create").one("customerID") == "1"
+
+
+async def test_write_allowlist_resolves_existing_records(fake: FakeFR, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FR_WRITE_CUSTOMER_IDS", "1")
+    # appointment 500 belongs to customer 1 (allowed); 501 belongs to customer 2 (blocked).
+    await server.update_appointment_notes(500, notes="ok")
+    with pytest.raises(ToolError, match="FR_WRITE_CUSTOMER_IDS"):
+        await server.update_appointment_notes(501, notes="blocked")
+    with pytest.raises(ToolError, match="FR_WRITE_CUSTOMER_IDS"):
+        await server.cancel_appointment(501)
+    with pytest.raises(ToolError, match="FR_WRITE_CUSTOMER_IDS"):
+        await server.complete_appointment(501)
+    with pytest.raises(ToolError, match="FR_WRITE_CUSTOMER_IDS"):
+        await server.reschedule_appointment(501, spot_id=32)
+
+    # note 800 and subscription 100 both belong to customer 1.
+    await server.update_note(800, text="ok")
+    await server.update_subscription(100, frequency=30)
+
+    assert not [r for r in fake.requests if r.entity in ("note", "appointment", "subscription") and r.one("customerID") == "2"]
+
+
+async def test_write_allowlist_exempts_reserve_slot(fake: FakeFR, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FR_WRITE_CUSTOMER_IDS", "1")
+    out = loads(await server.reserve_slot(32))
+    assert out["reservation"] == "tok-123"
+
+
+async def test_write_allowlist_covers_generic_call_and_generated_tools(
+    fake: FakeFR, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FR_WRITE_CUSTOMER_IDS", "1")
+    note_params = {"contactType": 5, "notes": "x", "date": TODAY, "showOnInvoice": False}
+    with pytest.raises(ToolError, match="FR_WRITE_CUSTOMER_IDS"):
+        await server.call("note", "create", {**note_params, "customerID": 2})
+    await server.call("note", "create", {**note_params, "customerID": 1})
+    assert _last(fake, "note", "create").one("customerID") == "1"
+
+    monkeypatch.setenv("FR_EXPOSE_ENTITIES", "note")
+    mcp = MCPServer("t")
+    generated.register_generated_tools(
+        mcp,
+        _client_for(fake),
+        server.SPEC,
+        writes_enabled=lambda: True,
+        allow_delete=lambda: True,
+        allow_charges=lambda: False,
+        resolve_write_customer=server._resolve_write_customer,
+        check_customer_allowed=server._require_customer_allowed,
+    )
+    note_args = {"contactType": 5, "notes": "x", "date": TODAY, "showOnInvoice": False}
+    with pytest.raises(ToolError, match="FR_WRITE_CUSTOMER_IDS"):
+        await mcp.call_tool("fr_note_create", {**note_args, "customerID": 2})
+    result = await mcp.call_tool("fr_note_create", {**note_args, "customerID": 1})
+    assert json.loads(result.content[0].text)["success"] is True
+
+
+async def test_write_allowlist_reported_in_health_check(fake: FakeFR, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FR_WRITE_CUSTOMER_IDS", "1, 2")
+    out = loads(await server.health_check())
+    assert out["config"]["writeCustomerAllowlist"] == [1, 2]
+    monkeypatch.delenv("FR_WRITE_CUSTOMER_IDS")
+    out = loads(await server.health_check())
+    assert out["config"]["writeCustomerAllowlist"] is None
+
+
 # ---------------------------------------------------------------------------
 # Generated tools + HTTP app
 # ---------------------------------------------------------------------------
@@ -798,8 +929,7 @@ async def test_generated_tools_for_selected_entities(monkeypatch: pytest.MonkeyP
     assert tools["fr_appointment_cancel"].input_schema["required"] == ["appointmentID"]
     assert "Write action" in tools["fr_appointment_cancel"].description
     result = await mcp.call_tool("fr_customer_search", {"lname": "Smith"})
-    text = result[0].text if isinstance(result, list) else result["content"][0].text
-    assert json.loads(text)["customerIDs"] == [1]
+    assert json.loads(result.content[0].text)["customerIDs"] == [1]
     assert _last(fake, "customer", "search").one("lname") == "Smith"
 
 
@@ -821,7 +951,7 @@ async def test_generated_delete_guard(monkeypatch: pytest.MonkeyPatch) -> None:
         writes_enabled=lambda: True, allow_delete=lambda: False, allow_charges=lambda: False,
     )
     with pytest.raises(ToolError, match="FR_ALLOW_DELETE"):
-        await mcp.call_tool("fr_note_delete", {"noteID": 1})
+        await mcp.call_tool("fr_note_delete", {"customerID": 1, "contactID": 800})
 
 
 def test_http_app_secret_path_healthz_and_bearer(fake: FakeFR, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -839,5 +969,21 @@ def test_http_app_secret_path_healthz_and_bearer(fake: FakeFR, monkeypatch: pyte
         assert r.status_code == 200
         names = {t["name"] for t in r.json()["result"]["tools"]}
         assert {"find_customer", "update_subscription", "call", "cancel_appointment"} <= names
-        assert len(names) == 31
+        assert len(names) == 30
         assert http.post("/mcp", json=body, headers=auth).status_code == 404
+
+
+def test_main_never_logs_the_secret_path(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    import uvicorn
+
+    monkeypatch.setenv("MCP_TRANSPORT", "http")
+    monkeypatch.setenv("MCP_PATH_SECRET", "s3cret-value")
+    monkeypatch.setenv("PORT", "9999")
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: calls.append(kwargs))
+
+    server.main()
+
+    assert calls and calls[0]["access_log"] is False, "uvicorn access log must be off: it would log the secret path"
+    printed = capsys.readouterr().err
+    assert "s3cret-value" not in printed

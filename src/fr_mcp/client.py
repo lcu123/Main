@@ -14,11 +14,30 @@ import json
 import os
 import time
 from collections import deque
+from datetime import date
 from typing import Any, Iterable
+from urllib.parse import urlencode
 
 import httpx
 
 GET_CHUNK_SIZE = 1000
+DEFAULT_DAILY_LIMIT = 3000
+QUOTA_REFUSE_FRACTION = 0.95  # leave ~5% headroom so a chatty session can't lock the office out
+
+
+def is_read_action(action: str) -> bool:
+    """`search`, `get`, `getAddOns`, `summary`... read; everything else writes."""
+    return action in ("search", "summary") or action.startswith("get")
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 class FieldRoutesError(Exception):
@@ -63,6 +82,62 @@ class RateLimiter:
                     return
                 sleep_for = self.window - (now - self._calls[0])
                 await asyncio.sleep(max(sleep_for, 0.01))
+
+
+class UsageCounter:
+    """Self-imposed daily read/write budget.
+
+    FieldRoutes caps an office at 3,000 reads and 3,000 writes per day,
+    shared with every other integration touching the office -- Zapier,
+    website forms, FieldRoutes' own UI. This is this server's own estimate
+    of its share, not authoritative (FieldRoutes' server is), reset at local
+    midnight or on restart. It refuses new calls of a kind once that kind's
+    count reaches `QUOTA_REFUSE_FRACTION` of its limit, rather than waiting
+    to hit the wall and get the whole office locked out.
+    """
+
+    def __init__(self, read_limit: int = DEFAULT_DAILY_LIMIT, write_limit: int = DEFAULT_DAILY_LIMIT):
+        self.read_limit = read_limit
+        self.write_limit = write_limit
+        self._day: date | None = None
+        self._reads = 0
+        self._writes = 0
+
+    def _roll(self) -> None:
+        today = date.today()
+        if self._day != today:
+            self._day = today
+            self._reads = 0
+            self._writes = 0
+
+    def check(self, is_read: bool) -> None:
+        """Raise `FieldRoutesError` if this kind of call is at its daily threshold."""
+        self._roll()
+        count, limit, kind = (self._reads, self.read_limit, "read") if is_read else (self._writes, self.write_limit, "write")
+        threshold = int(limit * QUOTA_REFUSE_FRACTION)
+        if count >= threshold:
+            raise FieldRoutesError(
+                f"Daily {kind} quota nearly exhausted ({count}/{limit} {kind}s used today, shared with "
+                f"other integrations on this office). Refusing further {kind}s until local midnight to "
+                f"avoid locking the whole office out of the FieldRoutes API."
+            )
+
+    def record(self, is_read: bool) -> None:
+        self._roll()
+        if is_read:
+            self._reads += 1
+        else:
+            self._writes += 1
+
+    def snapshot(self) -> dict[str, Any]:
+        self._roll()
+        return {
+            "date": self._day.isoformat() if self._day else None,
+            "reads": self._reads,
+            "readLimit": self.read_limit,
+            "writes": self._writes,
+            "writeLimit": self.write_limit,
+        }
 
 
 def encode_form(params: dict[str, Any]) -> list[tuple[str, str]]:
@@ -124,6 +199,7 @@ class FieldRoutesClient:
         auth_token: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         rate_limiter: RateLimiter | None = None,
+        usage: UsageCounter | None = None,
         max_retries: int = 3,
     ):
         base_url = base_url or os.environ.get("FR_BASE_URL")
@@ -141,6 +217,10 @@ class FieldRoutesClient:
 
         self.max_retries = max_retries
         self.rate_limiter = rate_limiter or RateLimiter()
+        self.usage = usage or UsageCounter(
+            read_limit=_int_env("FR_DAILY_READ_LIMIT", DEFAULT_DAILY_LIMIT),
+            write_limit=_int_env("FR_DAILY_WRITE_LIMIT", DEFAULT_DAILY_LIMIT),
+        )
         self._http = httpx.AsyncClient(transport=transport, timeout=30.0)
 
     async def aclose(self) -> None:
@@ -157,13 +237,20 @@ class FieldRoutesClient:
     async def call(self, entity: str, action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """POST `{entity}/{action}` with form-encoded params; return the parsed JSON body.
 
-        Raises `FieldRoutesError` on a transport failure, a non-JSON body, or
-        `success: false` in the body (HTTP status is 200 either way).
+        Raises `FieldRoutesError` on a transport failure, a non-JSON body,
+        `success: false` in the body (HTTP status is 200 either way), or the
+        daily read/write quota being nearly exhausted (see `UsageCounter`).
         """
+        is_read = is_read_action(action)
+        self.usage.check(is_read)
         body_params = dict(params or {})
         body_params["authenticationKey"] = self.auth_key
         body_params["authenticationToken"] = self.auth_token
-        body = encode_form(body_params)
+        # Pre-encode to bytes and send via `content=` rather than `data=`: httpx
+        # 0.28 only treats `data=` as form-urlencoded when it's a Mapping, and
+        # silently mishandles our list-of-tuples (needed for repeated
+        # `customerIDs[]` keys) as raw sync-only content instead.
+        body = urlencode(encode_form(body_params)).encode("utf-8")
 
         url = f"{self.base_url}/{entity}/{action}"
         last_exc: Exception | None = None
@@ -171,7 +258,9 @@ class FieldRoutesClient:
         for attempt in range(self.max_retries):
             await self.rate_limiter.acquire()
             try:
-                resp = await self._http.post(url, data=body)
+                resp = await self._http.post(
+                    url, content=body, headers={"Content-Type": "application/x-www-form-urlencoded"}
+                )
             except httpx.TransportError as exc:
                 last_exc = exc
                 if attempt + 1 < self.max_retries:
@@ -193,6 +282,11 @@ class FieldRoutesClient:
                     entity=entity,
                     action=action,
                 ) from exc
+
+            # A response (even a business-logic failure) means the request
+            # counted against the real FieldRoutes quota; a transport error or
+            # a retried 5xx above never reached FieldRoutes, so isn't counted.
+            self.usage.record(is_read)
 
             if not data.get("success", False):
                 raise FieldRoutesError(
@@ -225,11 +319,21 @@ class FieldRoutesClient:
         return list(search_response.get(f"{entity}IDs", []) or [])
 
     async def get(
-        self, entity: str, ids: Iterable[int], *, extra_params: dict[str, Any] | None = None
+        self,
+        entity: str,
+        ids: Iterable[int],
+        *,
+        extra_params: dict[str, Any] | None = None,
+        id_field: str | None = None,
     ) -> list[dict[str, Any]]:
-        """`{entity}/get`: fetch full records for `ids`, chunked at 1000 per FieldRoutes' cap."""
+        """`{entity}/get`: fetch full records for `ids`, chunked at 1000 per FieldRoutes' cap.
+
+        Most entities take `{entity}IDs`, but a substantial minority don't --
+        pass `id_field` (from `fieldroutes_spec.json`'s `entities.{entity}.getIdParam`)
+        for those; server.py's `_id_param()` looks it up.
+        """
         ids = [i for i in ids]
-        id_field = f"{entity}IDs"
+        id_field = id_field or f"{entity}IDs"
         records: list[dict[str, Any]] = []
         for i in range(0, len(ids), GET_CHUNK_SIZE):
             chunk = ids[i : i + GET_CHUNK_SIZE]
@@ -266,10 +370,11 @@ class FieldRoutesClient:
         *,
         limit: int | None = None,
         extra_get_params: dict[str, Any] | None = None,
+        id_field: str | None = None,
     ) -> list[dict[str, Any]]:
         """Search then hydrate: the common two-step read used by every curated tool."""
         search_response = await self.search(entity, filters)
         ids = self.extract_ids(entity, search_response)
         if limit is not None:
             ids = ids[:limit]
-        return await self.get(entity, ids, extra_params=extra_get_params)
+        return await self.get(entity, ids, extra_params=extra_get_params, id_field=id_field)

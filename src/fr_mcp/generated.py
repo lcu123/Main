@@ -19,12 +19,12 @@ from __future__ import annotations
 import inspect
 import json
 import os
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .client import FieldRoutesClient, FieldRoutesError
+from .client import FieldRoutesClient, FieldRoutesError, is_read_action
 
 _JSON_TYPES: dict[str, type] = {
     "integer": int,
@@ -40,11 +40,6 @@ _JSON_TYPES: dict[str, type] = {
 def _annotation_for(param: dict[str, Any]) -> Any:
     py_type = _JSON_TYPES.get(param.get("type", "string"), str)
     return py_type | None
-
-
-def is_read_action(action: str) -> bool:
-    """`search`, `get`, `getAddOns`, `summary`... read; everything else writes."""
-    return action in ("search", "summary") or action.startswith("get")
 
 
 def selected_entities(spec: dict[str, Any]) -> set[str]:
@@ -65,8 +60,14 @@ def register_generated_tools(
     writes_enabled: Callable[[], bool],
     allow_delete: Callable[[], bool],
     allow_charges: Callable[[], bool],
+    resolve_write_customer: Callable[[str, dict[str, Any]], Awaitable[int | None]] | None = None,
+    check_customer_allowed: Callable[[str, int | None], None] | None = None,
 ) -> list[str]:
     """Register `fr_{entity}_{action}` tools for the selected entities.
+
+    `resolve_write_customer`/`check_customer_allowed` wire in the same
+    FR_WRITE_CUSTOMER_IDS allowlist the curated tools use (see server.py);
+    omit both to leave generated writes unrestricted.
 
     Returns the list of registered tool names (empty if generation is off).
     """
@@ -88,6 +89,8 @@ def register_generated_tools(
             writes_enabled=writes_enabled,
             allow_delete=allow_delete,
             allow_charges=allow_charges,
+            resolve_write_customer=resolve_write_customer,
+            check_customer_allowed=check_customer_allowed,
         )
         registered.append(name)
     return registered
@@ -102,6 +105,8 @@ def _register_one(
     writes_enabled: Callable[[], bool],
     allow_delete: Callable[[], bool],
     allow_charges: Callable[[], bool],
+    resolve_write_customer: Callable[[str, dict[str, Any]], Awaitable[int | None]] | None,
+    check_customer_allowed: Callable[[str, int | None], None] | None,
 ) -> str:
     entity, action = endpoint["entity"], endpoint["action"]
     tool_name = f"fr_{entity}_{action}"
@@ -130,6 +135,8 @@ def _register_one(
         if is_charge and str(kwargs.get("doCharge")) in ("1", "true", "True") and not allow_charges():
             raise ToolError(f"{tool_name}: real card charges are disabled (set FR_ALLOW_CHARGES=1 to enable).")
         params = {k: v for k, v in kwargs.items() if k in param_names and v is not None}
+        if is_write and resolve_write_customer is not None and check_customer_allowed is not None:
+            check_customer_allowed(tool_name, await resolve_write_customer(entity, params))
         try:
             data = await client.call(entity, action, params)
         except FieldRoutesError as exc:

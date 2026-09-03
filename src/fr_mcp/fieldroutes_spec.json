@@ -1928,24 +1928,6 @@
    "method": "POST",
    "params": [
     {
-     "description": "",
-     "name": 0,
-     "required": false,
-     "type": "o"
-    },
-    {
-     "description": "",
-     "name": 1,
-     "required": false,
-     "type": "c"
-    },
-    {
-     "description": "",
-     "name": 2,
-     "required": false,
-     "type": "d"
-    },
-    {
      "description": "{0,1} Sends the resolved objects for the first 1000 IDs. If there are more than 1000 items an additional property compassCustomerIDsNoDataExported will specify the items that are not included in the resolved compassCustomer array.",
      "name": "includeData",
      "required": false,
@@ -11263,7 +11245,8 @@
      "description": "View Users",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "employeeIDs"
   },
   "additionalContact": {
    "fields": {
@@ -11415,7 +11398,8 @@
      "description": "",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "applciationMethodIDs"
   },
   "appliedPayment": {
    "fields": {
@@ -11719,7 +11703,8 @@
      "description": "Used by the FieldRoutes application to hide/show reasons from staff",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "cancellationReasonIDs"
   },
   "appointmentReminder": {
    "fields": {
@@ -11779,7 +11764,8 @@
      "description": "Time voice message was sent",
      "type": "string"
     }
-   }
+   },
+   "getIdParam": "reminderIDs"
   },
   "appointmentRescheduleReason": {
    "fields": {
@@ -11803,7 +11789,8 @@
      "description": "Used by the FieldRoutes application to hide/show reasons from staff",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "rescheduleReasonIDs"
   },
   "cancellationReason": {
    "fields": {
@@ -11827,7 +11814,8 @@
      "description": "Used by the FieldRoutes application to hide/show reasons from staff",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "reasonIDs"
   },
   "changelog": {
    "fields": {
@@ -11859,7 +11847,8 @@
      "description": "ID of the specified class that was changed",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "changeIDs"
   },
   "chargeback": {
    "fields": {
@@ -11895,7 +11884,8 @@
      "description": "",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "gatewayChargebackIDs"
   },
   "chemical": {
    "fields": {
@@ -12183,7 +12173,8 @@
      "description": "All subscriptions associated with the customer",
      "type": "string"
     }
-   }
+   },
+   "getIdParam": "customerIDs"
   },
   "contract": {
    "fields": {
@@ -12607,7 +12598,8 @@
      "description": "Flag Value",
      "type": "string"
     }
-   }
+   },
+   "getIdParam": "customerIDs"
   },
   "customerSource": {
    "fields": {
@@ -12635,7 +12627,8 @@
      "description": "Visibility of the source",
      "type": "string"
     }
-   }
+   },
+   "getIdParam": "sourceIDs"
   },
   "diagram": {
    "fields": {
@@ -12699,7 +12692,8 @@
      "description": "",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "gatewayDisbursementIDs"
   },
   "disbursementItem": {
    "fields": {
@@ -12759,7 +12753,8 @@
      "description": "",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "gatewayDisbursementEntryIDs"
   },
   "document": {
    "fields": {
@@ -12807,7 +12802,8 @@
      "description": "Unique Identifier",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "uploadIDs"
   },
   "door": {
    "fields": {
@@ -13063,7 +13059,8 @@
      "description": "time the location check-in took place",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "locationIDs"
   },
   "form": {
    "fields": {
@@ -13103,7 +13100,8 @@
      "description": "The unitID associated with the form.",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "contractIDs"
   },
   "genericFlag": {
    "fields": {
@@ -13891,7 +13889,8 @@
      "description": null,
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "feedbackIDs"
   },
   "route": {
    "fields": {
@@ -14007,7 +14006,8 @@
      "description": "",
      "type": "string"
     }
-   }
+   },
+   "getIdParam": "templateIDs"
   },
   "servicePlan": {
    "fields": {
@@ -14359,7 +14359,8 @@
      "description": "The discount provided if paying for a year in advance",
      "type": "number"
     }
-   }
+   },
+   "getIdParam": "subscriptionIDs"
   },
   "servicePlanRound": {
    "fields": {
@@ -14731,7 +14732,8 @@
      "description": "The discount provided if paying for a year in advance",
      "type": "number"
     }
-   }
+   },
+   "getIdParam": "subscriptionIDs"
   },
   "serviceType": {
    "fields": {
@@ -14811,7 +14813,8 @@
      "description": "1 if visible, 0 if hidden.",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "typeIDs"
   },
   "skill": {
    "fields": {
@@ -15571,7 +15574,8 @@
      "description": "unitID",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "itemIDs"
   },
   "timeClock": {
    "fields": {
@@ -15603,7 +15607,8 @@
      "description": "Clock-Out time in server time (PST)",
      "type": "string"
     }
-   }
+   },
+   "getIdParam": "entryIDs"
   },
   "timeClockCategory": {
    "fields": {
@@ -15639,7 +15644,8 @@
      "description": "Visible to staff",
      "type": "integer"
     }
-   }
+   },
+   "getIdParam": "clockCategoryIDs"
   },
   "unit": {
    "fields": {
