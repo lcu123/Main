@@ -22,6 +22,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
+from . import __version__
 from .client import FieldRoutesClient, FieldRoutesError
 from .generated import is_read_action, register_generated_tools
 
@@ -618,6 +619,7 @@ async def health_check() -> str:
     return _j(
         {
             "ok": True,
+            "version": __version__,
             "baseUrl": client().base_url,
             "offices": [_pick(o, OFFICE_KEYS) for o in offices],
             "dailyUsage": client().usage.snapshot(),
@@ -1436,7 +1438,7 @@ def build_http_app() -> Any:
 def main() -> None:
     transport = os.environ.get("MCP_TRANSPORT", "").strip().lower()
     print(
-        f"fr-mcp: {len(_generated_tools)} generated tools, writes={'on' if _writes_enabled() else 'off'}, "
+        f"fr-mcp {__version__}: {len(_generated_tools)} generated tools, writes={'on' if _writes_enabled() else 'off'}, "
         f"delete={'on' if _allow_delete() else 'off'}, charges={'on' if _allow_charges() else 'off'}",
         file=sys.stderr,
     )
