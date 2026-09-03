@@ -102,7 +102,7 @@ def test_missing_required_argument_is_isError_not_http_500(http: TestClient) -> 
 def test_tools_list_matches_curated_plus_generic_count(http: TestClient) -> None:
     resp = _rpc(http, "tools/list")
     names = {t["name"] for t in resp["result"]["tools"]}
-    assert len(names) == 30
+    assert len(names) == 31
     assert {"find_customer", "call", "update_subscription"} <= names
 
 

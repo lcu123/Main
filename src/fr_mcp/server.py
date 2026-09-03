@@ -1382,6 +1382,101 @@ async def update_subscription(
 
 
 # =====================================================================
+# Reads + writes combined
+# =====================================================================
+
+
+@_tool
+async def service_schedule(
+    service_type_id: int | None = None,
+    region_id: int | None = None,
+    start: str | None = None,
+    days: int = 90,
+    status: str = "all",
+    move: list[dict[str, Any]] | None = None,
+) -> str:
+    """Appointment history and upcoming schedule for a service type and/or zone (region), grouped by subscription -- each group shows the zone, customer, and every appointment (completed and pending) in the window, sorted by date. Default window is today + 89 days; pass a past `start` to look at history. status: all, pending, completed.
+
+    To move one or more appointments to a new day in the same call, pass `move`: a list of objects like {"appointment_id": 500, "spot_id": 32}. spot_id must come from open_slots -- FieldRoutes has no bare "move to this date" field, an appointment's date comes from the spot (or route) it's booked into, exactly like reschedule_appointment (each move entry accepts the same fields: spot_id, route_id, start, end, duration, tech, reservation, allow_double_booking). Moves are applied first, one at a time, and stop at the first failure -- confirm every move with the user before calling, same as reschedule_appointment."""
+    moved: list[dict[str, Any]] = []
+    for entry in move or []:
+        appointment_id = entry.get("appointment_id")
+        if appointment_id is None:
+            raise ToolError("service_schedule: each move entry needs appointment_id.")
+        result = await reschedule_appointment(
+            appointment_id=int(appointment_id),
+            spot_id=entry.get("spot_id"),
+            route_id=entry.get("route_id"),
+            start=entry.get("start"),
+            end=entry.get("end"),
+            duration=entry.get("duration"),
+            tech=entry.get("tech"),
+            reservation=entry.get("reservation"),
+            allow_double_booking=bool(entry.get("allow_double_booking", False)),
+        )
+        moved.append({"appointmentID": int(appointment_id), "result": json.loads(result)})
+
+    window_start, window_end = _window(start, days)
+    filters: dict[str, Any] = {"dateStart": window_start, "dateEnd": window_end}
+    if service_type_id is not None:
+        filters["serviceIDs"] = service_type_id
+    if status == "pending":
+        filters["status"] = 0
+    elif status == "completed":
+        filters["status"] = 1
+    elif status != "all":
+        raise ToolError("service_schedule: status must be one of: all, pending, completed.")
+    appts = await _search_rows("appointment", filters)
+
+    sub_ids = sorted({sid for a in appts if (sid := _int(a.get("subscriptionID"))) is not None})
+    subs_by_id = {
+        sid: sub for sub in await _get_rows("subscription", sub_ids) if (sid := _int(sub.get("subscriptionID"))) is not None
+    }
+    cust_ids = {cid for sub in subs_by_id.values() if (cid := _int(sub.get("customerID"))) is not None}
+    cust_ids |= {cid for a in appts if (cid := _int(a.get("customerID"))) is not None}
+    customers = await _customers_by_id(sorted(cust_ids))
+    regions = await _region_names()
+
+    shaped = await _shape_appointments(appts, customers)
+    groups: dict[int | None, list[dict[str, Any]]] = {}
+    for raw, row in zip(appts, shaped):
+        groups.setdefault(_int(raw.get("subscriptionID")), []).append(row)
+
+    out_groups = []
+    for sub_id, rows in groups.items():
+        sub = subs_by_id.get(sub_id) if sub_id is not None else None
+        sub_region_id = _int(sub.get("regionID")) if sub else None
+        if region_id is not None and sub_region_id != region_id:
+            continue
+        cust = customers.get(_int(sub.get("customerID"))) if sub else None
+        rows.sort(key=lambda a: str(a.get("date", "")))
+        out_groups.append(
+            {
+                "subscriptionID": sub_id,
+                "zone": regions.get(sub_region_id) if sub_region_id is not None else None,
+                "customer": _customer_summary(cust) if cust else None,
+                "frequencyText": _frequency_text(sub.get("frequency")) if sub else None,
+                "appointmentCount": len(rows),
+                "appointments": rows,
+            }
+        )
+    out_groups.sort(key=lambda g: (g["zone"] or "", (g["customer"] or {}).get("name") or ""))
+
+    return _j(
+        {
+            "from": window_start,
+            "to": window_end,
+            "serviceTypeID": service_type_id,
+            "regionID": region_id,
+            "subscriptionCount": len(out_groups),
+            "appointmentCount": len(appts),
+            "moved": moved,
+            "groups": out_groups,
+        }
+    )
+
+
+# =====================================================================
 # Generated tools + HTTP app + entrypoint
 # =====================================================================
 

@@ -66,6 +66,7 @@ READ_CALLS: list[tuple[str, dict[str, Any]]] = [
     ("lookups", {}),
     ("subscription_details", {"subscription_id": 100}),
     ("list_notes", {"customer_id": 1}),
+    ("service_schedule", {}),
 ]
 
 WRITE_CALLS: list[tuple[str, dict[str, Any]]] = [
@@ -80,6 +81,7 @@ WRITE_CALLS: list[tuple[str, dict[str, Any]]] = [
     ("complete_appointment", {"appointment_id": 500}),
     ("reserve_slot", {"spot_id": 32}),
     ("update_subscription", {"subscription_id": 100, "frequency": 30}),
+    ("service_schedule", {"move": [{"appointment_id": 500, "spot_id": 32}]}),
     ("call", {"entity": "note", "action": "create", "params": {"customerID": 1, "notes": "x", "contactType": 5}}),
 ]
 

@@ -34,7 +34,7 @@ READ_TOOL_NAMES = {
 WRITE_TOOL_NAMES = {
     "add_note", "update_note", "set_red_notes", "create_task", "schedule_appointment",
     "reschedule_appointment", "update_appointment_notes", "cancel_appointment",
-    "complete_appointment", "reserve_slot", "update_subscription",
+    "complete_appointment", "reserve_slot", "update_subscription", "service_schedule",
 }
 
 # reserve_slot is the one deliberate allowlist exemption (see server.py: a spot
@@ -50,7 +50,7 @@ async def test_tool_inventory_is_exhaustively_classified() -> None:
     live_names = {t.name for t in await server.mcp.list_tools()}
     classified = GENERIC_TOOL_NAMES | READ_TOOL_NAMES | WRITE_TOOL_NAMES
     assert live_names == classified
-    assert len(live_names) == 30
+    assert len(live_names) == 31
 
 
 def test_write_calls_fixture_covers_every_write_tool() -> None:

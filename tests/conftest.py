@@ -145,7 +145,15 @@ def _seed() -> dict[str, dict[int, dict[str, Any]]]:
     }
 
 
-ID_FIELD_ALIASES = {"officeIDs": "officeID", "officeID": "officeID", "typeIDs": "typeID"}
+ID_FIELD_ALIASES = {
+    "officeIDs": "officeID",
+    "officeID": "officeID",
+    "typeIDs": "typeID",
+    # appointment/search's real filter name is serviceIDs, but the field it
+    # actually filters on the appointment record is `type` (confirmed against
+    # the real spec: "type integer -- serviceID to perform").
+    "serviceIDs": "type",
+}
 
 
 class FakeFR:

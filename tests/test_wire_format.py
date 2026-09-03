@@ -581,6 +581,68 @@ async def test_update_subscription_sends_only_given_fields(fake: FakeFR) -> None
         await server.update_subscription(100)
 
 
+async def test_service_schedule_groups_by_subscription_and_zone(fake: FakeFR) -> None:
+    out = loads(await server.service_schedule(service_type_id=3, start="2025-10-01", days=400))
+    assert out["subscriptionCount"] == 1
+    group = out["groups"][0]
+    assert group["subscriptionID"] == 100
+    assert group["zone"] == "Folsom"
+    assert group["customer"]["name"] == "Jane Smith"
+    assert group["frequencyText"] == "every 365 days"
+    # appointment 500 (today, pending) and 502 (2025-10-09, completed) both belong
+    # to subscription 100 and both fall in this window; sorted oldest-first.
+    assert [a["appointmentID"] for a in group["appointments"]] == [502, 500]
+    assert group["appointmentCount"] == 2
+    assert out["moved"] == []
+
+
+async def test_service_schedule_appointment_with_no_subscription_gets_its_own_group(fake: FakeFR) -> None:
+    out = loads(await server.service_schedule(service_type_id=4))
+    # appointment 501 (customer 2, service type 4) has no subscriptionID in the seed data.
+    group = next(g for g in out["groups"] if g["subscriptionID"] is None)
+    assert group["zone"] is None
+    assert group["customer"] is None
+    assert [a["appointmentID"] for a in group["appointments"]] == [501]
+
+
+async def test_service_schedule_region_filter_excludes_non_matching_and_unassigned_groups(fake: FakeFR) -> None:
+    out = loads(await server.service_schedule(start="2025-10-01", days=400, region_id=2))
+    assert {g["subscriptionID"] for g in out["groups"]} == {100}  # only Folsom (region 2) subscription 100
+    out_other = loads(await server.service_schedule(start="2025-10-01", days=400, region_id=999))
+    assert out_other["groups"] == []
+
+
+async def test_service_schedule_status_filter(fake: FakeFR) -> None:
+    pending = loads(await server.service_schedule(service_type_id=3, status="pending"))
+    assert [a["appointmentID"] for g in pending["groups"] for a in g["appointments"]] == [500]
+    completed = loads(await server.service_schedule(service_type_id=3, start="2025-10-01", days=400, status="completed"))
+    assert [a["appointmentID"] for g in completed["groups"] for a in g["appointments"]] == [502]
+    with pytest.raises(ToolError, match="status must be one of"):
+        await server.service_schedule(status="bogus")
+
+
+async def test_service_schedule_move_reschedules_via_the_same_tool(fake: FakeFR) -> None:
+    out = loads(await server.service_schedule(move=[{"appointment_id": 500, "spot_id": 32}]))
+    assert out["moved"][0]["appointmentID"] == 500
+    assert out["moved"][0]["result"]["success"] is True
+    req = _last(fake, "appointment", "update")
+    assert req.one("appointmentID") == "500" and req.one("spotID") == "32"
+
+
+async def test_service_schedule_move_requires_appointment_id() -> None:
+    with pytest.raises(ToolError, match="appointment_id"):
+        await server.service_schedule(move=[{"spot_id": 32}])
+
+
+async def test_service_schedule_move_stops_at_first_failure_before_any_read(
+    fake: FakeFR, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FR_WRITES", "off")
+    with pytest.raises(ToolError, match="writes are disabled"):
+        await server.service_schedule(move=[{"appointment_id": 500, "spot_id": 32}])
+    assert fake.requests == []  # the guarded move fails before the grouped read ever runs
+
+
 async def test_writes_off_blocks_every_write_but_not_reads(fake: FakeFR, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FR_WRITES", "off")
     for coro in (
@@ -744,7 +806,7 @@ def test_http_app_secret_path_healthz_and_bearer(fake: FakeFR, monkeypatch: pyte
         assert r.status_code == 200
         names = {t["name"] for t in r.json()["result"]["tools"]}
         assert {"find_customer", "update_subscription", "call", "cancel_appointment"} <= names
-        assert len(names) == 30
+        assert len(names) == 31
         assert http.post("/mcp", json=body, headers=auth).status_code == 404
 
 

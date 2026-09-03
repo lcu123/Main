@@ -49,6 +49,8 @@ Curated tools are named the way an office person talks. Every one returns trimme
 | `complete_appointment` | Mark completed or no-show. Generates the invoice, so confirms first. |
 | `reserve_slot` | Hold a spot for a few minutes while confirming with the customer. |
 | `update_subscription` | Job frequency, billing frequency, custom date, seasonal window, region, preferred tech/day/time, duration, call-ahead, sales reps, source, contract length, expiration, PO. |
+| **Reads + writes** | |
+| `service_schedule` | Appointment history/upcoming for a service type and/or zone, grouped by subscription. Pass `move` to reschedule one or more of those appointments (via `open_slots`-sourced spot IDs) in the same call. |
 
 Two things on the FieldRoutes subscription screen have no API: **Autoschedule** (Due Date Method) and defining the dates of a **Custom Schedule**. The API can only pick an existing custom schedule by ID. Both stay UI-only.
 
