@@ -145,3 +145,5 @@ The Docker build installs from `requirements.lock`, not `pyproject.toml`'s open 
 ```
 python -m venv /tmp/lockenv && /tmp/lockenv/bin/pip install -e . && /tmp/lockenv/bin/pip freeze > requirements.lock
 ```
+
+`.github/workflows/ci.yml` runs the test suite and a real `docker build` + `docker run` + `/healthz` smoke test on every push and pull request. Once you've confirmed it's green on GitHub, you can safely turn on Railway's **Wait for CI** (Settings → Source) so Railway won't deploy a change that fails the test suite.

@@ -46,6 +46,7 @@ scripts/extract_spec.py  Regenerates fieldroutes_spec.json from FieldRoutes' pub
 tests/test_wire_format.py  Fake FieldRoutes (httpx.MockTransport) verifying the wire format, pagination, quota, and allowlist
 Dockerfile, railway.json   Railway deploy (healthcheck /healthz, installs from requirements.lock)
 requirements.lock          Pinned runtime deps; regenerate deliberately, see README
+.github/workflows/ci.yml   pytest + a real `docker build`/`docker run`/`/healthz` smoke test on every push and PR
 .env.example               Every env var, commented
 README.md                  Deploy steps + first-run checklist (user-facing)
 ```
