@@ -340,6 +340,26 @@ class FieldRoutesClient:
                     action=action,
                     response=data,
                 )
+
+            # FieldRoutes reports `success: true` even when it silently dropped a
+            # param it doesn't recognise for this endpoint -- it just lists it in
+            # `ignoredParams`. Verified live: appointment/update with `officeNotes`
+            # returned success and ignoredParams: ["officeNotes"], and nothing was
+            # written. For a write that means the change only partly happened; for
+            # a search it means an ignored filter returned *unfiltered* rows. Both
+            # are wrong answers that look right, so treat them as failures.
+            ignored = data.get("ignoredParams") if isinstance(data, dict) else None
+            if isinstance(ignored, list) and ignored:
+                sent = {k.rstrip("[]") for k in body_params} - {"authenticationKey", "authenticationToken"}
+                dropped = sorted({str(p).rstrip("[]") for p in ignored} & sent)
+                if dropped:
+                    raise FieldRoutesError(
+                        f"{entity}/{action}: FieldRoutes ignored param(s) {dropped} -- not supported by this "
+                        f"endpoint (or misspelled), so the request was not applied as sent",
+                        entity=entity,
+                        action=action,
+                        response=data,
+                    )
             return data
 
         raise FieldRoutesError(f"{entity}/{action}: retries exhausted", entity=entity, action=action) from last_exc
