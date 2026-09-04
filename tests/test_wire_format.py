@@ -340,9 +340,15 @@ async def test_find_customer_single_token_unions_last_first_company(fake: FakeFR
 
 
 async def test_find_customer_by_phone_and_id(fake: FakeFR) -> None:
+    # Verified live: `phone` is an exact 10-digit match and CONTAINS silently returns nothing,
+    # so the filter must be a bare normalized number, not an operator object.
     out = loads(await server.find_customer(phone="(916) 555-1234"))
     assert out["customers"][0]["customerID"] == 1
-    assert json.loads(_last(fake, "customer", "search").one("phone")) == {"operator": "CONTAINS", "value": "9165551234"}
+    assert _last(fake, "customer", "search").one("phone") == "9165551234"
+    out = loads(await server.find_customer(phone="+1 916-555-1234"))  # leading country code dropped
+    assert out["customers"][0]["customerID"] == 1
+    with pytest.raises(ToolError, match="10-digit"):
+        await server.find_customer(phone="555-1234")  # partial numbers can't be searched
     out = loads(await server.find_customer(customer_id=3))
     assert out["customers"][0]["name"] == "Acme Corp"
     with pytest.raises(ToolError):
@@ -408,8 +414,34 @@ async def test_route_stops_marks_open_blocked_reserved(fake: FakeFR) -> None:
     assert out["route"]["tech"] == "Carlos Quijas"
     states = {s["spotID"]: s.get("state") for s in out["stops"]}
     assert states[32] == "open" and states[33] == "blocked" and states[34] == "reserved"
+    # Live values are strings: "reserved": "0" is an *open* spot, not a reserved one
+    # (seen on every open spot of a real route before this was fixed).
+    assert states[35] == "open"
     booked = next(s for s in out["stops"] if s["spotID"] == 30)
     assert booked["appointment"]["customer"]["name"] == "Jane Smith"
+
+
+async def test_subscription_shaping_handles_live_string_sentinels(fake: FakeFR) -> None:
+    # Subscription 101 mirrors a real record: frequency "CUSTOM", regionID "0", soldBy2/3 "0".
+    out = loads(await server.subscription_details(101))
+    sub = out["subscription"]
+    assert sub["frequencyText"] == "custom schedule"
+    assert "region" not in sub  # "0" means unassigned -- must not render as region "0"
+    assert sub["soldByName"] == "Iggy Artemenko"
+    assert "soldBy2Name" not in sub and "soldBy3Name" not in sub  # no null-valued noise keys
+    assert sub["preferredTechName"] is None
+
+
+async def test_appointment_tech_falls_back_to_route_not_booking_employee(fake: FakeFR) -> None:
+    # `employeeID` is who booked the appointment (office staff / the import job), not the tech.
+    # Unassigned appointments take the route's tech; with no route they stay unassigned.
+    on_route = {"appointmentID": "900", "customerID": "1", "routeID": "20", "assignedTech": "0", "employeeID": "9"}
+    no_route = {"appointmentID": "901", "customerID": "1", "routeID": "999", "assignedTech": "0", "employeeID": "9",
+                "servicedBy": "0"}
+    rows = await server._shape_appointments([on_route, no_route], customers={})
+    assert rows[0]["tech"] == "Carlos Quijas" and rows[0]["bookedBy"] == "Office Admin"
+    assert rows[1]["tech"] is None and rows[1]["bookedBy"] == "Office Admin"
+    assert "servicedBy" not in rows[1]  # "0" = nobody
 
 
 async def test_crew_schedule_counts_pending_stops(fake: FakeFR) -> None:

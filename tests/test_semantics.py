@@ -182,3 +182,26 @@ def test_between_builds_the_operator_object() -> None:
         "operator": "BETWEEN",
         "value": ["2026-01-01", "2026-01-07"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Shapes seen on the live tenant that the spec doesn't describe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw", ["CUSTOM", "custom", " Custom "])
+def test_frequency_text_custom_schedule_string(raw: str) -> None:
+    # Live: a custom-schedule subscription carries the literal string "CUSTOM", not -3.
+    assert server._frequency_text(raw) == "custom schedule"
+    assert server._frequency_text(-3) == "custom schedule"
+
+
+def test_name_and_address_collapse_stray_whitespace() -> None:
+    # Live: "Pedro " (trailing space) rendered as "Pedro  Mendoza"; an address arrived with a
+    # leading tab. Office-facing text should never carry that through.
+    assert server._name({"fname": "Pedro ", "lname": "Mendoza"}) == "Pedro Mendoza"
+    assert server._name({"fname": " Mica ", "lname": "Artemenko", "companyName": ""}) == "Mica Artemenko"
+    assert server._address({"address": "\t8228 Orchid Tree Way ", "city": "Antelope", "state": "CA", "zip": "95843"}) == (
+        "8228 Orchid Tree Way, Antelope, CA, 95843"
+    )
+    assert server._address({"address": None, "city": "", "state": "CA", "zip": None}) == "CA"
