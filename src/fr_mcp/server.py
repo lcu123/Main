@@ -58,6 +58,15 @@ SUBSCRIPTION_KEYS = [
     "agreementLength", "expirationDate", "poNumber", "nextBillingDate", "renewalDate",
     "renewalFrequency", "initialAppointmentID", "dateAdded", "dateCancelled", "cxlNotes",
 ]
+# due_for_service is a skim-a-list view ("what's coming up"), not a full subscription
+# record -- drop billing/sales/administrative fields an office person wouldn't need to
+# decide what's due, so more rows fit before a large office's real volume hits the
+# response size ceiling. subscription_details/service_schedule keep the full SUBSCRIPTION_KEYS.
+DUE_FOR_SERVICE_KEYS = [
+    "subscriptionID", "customerID", "serviceID", "serviceType", "active", "activeText",
+    "frequency", "nextService", "lastCompleted", "preferredTech", "preferredDays",
+    "preferredStart", "preferredEnd", "regionID", "duration", "callAhead",
+]
 APPOINTMENT_KEYS = [
     "appointmentID", "customerID", "subscriptionID", "routeID", "spotID", "date", "start", "end",
     "timeWindow", "duration", "type", "status", "statusText", "employeeID", "assignedTech",
@@ -487,15 +496,19 @@ async def _shape_appointments(
     return out
 
 
-async def _shape_subscriptions(subs: list[dict[str, Any]], customers: dict[int, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+async def _shape_subscriptions(
+    subs: list[dict[str, Any]], customers: dict[int, dict[str, Any]] | None = None, keys: list[str] | None = None
+) -> list[dict[str, Any]]:
+    active_keys = keys or SUBSCRIPTION_KEYS
     names, types, regions = await _emp_names(), await _service_type_names(), await _region_names()
     out = []
     for s in subs:
-        row = _pick(s, SUBSCRIPTION_KEYS)
+        row = _pick(s, active_keys)
         row["service"] = types.get(_int(s.get("serviceID")) or -1, s.get("serviceType"))
         row["activeText"] = SUBSCRIPTION_ACTIVE.get(_int(s.get("active")) or 0, s.get("activeText"))
         row["frequencyText"] = _frequency_text(s.get("frequency"))
-        row["billingFrequencyText"] = _frequency_text(s.get("billingFrequency"))
+        if "billingFrequency" in active_keys:
+            row["billingFrequencyText"] = _frequency_text(s.get("billingFrequency"))
         if s.get("regionID"):
             row["region"] = regions.get(_int(s.get("regionID")) or -1, s.get("regionID"))
         row["preferredTechName"] = _emp(names, s.get("preferredTech"))
@@ -503,7 +516,7 @@ async def _shape_subscriptions(subs: list[dict[str, Any]], customers: dict[int, 
         if pd is not None and pd >= 0:
             row["preferredDayText"] = DAYS.get(pd, str(pd))
         for k in ("soldBy", "soldBy2", "soldBy3"):
-            if s.get(k):
+            if k in active_keys and s.get(k):
                 row[k + "Name"] = _emp(names, s.get(k))
         if customers is not None:
             cust = customers.get(_int(s.get("customerID")) or -1)
@@ -929,9 +942,9 @@ async def due_for_service(
     service_type_id: int | None = None,
     region_id: int | None = None,
     tech: int | None = None,
-    limit: int = 200,
+    limit: int = 50,
 ) -> str:
-    """Active subscriptions whose next service falls in a window (default today + 6 days), with customer, property address and lat/lng, service, frequency, preferred tech/day, last completed. Filter by service type, region, or preferred tech."""
+    """Active subscriptions whose next service falls in a window (default today + 6 days), with customer, property address and lat/lng, service, frequency, preferred tech/day, last completed. Filter by service type, region, or preferred tech to narrow a large office's results; raise `limit` for a bigger pull once narrowed."""
     s, e = _window(start, days)
     filters: dict[str, Any] = {"active": 1, "nextService": _between(s, e)}
     if service_type_id is not None:
@@ -943,7 +956,8 @@ async def due_for_service(
     subs = await _search_rows("subscription", filters, limit=limit)
     subs.sort(key=lambda x: str(x.get("nextService") or ""))
     customers = await _customers_by_id([x.get("customerID") for x in subs])
-    return _j({"from": s, "to": e, "count": len(subs), "subscriptions": await _shape_subscriptions(subs, customers)})
+    shaped = await _shape_subscriptions(subs, customers, keys=DUE_FOR_SERVICE_KEYS)
+    return _j({"from": s, "to": e, "count": len(subs), "subscriptions": shaped})
 
 
 @_tool
