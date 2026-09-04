@@ -271,12 +271,25 @@ class FieldRoutesClient:
 
     # -- low level -----------------------------------------------------
 
-    async def call(self, entity: str, action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def call(
+        self,
+        entity: str,
+        action: str,
+        params: dict[str, Any] | None = None,
+        *,
+        optional_params: set[str] | None = None,
+    ) -> dict[str, Any]:
         """POST `{entity}/{action}` with form-encoded params; return the parsed JSON body.
 
         Raises `FieldRoutesError` on a transport failure, a non-JSON body,
-        `success: false` in the body (HTTP status is 200 either way), or the
-        daily read/write quota being nearly exhausted (see `UsageCounter`).
+        `success: false` in the body (HTTP status is 200 either way), a
+        daily read/write quota nearly exhausted (see `UsageCounter`), or a
+        param we sent showing up in `ignoredParams` (see below) unless it's
+        named in `optional_params` -- a param the caller sent best-effort
+        and already has a fallback for if the live API doesn't support it
+        (e.g. `customer/get`'s `includeSubscriptions`, which the spec
+        declares but which Zest's live account ignores; `customer_360`
+        already re-fetches subscriptions separately when that happens).
         """
         is_read = is_read_action(action)
         self.usage.check(is_read)
@@ -351,7 +364,7 @@ class FieldRoutesClient:
             ignored = data.get("ignoredParams") if isinstance(data, dict) else None
             if isinstance(ignored, list) and ignored:
                 sent = {k.rstrip("[]") for k in body_params} - {"authenticationKey", "authenticationToken"}
-                dropped = sorted({str(p).rstrip("[]") for p in ignored} & sent)
+                dropped = sorted(({str(p).rstrip("[]") for p in ignored} & sent) - (optional_params or set()))
                 if dropped:
                     raise FieldRoutesError(
                         f"{entity}/{action}: FieldRoutes ignored param(s) {dropped} -- not supported by this "
@@ -390,12 +403,14 @@ class FieldRoutesClient:
         *,
         extra_params: dict[str, Any] | None = None,
         id_field: str | None = None,
+        optional_params: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         """`{entity}/get`: fetch full records for `ids`, chunked at 1000 per FieldRoutes' cap.
 
         Most entities take `{entity}IDs`, but a substantial minority don't --
         pass `id_field` (from `fieldroutes_spec.json`'s `entities.{entity}.getIdParam`)
-        for those; server.py's `_id_param()` looks it up.
+        for those; server.py's `_id_param()` looks it up. `optional_params` names any of
+        `extra_params` the caller sends best-effort (see `call()`'s docstring).
         """
         ids = [i for i in ids]
         id_field = id_field or f"{entity}IDs"
@@ -405,7 +420,7 @@ class FieldRoutesClient:
             if not chunk:
                 continue
             params = {id_field: chunk, **(extra_params or {})}
-            data = await self.call(entity, "get", params)
+            data = await self.call(entity, "get", params, optional_params=optional_params)
             records.extend(self.extract_records(entity, data))
         return records
 
