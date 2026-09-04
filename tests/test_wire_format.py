@@ -578,7 +578,20 @@ async def test_create_task_and_alert(fake: FakeFR) -> None:
     assert req.one("type") == "0" and req.one("status") == "3" and req.one("dueDate") == "2026-09-10"
     assert req.one("addedBy") == "9" and req.one("category") == "10"
     await server.create_task(1, "Dog in yard", alert=True)
-    assert _last(fake, "task", "create").one("type") == "1"
+    req = _last(fake, "task", "create")
+    assert req.one("type") == "1" and req.one("category") == "10002"  # FR_DEFAULT_TASK_CATEGORY_ID
+
+
+async def test_create_task_requires_an_office_category(fake: FakeFR, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Verified live: task/create rejects a missing category, 0, and the spec's built-in IDs;
+    # only the office's own Task Categories are accepted, and there's no endpoint listing them.
+    monkeypatch.delenv("FR_DEFAULT_TASK_CATEGORY_ID")
+    with pytest.raises(ToolError, match="FR_DEFAULT_TASK_CATEGORY_ID"):
+        await server.create_task(1, "x")
+    assert not [r for r in fake.requests if r.action == "create"]
+    out = loads(await server.lookups(kind="task_categories"))
+    assert out["task_categories"] == [{"categoryID": 10002, "description": "Billing"}]
+    assert loads(await server.lookups())["task_categories"] == out["task_categories"]
 
 
 async def test_schedule_reschedule_cancel_complete(fake: FakeFR) -> None:
@@ -608,11 +621,28 @@ async def test_schedule_reschedule_cancel_complete(fake: FakeFR) -> None:
 
 
 async def test_update_appointment_notes(fake: FakeFR) -> None:
-    await server.update_appointment_notes(500, notes="Aerate + overseed, skip side yard", office_notes="Prepaid")
+    await server.update_appointment_notes(500, notes="Aerate + overseed, skip side yard")
     req = _last(fake, "appointment", "update")
-    assert req.one("notes") == "Aerate + overseed, skip side yard" and req.one("officeNotes") == "Prepaid"
-    with pytest.raises(ToolError):
-        await server.update_appointment_notes(500)
+    assert req.one("notes") == "Aerate + overseed, skip side yard"
+    # Verified live: appointment/update has no office-notes field -- the tool must never
+    # send one (the API would report success while silently dropping it).
+    assert "officeNotes" not in req.form
+    await server.update_appointment_notes(500, notes="")  # empty string clears
+    assert _last(fake, "appointment", "update").one("notes") == ""
+
+
+async def test_ignored_params_are_an_error_not_a_silent_success(fake: FakeFR) -> None:
+    # Verified live: FieldRoutes answers success:true and lists an unrecognised param in
+    # ignoredParams. A write then only partly happened; a search with an ignored filter
+    # returned *unfiltered* rows. The client must surface both instead of returning data.
+    fake.ignore_params = {"officeNotes", "bogusFilter"}
+    with pytest.raises(FieldRoutesError, match="ignored param.*officeNotes"):
+        await server.client().call("appointment", "update", {"appointmentID": 500, "officeNotes": "x"})
+    with pytest.raises(ToolError, match="bogusFilter"):
+        await server.search("customer", filters={"bogusFilter": 1})
+    # A param FieldRoutes accepts is unaffected.
+    out = loads(await server.search("customer", filters={"active": 1}))
+    assert out["total"] == 3
 
 
 async def test_reserve_slot(fake: FakeFR) -> None:

@@ -28,6 +28,7 @@ os.environ.setdefault("FR_AUTH_TOKEN", "token")
 os.environ.setdefault("FR_OFFICE_ID", "7")
 os.environ.setdefault("FR_DEFAULT_EMPLOYEE_ID", "9")
 os.environ.setdefault("FR_DEFAULT_NOTE_TYPE_ID", "5")
+os.environ.setdefault("FR_DEFAULT_TASK_CATEGORY_ID", "10002")
 
 from fr_mcp import server  # noqa: E402
 from fr_mcp.client import FieldRoutesClient, RateLimiter  # noqa: E402
@@ -146,7 +147,7 @@ def _seed() -> dict[str, dict[int, dict[str, Any]]]:
         "task": {
             700: {"taskIDs": 700, "officeID": 7, "customerID": 1, "type": 1, "status": 0, "task": "Dog in backyard"},
             701: {"taskIDs": 701, "officeID": 7, "customerID": 1, "type": 0, "status": 3, "task": "Call about renewal",
-                  "assignedTo": 9},
+                  "assignedTo": 9, "category": "10002", "categoryDescription": "Billing"},
             702: {"taskIDs": 702, "officeID": 7, "customerID": 1, "type": 0, "status": 1, "task": "Done already"},
         },
         "note": {
@@ -183,6 +184,9 @@ class FakeFR:
         # lets a test make an *earlier* write in the same batch succeed and a *later* one fail.
         self.fail_write_after: int | None = None
         self.fail_write_message: str = "conflict"
+        # Params the fake "doesn't recognise": echoed back in the envelope's
+        # `ignoredParams` while still reporting success, exactly as the real API does.
+        self.ignore_params: set[str] = set()
         # FieldRoutes' own per-office counters, reported back on every response.
         self.reads_today = 0
         self.writes_today = 0
@@ -251,7 +255,7 @@ class FakeFR:
             "requestAPIKeyType": "standard",
             "requestAction": action,
             "endpoint": entity,
-            "ignoredParams": [],
+            "ignoredParams": [k for k in form if k.rstrip("[]") in self.ignore_params],
             "processingTime": "1 milliseconds",
             **body,
         }

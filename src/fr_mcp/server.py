@@ -240,6 +240,10 @@ def _default_note_type() -> int | None:
     return _int(os.environ.get("FR_DEFAULT_NOTE_TYPE_ID"))
 
 
+def _default_task_category() -> int | None:
+    return _int(os.environ.get("FR_DEFAULT_TASK_CATEGORY_ID"))
+
+
 def _endpoint_params(entity: str, action: str) -> set[str]:
     ep = SPEC["endpoints"].get(f"{entity}/{action}")
     return {p["name"] for p in ep["params"]} if ep else set()
@@ -1056,9 +1060,23 @@ async def ar_aging(min_balance: float = 0.01, min_age_days: int = 0, limit: int 
 
 @_tool
 async def lookups(kind: str = "all", refresh: bool = False) -> str:
-    """IDs you need for other tools: employees (techs/office/sales), service types, regions, offices, cancellation and reschedule reasons, customer sources. kind picks one list or "all"; refresh re-reads FieldRoutes. Note Types have no API endpoint; set FR_DEFAULT_NOTE_TYPE_ID."""
+    """IDs you need for other tools: employees (techs/office/sales), service types, regions, offices, cancellation and reschedule reasons, customer sources, and the task categories in use (create_task needs one; they're per-office with no listing endpoint, so this reads them off existing tasks). kind picks one list or "all"; refresh re-reads FieldRoutes. Note Types have no API endpoint either; set FR_DEFAULT_NOTE_TYPE_ID."""
     if refresh:
         _reset_cache()
+    if kind in ("all", "task_categories"):
+        if "taskCategories" not in _cache:
+            # No taskCategory endpoint exists (verified against the spec), and task/create only
+            # accepts the office's own IDs -- so collect the (id, description) pairs FieldRoutes
+            # attaches to existing tasks. Human-made tasks with no category carry "0" and no
+            # description; those aren't creatable values, so skip them.
+            cats: dict[int, str] = {}
+            for t in await _search_rows("task", {}):
+                cid = _int(t.get("category"))
+                if cid and t.get("categoryDescription"):
+                    cats[cid] = _clean(t.get("categoryDescription"))
+            _cache["taskCategories"] = [{"categoryID": k, "description": v} for k, v in sorted(cats.items())]
+        if kind == "task_categories":
+            return _j({"task_categories": _cache["taskCategories"]})
     kinds = {
         "employees": ("employee", EMPLOYEE_KEYS, "employees"),
         "service_types": ("serviceType", SERVICE_TYPE_KEYS, "serviceTypes"),
@@ -1071,8 +1089,10 @@ async def lookups(kind: str = "all", refresh: bool = False) -> str:
         "customer_sources": ("customerSource", None, "customerSources"),
     }
     if kind != "all" and kind not in kinds:
-        raise ToolError(f"kind must be one of: all, {', '.join(kinds)}")
+        raise ToolError(f"kind must be one of: all, {', '.join(kinds)}, task_categories")
     out: dict[str, Any] = {}
+    if kind == "all":
+        out["task_categories"] = _cache["taskCategories"]
     for name, (entity, keys, cache_key) in kinds.items():
         if kind not in ("all", name):
             continue
@@ -1201,9 +1221,18 @@ async def create_task(
     subscription_id: int | None = None,
     phone: str | None = None,
 ) -> str:
-    """Create a task, or an alert (alert=True) that pops for the office/tech on the account. Categories: Billing 1, Customer Care 10, Appt Status 15."""
+    """Create a task, or an alert (alert=True) that pops for the office/tech on the account. category is a Task Category ID and is required by FieldRoutes -- they're per-office (get them from lookups(kind="task_categories")); it defaults to FR_DEFAULT_TASK_CATEGORY_ID."""
     _require_writes("create_task")
     _require_customer_allowed("create_task", customer_id)
+    # Verified live: task/create rejects a missing category ("category required"), 0
+    # ("must be a positive integer") and the spec's built-in IDs like 10 ("not a valid
+    # taskCategoryID for the office") -- only the office's own categories are accepted.
+    category = category if category is not None else _default_task_category()
+    if category is None:
+        raise ToolError(
+            "create_task: give category or set FR_DEFAULT_TASK_CATEGORY_ID -- Task Categories are "
+            "per-office; lookups(kind=\"task_categories\") lists the ones in use."
+        )
     params: dict[str, Any] = {
         "type": 1 if alert else 0,
         "customerID": customer_id,
@@ -1289,18 +1318,13 @@ async def reschedule_appointment(
 
 
 @_tool
-async def update_appointment_notes(
-    appointment_id: int, notes: str | None = None, office_notes: str | None = None
-) -> str:
-    """Set the visit's notes (the text shown on the appointment/visit, i.e. what the tech sees) and/or the office-only notes. Leave a field out to keep it."""
+async def update_appointment_notes(appointment_id: int, notes: str) -> str:
+    """Set the visit's notes (the text shown on the appointment, i.e. what the tech sees before the stop). Pass an empty string to clear. Office-only appointment notes can't be set through the FieldRoutes API (appointment/update has no such field; verified live), only in the FieldRoutes UI."""
     _require_writes("update_appointment_notes")
     _require_customer_allowed("update_appointment_notes", await _write_target_customer("appointment", appointment_id))
-    if notes is None and office_notes is None:
-        raise ToolError("update_appointment_notes: give notes and/or office_notes.")
-    params: dict[str, Any] = {"appointmentID": appointment_id, "notes": notes}
-    if office_notes is not None:
-        params["officeNotes"] = office_notes
-    return _j(await client().call("appointment", "update", params))
+    # Verified live: the `notes` param lands in the record's `appointmentNotes`; there is no
+    # office-notes param at all -- sending `officeNotes` came back success + ignoredParams.
+    return _j(await client().call("appointment", "update", {"appointmentID": appointment_id, "notes": notes}))
 
 
 @_tool

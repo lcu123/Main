@@ -121,6 +121,7 @@ When all ten pass, remove `FR_WRITE_CUSTOMER_IDS` and the server is live.
 | `FR_OFFICE_ID` | Applied to every search unless the call scopes its own office. |
 | `FR_DEFAULT_EMPLOYEE_ID` | Employee the API acts as for notes, tasks, cancels and completions. |
 | `FR_DEFAULT_NOTE_TYPE_ID` | Note Type for `add_note`. |
+| `FR_DEFAULT_TASK_CATEGORY_ID` | Task Category for `create_task` when the call doesn't give one (FieldRoutes requires one; `lookups(kind="task_categories")` lists the office's). |
 | `FR_WRITES` | `on` (default) or `off`. |
 | `FR_WRITE_CUSTOMER_IDS` | Comma-separated customer IDs writes are allowed for. Unset = all. |
 | `FR_ALLOW_DELETE`, `FR_ALLOW_CHARGES` | Unlock deletes and real card charges. Leave at 0. |
