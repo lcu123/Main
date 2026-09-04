@@ -1094,7 +1094,7 @@ async def add_note(
     """Add a note to a customer's account. Keep it to two sentences. note_type_id defaults to FR_DEFAULT_NOTE_TYPE_ID; show_tech puts it on the tech's mobile app."""
     _require_writes("add_note")
     _require_customer_allowed("add_note", customer_id)
-    note_type = note_type_id or _default_note_type()
+    note_type = note_type_id if note_type_id is not None else _default_note_type()
     if note_type is None:
         raise ToolError("add_note: give note_type_id or set FR_DEFAULT_NOTE_TYPE_ID (Admin > Preferences > Note Types).")
     params: dict[str, Any] = {
