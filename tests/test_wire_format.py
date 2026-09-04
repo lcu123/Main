@@ -601,15 +601,52 @@ async def test_service_schedule_appointment_with_no_subscription_gets_its_own_gr
     # appointment 501 (customer 2, service type 4) has no subscriptionID in the seed data.
     group = next(g for g in out["groups"] if g["subscriptionID"] is None)
     assert group["zone"] is None
-    assert group["customer"] is None
+    assert group["customer"]["name"] == "John Smithers"
     assert [a["appointmentID"] for a in group["appointments"]] == [501]
+
+
+async def test_service_schedule_orphan_appointments_for_different_customers_stay_separate(fake: FakeFR) -> None:
+    # A second customer's stand-alone appointment (same service type, no subscription) must
+    # not be merged into customer 2's "unassigned" group just because both lack a subscription.
+    fake.data["appointment"][503] = {
+        "appointmentID": 503, "officeID": 7, "customerID": 3, "date": TODAY, "type": 4, "status": 0,
+    }
+    out = loads(await server.service_schedule(service_type_id=4))
+    orphan_groups = {g["customer"]["customerID"]: g for g in out["groups"] if g["subscriptionID"] is None}
+    assert set(orphan_groups) == {2, 3}
+    assert [a["appointmentID"] for a in orphan_groups[2]["appointments"]] == [501]
+    assert [a["appointmentID"] for a in orphan_groups[3]["appointments"]] == [503]
+
+
+async def test_service_schedule_stand_alone_sentinel_excluded_from_subscription_lookup(fake: FakeFR) -> None:
+    # subscriptionID -1 means "stand-alone service/reservice", not a real subscription to
+    # fetch -- it must group like "no subscription" (by customer), and never reach subscription/get.
+    fake.data["appointment"][503] = {
+        "appointmentID": 503, "officeID": 7, "customerID": 3, "subscriptionID": -1,
+        "date": TODAY, "type": 4, "status": 0,
+    }
+    out = loads(await server.service_schedule(service_type_id=4))
+    orphan_groups = {g["customer"]["customerID"]: g for g in out["groups"] if g["subscriptionID"] is None}
+    assert set(orphan_groups) == {2, 3}
+    assert [a["appointmentID"] for a in orphan_groups[3]["appointments"]] == [503]
+    assert not any(r.entity == "subscription" and r.action == "get" for r in fake.requests)
 
 
 async def test_service_schedule_region_filter_excludes_non_matching_and_unassigned_groups(fake: FakeFR) -> None:
     out = loads(await server.service_schedule(start="2025-10-01", days=400, region_id=2))
     assert {g["subscriptionID"] for g in out["groups"]} == {100}  # only Folsom (region 2) subscription 100
+    # region_id is pushed down to subscription/search, then appointment/search's
+    # subscriptionIDs filter -- not fetched in full and filtered in memory.
+    sub_search = _last(fake, "subscription", "search")
+    assert json.loads(sub_search.one("regionID")) == 2
+    appt_search = _last(fake, "appointment", "search")
+    assert json.loads(appt_search.one("subscriptionIDs")) == {"operator": "IN", "value": [100]}
+
+    before = len(fake.requests)
     out_other = loads(await server.service_schedule(start="2025-10-01", days=400, region_id=999))
     assert out_other["groups"] == []
+    # no subscriptions in that region -> short-circuits before ever searching appointments.
+    assert not any(r.entity == "appointment" and r.action == "search" for r in fake.requests[before:])
 
 
 async def test_service_schedule_status_filter(fake: FakeFR) -> None:
@@ -634,6 +671,13 @@ async def test_service_schedule_move_requires_appointment_id() -> None:
         await server.service_schedule(move=[{"spot_id": 32}])
 
 
+async def test_service_schedule_move_rejects_non_numeric_appointment_id_cleanly() -> None:
+    # A bad appointment_id must raise a clean ToolError (via _int), not an unhandled
+    # ValueError from a raw int(...) call.
+    with pytest.raises(ToolError, match="numeric appointment_id"):
+        await server.service_schedule(move=[{"appointment_id": "abc", "spot_id": 32}])
+
+
 async def test_service_schedule_move_stops_at_first_failure_before_any_read(
     fake: FakeFR, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -641,6 +685,57 @@ async def test_service_schedule_move_stops_at_first_failure_before_any_read(
     with pytest.raises(ToolError, match="writes are disabled"):
         await server.service_schedule(move=[{"appointment_id": 500, "spot_id": 32}])
     assert fake.requests == []  # the guarded move fails before the grouped read ever runs
+
+
+async def test_service_schedule_move_preserves_earlier_successes_on_a_later_failure(fake: FakeFR) -> None:
+    fake.data["appointment"][504] = {
+        "appointmentID": 504, "officeID": 7, "customerID": 1, "subscriptionID": 100, "routeID": 20,
+        "date": TODAY, "type": 3, "status": 0,
+    }
+    fake.fail_write_after = 1  # the 2nd appointment/update call fails; the 1st must still succeed
+    out = loads(
+        await server.service_schedule(
+            move=[{"appointment_id": 500, "spot_id": 32}, {"appointment_id": 504, "spot_id": 33}]
+        )
+    )
+    assert len(out["moved"]) == 2
+    assert out["moved"][0]["appointmentID"] == 500
+    assert out["moved"][0]["result"]["success"] is True
+    assert out["moved"][1]["appointmentID"] == 504
+    assert "conflict" in out["moved"][1]["error"]
+    updates = [r for r in fake.requests if r.entity == "appointment" and r.action == "update"]
+    assert [u.one("appointmentID") for u in updates] == ["500", "504"]  # stopped after the failure
+
+
+async def test_service_schedule_move_batches_allowlist_customer_resolution(
+    fake: FakeFR, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake.data["appointment"][504] = {
+        "appointmentID": 504, "officeID": 7, "customerID": 1, "subscriptionID": 100, "routeID": 20,
+        "date": TODAY, "type": 3, "status": 0,
+    }
+    monkeypatch.setenv("FR_WRITE_CUSTOMER_IDS", "1")
+    out = loads(
+        await server.service_schedule(
+            move=[{"appointment_id": 500, "spot_id": 32}, {"appointment_id": 504, "spot_id": 33}]
+        )
+    )
+    assert [m["appointmentID"] for m in out["moved"]] == [500, 504]
+    assert all(m["result"]["success"] is True for m in out["moved"])
+    # The first appointment/get is the allowlist-customer resolution for the move batch --
+    # it must cover both targets in one call, not one request per move entry. (A second,
+    # unrelated appointment/get follows later to hydrate the grouped read.)
+    gets = [r for r in fake.requests if r.entity == "appointment" and r.action == "get"]
+    assert set(gets[0].form["appointmentIDs[]"]) == {"500", "504"}
+
+
+async def test_service_schedule_move_blocks_a_customer_outside_the_allowlist(
+    fake: FakeFR, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FR_WRITE_CUSTOMER_IDS", "2")  # appointment 500 belongs to customer 1
+    with pytest.raises(ToolError, match="writes are restricted"):
+        await server.service_schedule(move=[{"appointment_id": 500, "spot_id": 32}])
+    assert not any(r.entity == "appointment" and r.action == "update" for r in fake.requests)
 
 
 async def test_writes_off_blocks_every_write_but_not_reads(fake: FakeFR, monkeypatch: pytest.MonkeyPatch) -> None:

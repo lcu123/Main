@@ -164,6 +164,11 @@ class FakeFR:
         self.requests: list[Req] = []
         self.fail_with: str | None = None
         self.next_status: int | None = None
+        # Fail the Nth write (0-indexed by writes already completed), then stop failing --
+        # unlike fail_with (which fires on whatever request comes next, read or write), this
+        # lets a test make an *earlier* write in the same batch succeed and a *later* one fail.
+        self.fail_write_after: int | None = None
+        self.fail_write_message: str = "conflict"
         # FieldRoutes' own per-office counters, reported back on every response.
         self.reads_today = 0
         self.writes_today = 0
@@ -313,6 +318,9 @@ class FakeFR:
     # -- writes ------------------------------------------------------------
 
     def _write(self, entity: str, action: str, form: dict[str, list[str]]) -> dict[str, Any]:
+        if self.fail_write_after is not None and self.writes_today == self.fail_write_after:
+            self.fail_write_after = None
+            return {"success": False, "errorMessage": self.fail_write_message}
         if entity == "spot" and action == "reserve":
             return {"success": True, "reservation": "tok-123"}
         if action == "create":

@@ -1395,26 +1395,53 @@ async def service_schedule(
     status: str = "all",
     move: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Appointment history and upcoming schedule for a service type and/or zone (region), grouped by subscription -- each group shows the zone, customer, and every appointment (completed and pending) in the window, sorted by date. Default window is today + 89 days; pass a past `start` to look at history. status: all, pending, completed.
+    """Appointment history and upcoming schedule for a service type and/or zone (region), grouped by subscription -- each group shows the zone, customer, and every appointment (completed and pending) in the window, sorted by date. Appointments with no subscription (stand-alone services/reservices) get their own group per customer instead of being merged together. Default window is today + 89 days; pass a past `start` to look at history. status: all, pending, completed.
 
-    To move one or more appointments to a new day in the same call, pass `move`: a list of objects like {"appointment_id": 500, "spot_id": 32}. spot_id must come from open_slots -- FieldRoutes has no bare "move to this date" field, an appointment's date comes from the spot (or route) it's booked into, exactly like reschedule_appointment (each move entry accepts the same fields: spot_id, route_id, start, end, duration, tech, reservation, allow_double_booking). Moves are applied first, one at a time, and stop at the first failure -- confirm every move with the user before calling, same as reschedule_appointment."""
+    To move one or more appointments to a new day in the same call, pass `move`: a list of objects like {"appointment_id": 500, "spot_id": 32}. spot_id must come from open_slots -- FieldRoutes has no bare "move to this date" field, an appointment's date comes from the spot (or route) it's booked into, exactly like reschedule_appointment (each move entry accepts the same fields: spot_id, route_id, start, end, duration, tech, reservation, allow_double_booking). Moves are applied first, one at a time, and stop at the first failure -- earlier moves in the same call are NOT rolled back, so `moved` always reflects what actually happened even when a later entry fails. Confirm every move with the user before calling, same as reschedule_appointment."""
     moved: list[dict[str, Any]] = []
-    for entry in move or []:
-        appointment_id = entry.get("appointment_id")
-        if appointment_id is None:
-            raise ToolError("service_schedule: each move entry needs appointment_id.")
-        result = await reschedule_appointment(
-            appointment_id=int(appointment_id),
-            spot_id=entry.get("spot_id"),
-            route_id=entry.get("route_id"),
-            start=entry.get("start"),
-            end=entry.get("end"),
-            duration=entry.get("duration"),
-            tech=entry.get("tech"),
-            reservation=entry.get("reservation"),
-            allow_double_booking=bool(entry.get("allow_double_booking", False)),
-        )
-        moved.append({"appointmentID": int(appointment_id), "result": json.loads(result)})
+    if move:
+        appt_ids: list[int] = []
+        for entry in move:
+            appointment_id = _int(entry.get("appointment_id"))
+            if appointment_id is None:
+                raise ToolError("service_schedule: each move entry needs a numeric appointment_id.")
+            appt_ids.append(appointment_id)
+        _require_writes("service_schedule(move)")
+        # Batch-resolve the allowlist customer for every target appointment up front (one
+        # `get`), instead of the N single-ID lookups `reschedule_appointment` would each do.
+        target_customers: dict[int, int | None] = {}
+        if _write_allowlist() is not None:
+            rows = await _get_rows("appointment", appt_ids)
+            by_id = {aid: row for row in rows if (aid := _int(row.get("appointmentID"))) is not None}
+            target_customers = {aid: _int(by_id[aid].get("customerID")) if aid in by_id else None for aid in appt_ids}
+        for entry, appointment_id in zip(move, appt_ids):
+            if appointment_id in target_customers:
+                _require_customer_allowed("service_schedule(move)", target_customers[appointment_id])
+            if all(entry.get(k) is None for k in ("spot_id", "route_id", "start", "end", "duration", "tech")):
+                moved.append(
+                    {
+                        "appointmentID": appointment_id,
+                        "error": "give at least one of spot_id, route_id, start, end, duration, tech.",
+                    }
+                )
+                break
+            params: dict[str, Any] = {
+                "appointmentID": appointment_id,
+                "spotID": entry.get("spot_id"),
+                "routeID": entry.get("route_id"),
+                "start": entry.get("start"),
+                "end": entry.get("end"),
+                "duration": entry.get("duration"),
+                "assignedTech": entry.get("tech"),
+                "reservation": entry.get("reservation"),
+                "rejectOccupiedSpots": 0 if entry.get("allow_double_booking") else 1,
+            }
+            try:
+                result = await client().call("appointment", "update", params)
+            except FieldRoutesError as exc:
+                moved.append({"appointmentID": appointment_id, "error": str(exc)})
+                break
+            moved.append({"appointmentID": appointment_id, "result": result})
 
     window_start, window_end = _window(start, days)
     filters: dict[str, Any] = {"dateStart": window_start, "dateEnd": window_end}
@@ -1426,9 +1453,29 @@ async def service_schedule(
         filters["status"] = 1
     elif status != "all":
         raise ToolError("service_schedule: status must be one of: all, pending, completed.")
+    if region_id is not None:
+        # Push the region filter down to subscription/search (same pattern as due_for_service)
+        # instead of fetching every appointment in the window and filtering in memory.
+        region_sub_ids = await _search_ids("subscription", {"regionID": region_id})
+        if not region_sub_ids:
+            return _j(
+                {
+                    "from": window_start,
+                    "to": window_end,
+                    "serviceTypeID": service_type_id,
+                    "regionID": region_id,
+                    "subscriptionCount": 0,
+                    "appointmentCount": 0,
+                    "moved": moved,
+                    "groups": [],
+                }
+            )
+        filters["subscriptionIDs"] = region_sub_ids
     appts = await _search_rows("appointment", filters)
 
-    sub_ids = sorted({sid for a in appts if (sid := _int(a.get("subscriptionID"))) is not None})
+    # subscriptionID is -1 for stand-alone services/reservices -- not a real subscription to
+    # look up, and not the same as "no subscription" (None) either; treat both as unassigned.
+    sub_ids = sorted({sid for a in appts if (sid := _int(a.get("subscriptionID"))) not in (None, -1)})
     subs_by_id = {
         sid: sub for sub in await _get_rows("subscription", sub_ids) if (sid := _int(sub.get("subscriptionID"))) is not None
     }
@@ -1438,17 +1485,23 @@ async def service_schedule(
     regions = await _region_names()
 
     shaped = await _shape_appointments(appts, customers)
-    groups: dict[int | None, list[dict[str, Any]]] = {}
+    # Group by subscription when there is a real one; appointments with no subscription (or
+    # the -1 stand-alone sentinel) group by their own customer instead, so two different
+    # customers' stand-alone appointments never collapse into one shared "unassigned" group.
+    groups: dict[tuple[str, int | None], list[dict[str, Any]]] = {}
     for raw, row in zip(appts, shaped):
-        groups.setdefault(_int(raw.get("subscriptionID")), []).append(row)
+        raw_sid = _int(raw.get("subscriptionID"))
+        sid = raw_sid if raw_sid not in (None, -1) else None
+        key = ("sub", sid) if sid is not None else ("cust", _int(raw.get("customerID")))
+        groups.setdefault(key, []).append(row)
 
     out_groups = []
-    for sub_id, rows in groups.items():
+    for (kind, key_id), rows in groups.items():
+        sub_id = key_id if kind == "sub" else None
         sub = subs_by_id.get(sub_id) if sub_id is not None else None
         sub_region_id = _int(sub.get("regionID")) if sub else None
-        if region_id is not None and sub_region_id != region_id:
-            continue
-        cust = customers.get(_int(sub.get("customerID"))) if sub else None
+        cust_id = _int(sub.get("customerID")) if sub else key_id
+        cust = customers.get(cust_id) if cust_id is not None else None
         rows.sort(key=lambda a: str(a.get("date", "")))
         out_groups.append(
             {
