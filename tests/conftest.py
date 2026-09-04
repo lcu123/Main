@@ -94,6 +94,15 @@ def _seed() -> dict[str, dict[int, dict[str, Any]]]:
                 "preferredTech": 11, "preferredDays": -1, "regionID": 2, "customDate": "2026-10-09",
                 "soldBy": 12, "contractValue": 208.0, "dateAdded": "2025-03-23",
             },
+            # Live shape (customer 14699 on Zest's account): a custom-schedule subscription has the
+            # literal string "CUSTOM" in frequency, and unassigned IDs are the string "0".
+            # nextService is outside every default window so due_for_service tests are unaffected.
+            101: {
+                "subscriptionID": "101", "officeID": "7", "customerID": "2", "serviceID": "4", "active": "1",
+                "frequency": "CUSTOM", "billingFrequency": "28", "customDate": "2026-10-01",
+                "nextService": "2026-10-01", "preferredTech": "0", "preferredDays": "-1", "regionID": "0",
+                "soldBy": "12", "soldBy2": "0", "soldBy3": "0", "duration": "-1",
+            },
         },
         "appointment": {
             500: {
@@ -128,6 +137,11 @@ def _seed() -> dict[str, dict[int, dict[str, Any]]]:
                  "currentAppointment": 0, "apiCanSchedule": 1, "blockReason": "Lunch"},
             34: {"spotID": 34, "officeID": 7, "routeID": 20, "date": TODAY, "start": "15:00:00", "end": "16:00:00",
                  "currentAppointment": 0, "apiCanSchedule": 1, "reserved": 1},
+            # Live shape: every value is a *string*, so an open, unreserved spot arrives as
+            # "reserved": "0" -- which is truthy in Python. Not API-schedulable, so it stays
+            # out of open_slots and only exercises route_stops' state labeling.
+            35: {"spotID": 35, "officeID": 7, "routeID": 20, "date": TODAY, "start": "16:00:00", "end": "17:00:00",
+                 "currentAppointment": "0", "apiCanSchedule": "0", "reserved": "0", "assignedTech": "11"},
         },
         "task": {
             700: {"taskIDs": 700, "officeID": 7, "customerID": 1, "type": 1, "status": 0, "task": "Dog in backyard"},
@@ -285,7 +299,11 @@ class FakeFR:
             op, value = parsed["operator"], parsed.get("value")
 
         if key == "phone":
-            return any(op == "CONTAINS" and str(value) in str(record.get(f, "")) for f in ("phone1", "phone2"))
+            # Verified live: `phone` is an exact 10-digit match across phone1/phone2 (and
+            # additional-contact phones); CONTAINS -- on `phone` or `phone1` -- returns nothing.
+            if op != "=":
+                return False
+            return any(str(value) == str(record.get(f, "")) for f in ("phone1", "phone2"))
         if key == "dateStart":
             return str(record.get("date", "")) >= str(value)
         if key == "dateEnd":

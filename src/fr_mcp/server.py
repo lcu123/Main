@@ -130,16 +130,23 @@ def _int(value: Any) -> int | None:
         return None
 
 
+def _clean(value: Any) -> str:
+    """Collapse whitespace: live records carry trailing spaces in names ("Pedro ") and stray
+    tabs in addresses, which otherwise show up as double spaces in every resolved name."""
+    return " ".join(str(value).split()) if value is not None else ""
+
+
 def _name(row: dict[str, Any]) -> str:
-    person = f"{row.get('fname') or ''} {row.get('lname') or ''}".strip()
-    company = row.get("companyName") or ""
+    person = _clean(f"{row.get('fname') or ''} {row.get('lname') or ''}")
+    company = _clean(row.get("companyName") or "")
     if person and company:
         return f"{person} ({company})"
     return person or company or ""
 
 
 def _address(row: dict[str, Any]) -> str:
-    return ", ".join(str(p) for p in (row.get("address"), row.get("city"), row.get("state"), row.get("zip")) if p)
+    parts = (_clean(row.get(k)) for k in ("address", "city", "state", "zip"))
+    return ", ".join(p for p in parts if p)
 
 
 def _customer_summary(row: dict[str, Any]) -> dict[str, Any]:
@@ -154,6 +161,10 @@ def _customer_summary(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _frequency_text(freq: Any) -> str:
+    # Verified live: a subscription on a custom schedule comes back with the literal string
+    # "CUSTOM" in `frequency` (not the -3 sentinel the spec implies), so handle both.
+    if isinstance(freq, str) and freq.strip().upper() == "CUSTOM":
+        return "custom schedule"
     f = _int(freq)
     if f is None:
         return ""
@@ -486,12 +497,21 @@ async def _shape_appointments(
         route = routes.get(_int(a.get("routeID")) or -1)
         if route:
             row["route"] = route.get("title")
-        row["tech"] = _emp(names, a.get("assignedTech")) or _emp(names, a.get("employeeID"))
+        # `employeeID` on an appointment is who *booked* it (office staff, or the import job),
+        # not who does the work -- falling back to it labeled office admins as the tech on
+        # every unassigned stop (seen live). When the appointment has no tech, FieldRoutes
+        # uses the route's tech, so fall back to that; otherwise leave it unassigned.
+        row["tech"] = _emp(names, a.get("assignedTech")) or (_emp(names, route.get("assignedTech")) if route else None)
+        booked_by = _emp(names, a.get("employeeID"))
+        if booked_by:
+            row["bookedBy"] = booked_by
         extra = _emp_list(names, a.get("additionalTechs"))
         if extra:
             row["additionalTechs"] = extra
-        if a.get("servicedBy"):
+        if _int(a.get("servicedBy")):
             row["servicedBy"] = _emp(names, a.get("servicedBy"))
+        else:
+            row.pop("servicedBy", None)  # _pick kept the raw "0"; that means nobody
         out.append(row)
     return out
 
@@ -509,14 +529,14 @@ async def _shape_subscriptions(
         row["frequencyText"] = _frequency_text(s.get("frequency"))
         if "billingFrequency" in active_keys:
             row["billingFrequencyText"] = _frequency_text(s.get("billingFrequency"))
-        if s.get("regionID"):
+        if _int(s.get("regionID")):  # live value is a string; "0" means unassigned, not region 0
             row["region"] = regions.get(_int(s.get("regionID")) or -1, s.get("regionID"))
         row["preferredTechName"] = _emp(names, s.get("preferredTech"))
         pd = _int(s.get("preferredDays"))
         if pd is not None and pd >= 0:
             row["preferredDayText"] = DAYS.get(pd, str(pd))
         for k in ("soldBy", "soldBy2", "soldBy3"):
-            if k in active_keys and s.get(k):
+            if k in active_keys and _int(s.get(k)):  # "0" = nobody; don't emit a null *Name key
                 row[k + "Name"] = _emp(names, s.get(k))
         if customers is not None:
             cust = customers.get(_int(s.get("customerID")) or -1)
@@ -672,10 +692,16 @@ async def find_customer(
     if customer_id is not None:
         rows = await _get_rows("customer", [customer_id])
     elif phone:
-        digits = "".join(ch for ch in phone if ch.isdigit())[-10:]
-        if len(digits) < 4:
-            raise ToolError("phone needs at least 4 digits.")
-        rows = await _search_rows("customer", {**base, "phone": {"operator": "CONTAINS", "value": digits}}, limit=limit)
+        # Verified live: customer/search's `phone` param is an exact 10-digit match across
+        # phone1/phone2/additional contacts ("Numbers only"), and neither `phone` nor `phone1`
+        # honors CONTAINS -- a CONTAINS filter silently returns zero rows. So normalize to the
+        # last 10 digits and send a plain equality; partial numbers can't be searched.
+        digits = "".join(ch for ch in phone if ch.isdigit())
+        if len(digits) == 11 and digits.startswith("1"):
+            digits = digits[1:]
+        if len(digits) != 10:
+            raise ToolError("phone needs a full 10-digit number (FieldRoutes can't search partial numbers).")
+        rows = await _search_rows("customer", {**base, "phone": digits}, limit=limit)
     elif email:
         rows = await _search_rows("customer", {**base, "email": {"operator": "CONTAINS", "value": email}}, limit=limit)
     elif address:
@@ -894,7 +920,7 @@ async def route_stops(route_id: int) -> str:
             row["appointment"] = appt
         elif s.get("blockReason"):
             row["state"] = "blocked"
-        elif s.get("reserved"):
+        elif _int(s.get("reserved")):  # live value is the *string* "0"/"1"; "0" is truthy
             row["state"] = "reserved"
         else:
             row["state"] = "open"
