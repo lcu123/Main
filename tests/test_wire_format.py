@@ -432,6 +432,28 @@ async def test_due_for_service_window_and_shape(fake: FakeFR) -> None:
     assert sub["preferredTechName"] == "Carlos Quijas"
 
 
+async def test_due_for_service_trims_billing_and_sales_fields_but_keeps_scheduling_ones(fake: FakeFR) -> None:
+    # due_for_service is a skim-a-list view -- billing/sales/administrative fields are
+    # dropped to keep responses small at real-office volume, but subscription_details
+    # (the full-record tool) must still show them for the same subscription (100).
+    out = loads(await server.due_for_service(days=3, service_type_id=3))
+    sub = out["subscriptions"][0]
+    assert sub["subscriptionID"] == 100 and sub["frequencyText"] == "every 365 days"
+    for dropped in ("soldBy", "soldByName", "billingFrequency", "billingFrequencyText", "contractValue"):
+        assert dropped not in sub
+
+    details = loads(await server.subscription_details(100))
+    full = details["subscription"]
+    assert full["soldByName"] == "Iggy Artemenko" and full["contractValue"] == 208.0
+    assert full["billingFrequencyText"] == "one-time"
+
+
+def test_due_for_service_default_limit_is_50() -> None:
+    import inspect
+
+    assert inspect.signature(server.due_for_service).parameters["limit"].default == 50
+
+
 async def test_open_slots_skips_taken_blocked_reserved(fake: FakeFR) -> None:
     out = loads(await server.open_slots())
     assert [s["spotID"] for s in out["spots"]] == [32]
