@@ -495,6 +495,15 @@ async def test_add_note_requires_note_type(fake: FakeFR, monkeypatch: pytest.Mon
     assert _last(fake, "note", "create").one("contactType") == "8"
 
 
+async def test_add_note_accepts_note_type_id_zero(fake: FakeFR, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Note Type 0 ("Notes") is a real, valid type on live FieldRoutes accounts -- `note_type_id
+    # or _default_note_type()` used to treat an explicit 0 as falsy and fall through to the
+    # env default (or raise if unset), silently ignoring the caller's choice.
+    monkeypatch.delenv("FR_DEFAULT_NOTE_TYPE_ID")
+    await server.add_note(1, "x", note_type_id=0)
+    assert _last(fake, "note", "create").one("contactType") == "0"
+
+
 async def test_update_note_merges_existing_values(fake: FakeFR) -> None:
     await server.update_note(800, text="Gate code 4321")
     req = _last(fake, "note", "update")
