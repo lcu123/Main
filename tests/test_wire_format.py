@@ -738,6 +738,27 @@ async def test_service_schedule_move_blocks_a_customer_outside_the_allowlist(
     assert not any(r.entity == "appointment" and r.action == "update" for r in fake.requests)
 
 
+async def test_service_schedule_move_preserves_earlier_success_when_a_later_entry_is_outside_the_allowlist(
+    fake: FakeFR, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # appointment 500 belongs to customer 1 (allowed); appointment 501 belongs to customer 2
+    # (not allowed) -- the allowlist rejection on the 2nd entry must not discard the 1st's
+    # already-completed move, same as a FieldRoutesError on a later entry.
+    monkeypatch.setenv("FR_WRITE_CUSTOMER_IDS", "1")
+    out = loads(
+        await server.service_schedule(
+            move=[{"appointment_id": 500, "spot_id": 32}, {"appointment_id": 501, "spot_id": 33}]
+        )
+    )
+    assert len(out["moved"]) == 2
+    assert out["moved"][0]["appointmentID"] == 500
+    assert out["moved"][0]["result"]["success"] is True
+    assert out["moved"][1]["appointmentID"] == 501
+    assert "writes are restricted" in out["moved"][1]["error"]
+    updates = [r for r in fake.requests if r.entity == "appointment" and r.action == "update"]
+    assert [u.one("appointmentID") for u in updates] == ["500"]  # stopped before attempting 501
+
+
 async def test_writes_off_blocks_every_write_but_not_reads(fake: FakeFR, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FR_WRITES", "off")
     for coro in (

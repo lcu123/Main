@@ -1414,16 +1414,24 @@ async def service_schedule(
             rows = await _get_rows("appointment", appt_ids)
             by_id = {aid: row for row in rows if (aid := _int(row.get("appointmentID"))) is not None}
             target_customers = {aid: _int(by_id[aid].get("customerID")) if aid in by_id else None for aid in appt_ids}
+        # A failure on the very first attempted move (nothing has changed yet) raises, same as
+        # every other write tool -- fail closed and loud. Once at least one move in this batch
+        # has actually happened, a later failure is captured into `moved` instead of raised, so
+        # that real state change is never silently discarded by an exception.
         for entry, appointment_id in zip(move, appt_ids):
             if appointment_id in target_customers:
-                _require_customer_allowed("service_schedule(move)", target_customers[appointment_id])
+                try:
+                    _require_customer_allowed("service_schedule(move)", target_customers[appointment_id])
+                except ToolError as exc:
+                    if not moved:
+                        raise
+                    moved.append({"appointmentID": appointment_id, "error": str(exc)})
+                    break
             if all(entry.get(k) is None for k in ("spot_id", "route_id", "start", "end", "duration", "tech")):
-                moved.append(
-                    {
-                        "appointmentID": appointment_id,
-                        "error": "give at least one of spot_id, route_id, start, end, duration, tech.",
-                    }
-                )
+                message = f"appointment {appointment_id}: give at least one of spot_id, route_id, start, end, duration, tech."
+                if not moved:
+                    raise ToolError(f"service_schedule: {message}")
+                moved.append({"appointmentID": appointment_id, "error": message})
                 break
             params: dict[str, Any] = {
                 "appointmentID": appointment_id,
@@ -1439,6 +1447,8 @@ async def service_schedule(
             try:
                 result = await client().call("appointment", "update", params)
             except FieldRoutesError as exc:
+                if not moved:
+                    raise
                 moved.append({"appointmentID": appointment_id, "error": str(exc)})
                 break
             moved.append({"appointmentID": appointment_id, "result": result})
