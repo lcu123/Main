@@ -76,6 +76,7 @@ Naming: curated tools are verbs/nouns an office person would say. Generated tool
 - mcp SDK is **2.x** (`mcp.server.mcpserver.MCPServer`, not `FastMCP`; `ToolError` is `mcp.server.mcpserver.exceptions.ToolError`). Transport is streamable-HTTP, stateless, JSON responses, DNS-rebinding protection off (Railway hostnames). `mcp.call_tool()` returns a `CallToolResult` with `.content[0].text`, not a subscriptable list — if you're writing a test against it directly, don't index it.
 - Generated tools are built with a dynamically-constructed `inspect.Signature` (real `inspect.Parameter` objects with proper annotations) attached to a `**kwargs`-accepting async function, not a hand-written one per endpoint. This is required for the MCP SDK's Pydantic-based schema derivation (`Tool.from_function`) to produce an accurate per-tool JSON schema, `required` fields included, from spec data at startup.
 - Never log the HTTP request path in the `http` transport — it contains `MCP_PATH_SECRET`. `main()` runs uvicorn with `access_log=False` and never prints the resolved secret path (`/<secret>/mcp` in the startup log, not the real value). Don't reintroduce either.
+- Editing files: the number of tokens used to edit files is best minimized, all else being equal. When it will not affect the end result, surgically edit a file (e.g. targeted diffs) rather than rewriting the entire thing.
 
 ## Environment variables
 
