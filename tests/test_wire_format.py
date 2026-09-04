@@ -581,6 +581,184 @@ async def test_update_subscription_sends_only_given_fields(fake: FakeFR) -> None
         await server.update_subscription(100)
 
 
+async def test_service_schedule_groups_by_subscription_and_zone(fake: FakeFR) -> None:
+    out = loads(await server.service_schedule(service_type_id=3, start="2025-10-01", days=400))
+    assert out["subscriptionCount"] == 1
+    group = out["groups"][0]
+    assert group["subscriptionID"] == 100
+    assert group["zone"] == "Folsom"
+    assert group["customer"]["name"] == "Jane Smith"
+    assert group["frequencyText"] == "every 365 days"
+    # appointment 500 (today, pending) and 502 (2025-10-09, completed) both belong
+    # to subscription 100 and both fall in this window; sorted oldest-first.
+    assert [a["appointmentID"] for a in group["appointments"]] == [502, 500]
+    assert group["appointmentCount"] == 2
+    assert out["moved"] == []
+
+
+async def test_service_schedule_appointment_with_no_subscription_gets_its_own_group(fake: FakeFR) -> None:
+    out = loads(await server.service_schedule(service_type_id=4))
+    # appointment 501 (customer 2, service type 4) has no subscriptionID in the seed data.
+    group = next(g for g in out["groups"] if g["subscriptionID"] is None)
+    assert group["zone"] is None
+    assert group["customer"]["name"] == "John Smithers"
+    assert [a["appointmentID"] for a in group["appointments"]] == [501]
+
+
+async def test_service_schedule_orphan_appointments_for_different_customers_stay_separate(fake: FakeFR) -> None:
+    # A second customer's stand-alone appointment (same service type, no subscription) must
+    # not be merged into customer 2's "unassigned" group just because both lack a subscription.
+    fake.data["appointment"][503] = {
+        "appointmentID": 503, "officeID": 7, "customerID": 3, "date": TODAY, "type": 4, "status": 0,
+    }
+    out = loads(await server.service_schedule(service_type_id=4))
+    orphan_groups = {g["customer"]["customerID"]: g for g in out["groups"] if g["subscriptionID"] is None}
+    assert set(orphan_groups) == {2, 3}
+    assert [a["appointmentID"] for a in orphan_groups[2]["appointments"]] == [501]
+    assert [a["appointmentID"] for a in orphan_groups[3]["appointments"]] == [503]
+
+
+async def test_service_schedule_stand_alone_sentinel_excluded_from_subscription_lookup(fake: FakeFR) -> None:
+    # subscriptionID -1 means "stand-alone service/reservice", not a real subscription to
+    # fetch -- it must group like "no subscription" (by customer), and never reach subscription/get.
+    fake.data["appointment"][503] = {
+        "appointmentID": 503, "officeID": 7, "customerID": 3, "subscriptionID": -1,
+        "date": TODAY, "type": 4, "status": 0,
+    }
+    out = loads(await server.service_schedule(service_type_id=4))
+    orphan_groups = {g["customer"]["customerID"]: g for g in out["groups"] if g["subscriptionID"] is None}
+    assert set(orphan_groups) == {2, 3}
+    assert [a["appointmentID"] for a in orphan_groups[3]["appointments"]] == [503]
+    assert not any(r.entity == "subscription" and r.action == "get" for r in fake.requests)
+
+
+async def test_service_schedule_region_filter_excludes_non_matching_and_unassigned_groups(fake: FakeFR) -> None:
+    out = loads(await server.service_schedule(start="2025-10-01", days=400, region_id=2))
+    assert {g["subscriptionID"] for g in out["groups"]} == {100}  # only Folsom (region 2) subscription 100
+    # region_id is pushed down to subscription/search, then appointment/search's
+    # subscriptionIDs filter -- not fetched in full and filtered in memory.
+    sub_search = _last(fake, "subscription", "search")
+    assert json.loads(sub_search.one("regionID")) == 2
+    appt_search = _last(fake, "appointment", "search")
+    assert json.loads(appt_search.one("subscriptionIDs")) == {"operator": "IN", "value": [100]}
+
+    before = len(fake.requests)
+    out_other = loads(await server.service_schedule(start="2025-10-01", days=400, region_id=999))
+    assert out_other["groups"] == []
+    # no subscriptions in that region -> short-circuits before ever searching appointments.
+    assert not any(r.entity == "appointment" and r.action == "search" for r in fake.requests[before:])
+
+
+async def test_service_schedule_status_filter(fake: FakeFR) -> None:
+    pending = loads(await server.service_schedule(service_type_id=3, status="pending"))
+    assert [a["appointmentID"] for g in pending["groups"] for a in g["appointments"]] == [500]
+    completed = loads(await server.service_schedule(service_type_id=3, start="2025-10-01", days=400, status="completed"))
+    assert [a["appointmentID"] for g in completed["groups"] for a in g["appointments"]] == [502]
+    with pytest.raises(ToolError, match="status must be one of"):
+        await server.service_schedule(status="bogus")
+
+
+async def test_service_schedule_move_reschedules_via_the_same_tool(fake: FakeFR) -> None:
+    out = loads(await server.service_schedule(move=[{"appointment_id": 500, "spot_id": 32}]))
+    assert out["moved"][0]["appointmentID"] == 500
+    assert out["moved"][0]["result"]["success"] is True
+    req = _last(fake, "appointment", "update")
+    assert req.one("appointmentID") == "500" and req.one("spotID") == "32"
+
+
+async def test_service_schedule_move_requires_appointment_id() -> None:
+    with pytest.raises(ToolError, match="appointment_id"):
+        await server.service_schedule(move=[{"spot_id": 32}])
+
+
+async def test_service_schedule_move_rejects_non_numeric_appointment_id_cleanly() -> None:
+    # A bad appointment_id must raise a clean ToolError (via _int), not an unhandled
+    # ValueError from a raw int(...) call.
+    with pytest.raises(ToolError, match="numeric appointment_id"):
+        await server.service_schedule(move=[{"appointment_id": "abc", "spot_id": 32}])
+
+
+async def test_service_schedule_move_stops_at_first_failure_before_any_read(
+    fake: FakeFR, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FR_WRITES", "off")
+    with pytest.raises(ToolError, match="writes are disabled"):
+        await server.service_schedule(move=[{"appointment_id": 500, "spot_id": 32}])
+    assert fake.requests == []  # the guarded move fails before the grouped read ever runs
+
+
+async def test_service_schedule_move_preserves_earlier_successes_on_a_later_failure(fake: FakeFR) -> None:
+    fake.data["appointment"][504] = {
+        "appointmentID": 504, "officeID": 7, "customerID": 1, "subscriptionID": 100, "routeID": 20,
+        "date": TODAY, "type": 3, "status": 0,
+    }
+    fake.fail_write_after = 1  # the 2nd appointment/update call fails; the 1st must still succeed
+    out = loads(
+        await server.service_schedule(
+            move=[{"appointment_id": 500, "spot_id": 32}, {"appointment_id": 504, "spot_id": 33}]
+        )
+    )
+    assert len(out["moved"]) == 2
+    assert out["moved"][0]["appointmentID"] == 500
+    assert out["moved"][0]["result"]["success"] is True
+    assert out["moved"][1]["appointmentID"] == 504
+    assert "conflict" in out["moved"][1]["error"]
+    updates = [r for r in fake.requests if r.entity == "appointment" and r.action == "update"]
+    assert [u.one("appointmentID") for u in updates] == ["500", "504"]  # stopped after the failure
+
+
+async def test_service_schedule_move_batches_allowlist_customer_resolution(
+    fake: FakeFR, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake.data["appointment"][504] = {
+        "appointmentID": 504, "officeID": 7, "customerID": 1, "subscriptionID": 100, "routeID": 20,
+        "date": TODAY, "type": 3, "status": 0,
+    }
+    monkeypatch.setenv("FR_WRITE_CUSTOMER_IDS", "1")
+    out = loads(
+        await server.service_schedule(
+            move=[{"appointment_id": 500, "spot_id": 32}, {"appointment_id": 504, "spot_id": 33}]
+        )
+    )
+    assert [m["appointmentID"] for m in out["moved"]] == [500, 504]
+    assert all(m["result"]["success"] is True for m in out["moved"])
+    # The first appointment/get is the allowlist-customer resolution for the move batch --
+    # it must cover both targets in one call, not one request per move entry. (A second,
+    # unrelated appointment/get follows later to hydrate the grouped read.)
+    gets = [r for r in fake.requests if r.entity == "appointment" and r.action == "get"]
+    assert set(gets[0].form["appointmentIDs[]"]) == {"500", "504"}
+
+
+async def test_service_schedule_move_blocks_a_customer_outside_the_allowlist(
+    fake: FakeFR, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FR_WRITE_CUSTOMER_IDS", "2")  # appointment 500 belongs to customer 1
+    with pytest.raises(ToolError, match="writes are restricted"):
+        await server.service_schedule(move=[{"appointment_id": 500, "spot_id": 32}])
+    assert not any(r.entity == "appointment" and r.action == "update" for r in fake.requests)
+
+
+async def test_service_schedule_move_preserves_earlier_success_when_a_later_entry_is_outside_the_allowlist(
+    fake: FakeFR, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # appointment 500 belongs to customer 1 (allowed); appointment 501 belongs to customer 2
+    # (not allowed) -- the allowlist rejection on the 2nd entry must not discard the 1st's
+    # already-completed move, same as a FieldRoutesError on a later entry.
+    monkeypatch.setenv("FR_WRITE_CUSTOMER_IDS", "1")
+    out = loads(
+        await server.service_schedule(
+            move=[{"appointment_id": 500, "spot_id": 32}, {"appointment_id": 501, "spot_id": 33}]
+        )
+    )
+    assert len(out["moved"]) == 2
+    assert out["moved"][0]["appointmentID"] == 500
+    assert out["moved"][0]["result"]["success"] is True
+    assert out["moved"][1]["appointmentID"] == 501
+    assert "writes are restricted" in out["moved"][1]["error"]
+    updates = [r for r in fake.requests if r.entity == "appointment" and r.action == "update"]
+    assert [u.one("appointmentID") for u in updates] == ["500"]  # stopped before attempting 501
+
+
 async def test_writes_off_blocks_every_write_but_not_reads(fake: FakeFR, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FR_WRITES", "off")
     for coro in (
@@ -744,7 +922,7 @@ def test_http_app_secret_path_healthz_and_bearer(fake: FakeFR, monkeypatch: pyte
         assert r.status_code == 200
         names = {t["name"] for t in r.json()["result"]["tools"]}
         assert {"find_customer", "update_subscription", "call", "cancel_appointment"} <= names
-        assert len(names) == 30
+        assert len(names) == 31
         assert http.post("/mcp", json=body, headers=auth).status_code == 404
 
 

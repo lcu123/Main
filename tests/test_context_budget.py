@@ -28,9 +28,9 @@ from fr_mcp import server  # noqa: E402
 MAX_SCHEMA_CHARS = 35_000
 
 
-async def test_curated_tool_count_is_30() -> None:
+async def test_curated_tool_count_is_31() -> None:
     tools = await server.mcp.list_tools()
-    assert len(tools) == 30
+    assert len(tools) == 31
 
 
 async def test_curated_tool_schema_size_stays_within_budget() -> None:

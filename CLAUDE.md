@@ -8,7 +8,7 @@ A remote MCP server that gives Claude (claude.ai web/mobile, Cowork, Claude Desk
 
 1. Answer office questions fast: which property is assigned to which route/tech, what's due for service, what a tech must know before a stop (Red Notes, flags, alerts), who owes money.
 2. Take safe actions: notes, tasks, schedule/reschedule/cancel/complete appointments, hold a spot, update Red Notes, change subscription scheduling (frequency, billing frequency, seasonal window, custom date, region, preferred tech/day/time).
-3. Reach every FieldRoutes endpoint without bloating context: 30 curated tools by default, all 187 endpoints via generic tools, optional per-endpoint generation.
+3. Reach every FieldRoutes endpoint without bloating context: 31 curated tools by default, all 187 endpoints via generic tools, optional per-endpoint generation.
 4. Never surprise the owner: deletes and real card charges are blocked unless explicitly enabled; writes can be switched off per deployment, or restricted to a test customer while validating a new deployment.
 
 ## Non-goals
@@ -39,7 +39,7 @@ Built from the official Swagger spec (`src/fr_mcp/fieldroutes_spec.json`, extrac
 ```
 src/fr_mcp/
   client.py             HTTP client: form encoding, auth, retries, rate limit, daily usage quota, search+get pagination
-  server.py             MCPServer, 30 curated tools, generic tools, write guards + allowlist, HTTP app + entrypoint
+  server.py             MCPServer, 31 curated tools, generic tools, write guards + allowlist, HTTP app + entrypoint
   generated.py           Optional: one typed tool per endpoint, built from the spec at startup
   fieldroutes_spec.json Slimmed Swagger: 187 endpoints (params, required, descriptions) + entity field lists + getIdParam overrides
 scripts/extract_spec.py  Regenerates fieldroutes_spec.json from FieldRoutes' public swagger.js
@@ -56,8 +56,9 @@ README.md                  Deploy steps + first-run checklist (user-facing)
 Generic: `list_endpoints`, `describe_endpoint`, `search`, `get`, `call`, `health_check`.
 Reads: `find_customer`, `customer_360`, `customer_alerts`, `day_schedule`, `property_assignments`, `route_stops`, `crew_schedule`, `due_for_service`, `open_slots`, `ar_aging`, `lookups`, `subscription_details`, `list_notes`.
 Writes: `add_note`, `update_note`, `set_red_notes`, `create_task`, `schedule_appointment`, `reschedule_appointment`, `update_appointment_notes`, `cancel_appointment`, `complete_appointment`, `reserve_slot`, `update_subscription`.
+Reads + writes combined: `service_schedule` — appointment history/upcoming grouped by subscription and zone (region), with an optional `move` list to reschedule one or more of those appointments (delegates to `reschedule_appointment` per entry, so it shares that tool's guards and its `spotID`-not-a-bare-date semantics) in the same call.
 
-That's 30. Keep this count and the list in sync with `server.py` and README's tool table — the HTTP app test (`test_http_app_secret_path_healthz_and_bearer`) asserts the exact count and will fail the moment they drift.
+That's 31. Keep this count and the list in sync with `server.py` and README's tool table — the HTTP app test (`test_http_app_secret_path_healthz_and_bearer`) asserts the exact count and will fail the moment they drift.
 
 Naming: curated tools are verbs/nouns an office person would say. Generated tools are `fr_{entity}_{action}`.
 
@@ -71,7 +72,7 @@ Naming: curated tools are verbs/nouns an office person would say. Generated tool
 - **Write allowlist** (`FR_WRITE_CUSTOMER_IDS`, comma-separated customer IDs): when set, a write is refused unless it resolves to one of those customers. Direct-customer-ID tools (`add_note`, `set_red_notes`, `create_task`, `schedule_appointment`) check immediately; record-based tools (`update_note`, `reschedule_appointment`, `update_appointment_notes`, `cancel_appointment`, `complete_appointment`, `update_subscription`) fetch the existing record first via `_write_target_customer(entity, id)` — which is a no-op returning `None` instantly when the allowlist isn't set, so this costs nothing once the deployment goes live and the variable is cleared. `reserve_slot` is the one deliberate exemption: a spot hold names no customer and isn't customer data. The generic `call` tool and every generated tool go through the same `_resolve_write_customer()`/`_require_customer_allowed()` pair — fail closed: an entity with no customer relationship at all (route, spot writes other than reserve, employee, service type, ...) resolves to `None` and is refused when the allowlist is active, not silently allowed through.
 - Generic `call` and generated tools share guards: `*/delete` needs `FR_ALLOW_DELETE=1`; `payment/create` with `doCharge=1` needs `FR_ALLOW_CHARGES=1`.
 - Errors: raise `FieldRoutesError`; the `_tool` wrapper (curated tools) / inline `try/except` (generic `call`, generated tools) converts it to `ToolError` so the message reaches Claude.
-- Tool docstrings are the schema descriptions. One or two sentences; say when to use it and what it returns. Context cost matters: 30 curated tools measure ~23k chars of schema JSON (~5.8k tokens at a rough 4-chars/token estimate; `test_context_budget.py` pins this with headroom) -- higher than a naive per-tool estimate because pydantic wraps every optional `X | None = None` param in an `anyOf`/`title` structure. `FR_EXPOSE_ALL` (187 endpoints) is roughly 10x that.
+- Tool docstrings are the schema descriptions. One or two sentences; say when to use it and what it returns. Context cost matters: 31 curated tools measure ~24.7k chars of schema JSON (~6.2k tokens at a rough 4-chars/token estimate; `test_context_budget.py` pins this with headroom) -- higher than a naive per-tool estimate because pydantic wraps every optional `X | None = None` param in an `anyOf`/`title` structure. `FR_EXPOSE_ALL` (187 endpoints) is roughly 10x that.
 - mcp SDK is **2.x** (`mcp.server.mcpserver.MCPServer`, not `FastMCP`; `ToolError` is `mcp.server.mcpserver.exceptions.ToolError`). Transport is streamable-HTTP, stateless, JSON responses, DNS-rebinding protection off (Railway hostnames). `mcp.call_tool()` returns a `CallToolResult` with `.content[0].text`, not a subscriptable list — if you're writing a test against it directly, don't index it.
 - Generated tools are built with a dynamically-constructed `inspect.Signature` (real `inspect.Parameter` objects with proper annotations) attached to a `**kwargs`-accepting async function, not a hand-written one per endpoint. This is required for the MCP SDK's Pydantic-based schema derivation (`Tool.from_function`) to produce an accurate per-tool JSON schema, `required` fields included, from spec data at startup.
 - Never log the HTTP request path in the `http` transport — it contains `MCP_PATH_SECRET`. `main()` runs uvicorn with `access_log=False` and never prints the resolved secret path (`/<secret>/mcp` in the startup log, not the real value). Don't reintroduce either.
