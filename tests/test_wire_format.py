@@ -645,6 +645,37 @@ async def test_ignored_params_are_an_error_not_a_silent_success(fake: FakeFR) ->
     assert out["total"] == 3
 
 
+async def test_customer_360_falls_back_when_live_account_ignores_include_params(fake: FakeFR) -> None:
+    # Verified live: Zest's account ignores includeSubscriptions/includeCustomerFlag/
+    # includeAdditionalContacts on customer/get despite the spec declaring them.
+    # customer_360 sends them best-effort and must still work via its fallbacks, not raise.
+    fake.ignore_params = {"includeSubscriptions", "includeCustomerFlag", "includeAdditionalContacts"}
+    out = loads(await server.customer_360(1))
+    assert out["subscriptions"][0]["service"] == "Fall Aeration and Seeding"  # via the subscription/get fallback
+    assert out["flags"] == []  # no customerFlag rows on the fake response -> defaults to []
+
+
+async def test_customer_alerts_falls_back_when_live_account_ignores_include_customer_flag(fake: FakeFR) -> None:
+    fake.ignore_params = {"includeCustomerFlag"}
+    out = loads(await server.customer_alerts(1))
+    assert out["flags"] == [{"customerID": 1, "flag": "purpleDragon", "flagValue": 1}]  # via customerFlag/search
+
+
+async def test_call_optional_params_suppresses_only_the_named_ones(fake: FakeFR) -> None:
+    fake.ignore_params = {"includeSubscriptions", "includeCustomerFlag"}
+    # Both ignored and both allowed -> no error.
+    await server.client().call(
+        "customer", "get", {"customerIDs": [1], "includeSubscriptions": 1, "includeCustomerFlag": 1},
+        optional_params={"includeSubscriptions", "includeCustomerFlag"},
+    )
+    # One of the two ignored params isn't in the allowed set -> still an error.
+    with pytest.raises(FieldRoutesError, match="includeCustomerFlag"):
+        await server.client().call(
+            "customer", "get", {"customerIDs": [1], "includeSubscriptions": 1, "includeCustomerFlag": 1},
+            optional_params={"includeSubscriptions"},
+        )
+
+
 async def test_reserve_slot(fake: FakeFR) -> None:
     out = loads(await server.reserve_slot(spot_ids=[32, 34], minutes=10))
     assert out["reservation"] == "tok-123"

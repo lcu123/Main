@@ -305,11 +305,13 @@ async def _search_rows(
     )
 
 
-async def _get_rows(entity: str, ids: list[int], extra: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+async def _get_rows(
+    entity: str, ids: list[int], extra: dict[str, Any] | None = None, optional_extra: set[str] | None = None
+) -> list[dict[str, Any]]:
     ids = sorted({i for i in (_int(x) for x in ids) if i is not None})
     if not ids:
         return []
-    return await client().get(entity, ids, extra_params=extra, id_field=_id_param(entity))
+    return await client().get(entity, ids, extra_params=extra, id_field=_id_param(entity), optional_params=optional_extra)
 
 
 def _pk_param(entity: str) -> str:
@@ -749,9 +751,11 @@ async def find_customer(
 @_tool
 async def customer_360(customer_id: int) -> str:
     """Everything about one customer: profile and property, flags, subscriptions (frequency, next service, preferred tech), upcoming and recent appointments, open tasks/alerts, latest notes, balance."""
-    rows = await _get_rows(
-        "customer", [customer_id], {"includeSubscriptions": 1, "includeCustomerFlag": 1, "includeAdditionalContacts": 1}
-    )
+    # Verified live: the spec declares these on customer/get, but Zest's account ignores all
+    # three (success:true, ignoredParams: [...]) -- sent best-effort; the fallbacks below
+    # (a separate subscription/get, and "flags"/"additionalContacts" defaulting to []) cover it.
+    include_params = {"includeSubscriptions": 1, "includeCustomerFlag": 1, "includeAdditionalContacts": 1}
+    rows = await _get_rows("customer", [customer_id], include_params, optional_extra=set(include_params))
     if not rows:
         raise ToolError(f"Customer {customer_id} not found.")
     c = rows[0]
@@ -818,7 +822,9 @@ def _note_row(n: dict[str, Any], names: dict[int, str]) -> dict[str, Any]:
 @_tool
 async def customer_alerts(customer_id: int) -> str:
     """What a tech must know before a stop: Red Notes (if the API key can read them), special scheduling notes, flags, open alerts and urgent tasks, pending cancel, balance. Fast; use before scheduling or dispatching."""
-    rows = await _get_rows("customer", [customer_id], {"includeCustomerFlag": 1})
+    # Best-effort, same as customer_360: Zest's account ignores includeCustomerFlag, and the
+    # fallback below (a separate customerFlag/search) covers it either way.
+    rows = await _get_rows("customer", [customer_id], {"includeCustomerFlag": 1}, optional_extra={"includeCustomerFlag"})
     if not rows:
         raise ToolError(f"Customer {customer_id} not found.")
     c = rows[0]
