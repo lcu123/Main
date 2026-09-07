@@ -337,7 +337,7 @@ Phase 1 needs no tool: the cron's output is Sean's task list, and the owner can 
 2. Zip-to-region defaults. Proposed: Downtown 3 = 95811 95814 95816 95817 95818 95819; South Sacramento 4 = 95820 95822 95823 95824 95826 95828 95829 95831 95832 plus Elk Grove 95624 95757 95758 and Galt 95632; Carmichael 5 = 95608 95821 95825 95864 plus Fair Oaks 95628 and Orangevale 95662; Rancho Cordova 2 = 95670 95742 95827 95655 95683; North Highlands/Antelope/Rio Linda 8 = 95660 95673 95841 95842 95843 95652 95626 95837 plus Natomas 95833 95834 95835 95838; Citrus Heights 9 = 95610 95621; Folsom 10 = 95630; West Sacramento 6 = 95691; everything else 0.
 3. Sole assignee Sean (10007), or Hot A-tier leads to Iggy (10002)? Default: Sean.
 4. Accept the "confirmed infestation at any food retail +10" rule (rodent or cockroach)? Default: yes. Decided 2026-09-07: cockroach and other pest infestations are wanted leads, scored nearly level with rodents; only the pitch wording differs.
-5. Chain policy: park all national chains; treat regional ethnic operators (99 Ranch, La Superior, Seafood City, Viva) as eligible? Default: park nationals, allow regionals.
+5. Chain policy: **decided 2026-09-07: national chains stay parked for the first 90 days** (recorded, never pushed, not enriched); revisit once the independent pipeline is converting. Regional ethnic operators (99 Ranch, La Superior, Seafood City, Viva) remain eligible.
 6. Daily caps: 15 new leads with 5 from the territory lane? Default: yes, review after two weeks.
 7. Territory radius: 20 miles from Rio Linda (306 of 319 independent ICP-A facilities)? Default: 20.
 8. Create lead subscriptions so leads show on the FieldRoutes Leads board (phase 3)? Default: yes, after validation.
@@ -347,7 +347,7 @@ Phase 1 needs no tool: the cron's output is Sean's task list, and the owner can 
 12. Placer geography: **decided 2026-09-07: Roseville, Rocklin, Lincoln, Granite Bay and Loomis only; Auburn is out.** Zip rows: 95661 95678 95747 to region 1 or 7 (owner still to split Roseville A/B), 95746 to 7, 95677 95765 95648 95650 to 11.
 13. Yolo geography: **decided 2026-09-07: West Sacramento only** (region 6). Davis and Woodland are out of scope for now; revisit only if the owner opens a Yolo route.
 14. Placer phone numbers: the county's reports carry none, so Placer leads either wait for the Google Places key (phase 3) or go out with address only. Default: bring Places forward for Placer.
-15. ZoomInfo: proceed with the Zapier path on entity-owned and multi-location leads at 5 a day (decided in principle 2026-09-07), pending the 20-lead pilot in validation step 18 and confirmation of the plan's credit allotment. Owner to say whether chains parked by the scraper should also be enriched as a corporate play.
+15. ZoomInfo: proceed with the Zapier path on entity-owned and multi-location leads at 5 a day (decided in principle 2026-09-07), pending the 20-lead pilot in validation step 18 and confirmation of the plan's credit allotment. Parked chains are not enriched (decision 5).
 
 ## 13. Out of scope for now
 
