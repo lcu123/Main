@@ -12,9 +12,10 @@ Key findings that shape the design:
 - **The rodent signal lives in the PDF, not the feed.** The feed's violation category "VERMIN AND ANIMAL CONTAMINATION" is mostly German cockroaches. The inspection report PDFs (linked from every feed row) have a text layer with the inspector's narrative ("hundreds of rodent droppings observed on the counter below the merchandisers") plus the **owner's name and a phone number** in the page header. Fetching one PDF per flagged facility (1 to 3 per working day) gives the rep a quotable, dated fact and a number to dial, with no ZoomInfo needed for single-location owners.
 - **The ICP-tier event pool is small.** In the last 12 months only about 38 facilities in the A/B tiers (large and mid markets, commissaries, ethnic markets, multi-location restaurants) had a vermin or closure event. Rodent-only events are fewer still. So the pipeline needs a second "territory" lane: the 319 independent ICP-A facilities with no violation, fed at a few per day ordered by distance from the Rio Linda office, so the list is never empty and stays route-dense.
 - **Food warehouses and distributors are not in this data.** They are licensed by the state (CDPH Food and Drug Branch), not the county, and no public list was found. That ICP segment is a ZoomInfo play, out of scope for this scraper.
+- **Placer and Yolo are on the same portal but have no open-data feed.** Placer (`/pchd`) and Yolo (`/yolocountyeh`) expose the same JSON search call as Sacramento, with the inspector's narrative inline in a `comments` field, so pest mentions are visible without opening a PDF. There is no ArcGIS feed for either, so for these two counties the portal's JSON call is the primary source and must be used gently: 25 rows per request, date-window pulls, 2 seconds between calls. Placer runs about 20 inspections a working day (including pools and body art), Yolo about 8. Placer's report PDFs carry no owner name or phone; Yolo's carry the permit holder's email and sometimes a phone.
 - **FieldRoutes already models leads the way we need.** Zest's existing leads are status-0 (inactive) customers with a lead subscription (`active = -3`), sold by Sean (employee 10007). The customer record's `customerLink` field is a free-text external ID that is searchable, which gives exact dedupe against the county's `Facility_ID`.
 
-Recommended shape: a `src/fr_mcp/leads/` package with an `fr-leads` command, run daily as a second Railway cron service from the same Docker image, writing through the repo's existing hardened FieldRoutes client and write guards. Two curated MCP tools (`lead_preview`, `lead_import`) come in phase 2 so Claude can show and import leads conversationally. Zapier receives a daily digest webhook and handles Slack/Gmail delivery and optional ZoomInfo enrichment. Total effort about 10 working days across four phases; first real leads in Sean's queue at the end of phase 1 (about 4 days).
+Recommended shape: a `src/fr_mcp/leads/` package with an `fr-leads` command and one source adapter per county (Sacramento ArcGIS feed; Placer and Yolo portal JSON), run daily as a second Railway cron service from the same Docker image, writing through the repo's existing hardened FieldRoutes client and write guards. Two curated MCP tools (`lead_preview`, `lead_import`) come in phase 2 so Claude can show and import leads conversationally. Zapier receives a daily digest webhook and handles Slack/Gmail delivery and optional ZoomInfo enrichment. Total effort about 11.5 working days across four phases; first Sacramento leads in Sean's queue at the end of phase 1 (about 4 days), Placer and Yolo in phase 2.
 
 ## 2. What the data actually contains
 
@@ -73,9 +74,27 @@ Every page repeats a header: `Owners Name<OWNER>Est Name<NAME>`, `City<city>Addr
 
 The body is numbered violation blocks: category heading, then `Observations:` (the inspector's narrative), then `Code Description:` (CalCode boilerplate that itself contains the words vermin, rodents and insects and must be stripped before keyword matching). Verified narratives: NATOMAS FOOD & LIQUOR 2026-09-02, rodent droppings, no pest-control invoice on site; SEAPOT 2026-09-01 and CURRIES & BIRYANIS 2026-08-29, German cockroach closures; KFC/A&W 2026-08-31, one cockroach and a fly.
 
-### 2.5 The portal's own JSON API (secondary, not used by default)
+### 2.5 The portal's own JSON API (secondary for Sacramento, primary for Placer and Yolo)
 
-`POST https://inspections.myhealthdepartment.com/` with a JSON body `{"task":"searchInspections","data":{"path":"sacramento","programName":"","filters":{},"start":0,"count":20,"searchStr":"…","lat":0,"lng":0,"sort":null}}` returns inspection rows with `permitID`, `progIdent` (department label such as "RETAIL FLOOR/WAREHOUSE/MEAT/PRODUCE"), `permitType`, and split address fields. It worked without the captcha in testing but the page code has a captcha path, and the site blocks bots. Keep it as an optional "closures today" check in phase 4, one request per run at most. Placer, Yolo, San Joaquin and El Dorado counties are hosted on the same platform.
+`POST https://inspections.myhealthdepartment.com/` with a JSON body `{"task":"searchInspections","data":{"path":"sacramento","programName":"","filters":{},"start":0,"count":20,"searchStr":"…","lat":0,"lng":0,"sort":null}}` returns inspection rows with `permitID`, `progIdent` (department label such as "RETAIL FLOOR/WAREHOUSE/MEAT/PRODUCE"), `permitType`, and split address fields. It worked without the captcha in testing but the page code has a captcha path, and the site blocks bots. For Sacramento keep it as an optional "closures today" check, one request per run at most. For Placer and Yolo it is the only bulk source (2.6).
+
+### 2.6 Placer and Yolo counties (verified 2026-09-07)
+
+Both counties publish on the same platform, each under its own path and with its own field names and permit-type vocabulary. Neither has an open-data feed (ArcGIS Online and Placer's open-data hub were searched); Yolo's own county website blocks non-browser clients, and its separate "restaurant inspection report search" page is a different system covering about 700 fixed facilities.
+
+| | Placer County | Yolo County |
+| --- | --- | --- |
+| Portal path (`path` in the JSON call) | `pchd` (record `nick` "cpch") | `yolocountyeh` (record `nick` "ycc") |
+| Search call | same `searchInspections` POST; **25 rows per request maximum** (larger `count` is ignored), `start` pages; filters `date` ("YYYY-MM-DD to YYYY-MM-DD") and `purpose` verified working | same mechanics and cap; `date` filter verified |
+| Volume (2026-08-24 to 09-07) | 208 inspections, about 20 per working day across all programs (Retail Food, pools, body art, mobile) | 78 inspections, about 8 per working day (Retail Food plus pools) |
+| Row fields beyond Sacramento's | `purpose` (Routine / Follow-up / Complaint), `InspectionOutcome` (Green / Yellow / Red Placard; blank on non-food programs), `comments` (inspector narrative inline), `permitName` with the PR permit number | `INSP_PURPOSEID` (Routine / Follow-up), `comments` inline, `StartTime`; no outcome field (`score` null) |
+| Pest evidence in the row | yes: 6 of 208 rows mention rodents, droppings, cockroaches, ants or "closure due to pests" (e.g. SPROUTS #428 Lincoln complaint alleging rodent activity; AZAYAKA Roseville closure with rodent droppings; CB'S BISTRO Carnelian Bay, rodent droppings and no pest contract) | yes: narrative in `comments`; "conditional placard" language appears |
+| Permit types (ICP mapping) | `Market - With Food Prep Equal To Or > 5000 Sq Ft` and `Market - No Food Prep Equal To Or > 5000 Sq Ft` (A); `Market … >500 - 5000 Sq Ft` (A- with market keywords, else C); `Market - No Food Prep < 500 Sq Ft` (excluded); `Restaurant: 100 Or More Seats` (B); `Restaurant: 50 - 99 Seats` (B/C); `Restaurant: 0 - 49 Seats` (C); `School Cafeteria`, `Mobile Food Facility`, `Pool/Spa`, `Body Art` (excluded) | `Retail Food Markets 5,000+ square feet, RC1/RC2` (A); `Retail Food Markets 2,000-4,999 square feet` (A-); `Bakery …` (A); `CATERING - YEAR PERMIT` (A-); `Retail Food Markets less than 2,000 square feet` (C unless keyword); `Restaurant 150+ seats` and `50-149 seats` (B); `26-49` and `0-25 seats` (C); `School / Institutional … Satellite`, pools, temporary permits, `EDIBLE FOOD RECOVERY AUDIT FEE` (excluded). RC1/RC2/RC3 is the county's risk category; RC3 is the highest-risk food handling |
+| Cities in scope | Roseville, Rocklin, Lincoln, Granite Bay, Loomis (Zest regions 1, 7, 11); Auburn and Foresthill are 25 to 35 miles out (owner decides); Tahoe basin (Kings Beach, Tahoe City, Carnelian Bay, Olympic Valley, Truckee-side zips 961xx) excluded | West Sacramento (region 6); Davis, Woodland, Winters have no Zest region (owner decides) |
+| Report PDF | different template: header has Facility Name, Facility ID `FA…`, Record ID `PR…`, Program Element, Inspector, "Received By" (person on site). **No owner name or phone.** Body is per-violation blocks: title, "Violation Txt", "Violation Code", "Status: OUT", "Inspector Comments" | single page: Establishment Name, address, **Permit Holder**, **Email address**, **Phone** (blank in the sample), Facility ID `FA…`, PR ID, purpose, **MAJ** (major-violation count), Risk Category, "Notes / COMMENTS", the specialist's name, and the person-in-charge email |
+| Facility key | `FA…` Facility ID in the PDF; `permitID` GUID and `permitName` PR number in the row (several permits can share a facility, same as Sacramento) | `FA…` in the PDF; `permitID` GUID in the row |
+
+What this means for the design: the portal adapter pulls each county by date window (last 45 days daily, 180 days on backfill), pages at 25 rows with a 2-second gap (Placer backfill about 100 requests, Yolo about 40, daily runs 1 to 3 requests each), keeps only food programs, and reads the pest signal from `comments` first, opening the PDF only when the narrative is empty or a placard/closure needs the detail. Placer leads need Google Places (phase 3) or ZoomInfo for a phone number; Yolo leads often come with an email. The facility identity for `customerLink` is the county's own `FA…` ID read from the PDF header, with the `permitID` GUID as the interim key until a PDF has been opened.
 
 ## 3. Ideal-customer filter and lead scoring
 
@@ -115,14 +134,18 @@ Apply only to the Observations text of blocks whose category is VERMIN AND ANIMA
 
 Mixed rodent+cockroach counts as rodent. Every lead note carries the raw 200-character quote and the report URL so the rep can verify in ten seconds; misclassifications reported through task completion notes feed the phase-4 re-weighting. Unit tests use the seven PDF texts already extracted during planning as fixtures.
 
-### 3.4 Two lanes
+### 3.4 County permit-type mapping
+
+Each county has its own vocabulary, so `icp_fit` is computed from a per-county mapping table (Sacramento in 2.2, Placer and Yolo in 2.6) that normalises to the same internal classes: large market (30), mid market (30), commissary/catering/bakery (22 to 28), small market (12, or 24 with a market keyword), large restaurant (14), restaurant (12), excluded. Placer's placard colour and Yolo's major-violation count feed `pest_signal` the same way Sacramento's `Inspection_Result` does: Red Placard or closure 8 extra, Yellow Placard or conditional placard 4.
+
+### 3.5 Two lanes
 
 - **Event lane**: facilities with an unhandled vermin or closure/suspension inspection within 180 days. Pushed first, Hot then Warm; Cool goes to the backlog.
 - **Territory lane**: independent ICP-A facilities (icp_fit 24 or more) with no signal, ordered by distance then by days since last inspection ascending (recently inspected means confirmed operating). Capped at 5 per day. These are audit-offer prospects, not complaints, and the task text says so.
 
 ## 4. Architecture
 
-Package `src/fr_mcp/leads/` with modules `arcgis.py` (feed client, paging, schema assertion on the 11 field names), `reports.py` (polite cached PDF fetch, header and violation-block parsing), `classify.py` (pure regex rules), `score.py` (pure scoring), `regions.py` (zip-to-region table, haversine distance), `fr_push.py` (dedupe and FieldRoutes writes through `FieldRoutesClient`), `state.py` (SQLite), `enrich_places.py` (phase 3, feature-flagged), `digest.py`, `cli.py` (`fr-leads` entry point in `pyproject.toml`). One small refactor in `server.py`: move the pure helpers `_int`, `_clean`, `_pick`, `_j`, `_id_list` into `src/fr_mcp/util.py` and re-import them, and extract the param-building bodies of `add_note` and `create_task` into plain coroutines the tools call unchanged. No tool count change in phase 1.
+Package `src/fr_mcp/leads/` with modules `sources/sacemd.py` (ArcGIS feed client, paging, schema assertion on the 11 field names), `sources/myhd.py` (portal JSON adapter parametrised by county path, with per-county field and permit-type maps, 25-row paging, date windows, and a circuit breaker that stops the run's portal calls on a 403 or captcha response), `reports.py` (polite cached PDF fetch, header and violation-block parsing), `classify.py` (pure regex rules), `score.py` (pure scoring), `regions.py` (zip-to-region table, haversine distance), `fr_push.py` (dedupe and FieldRoutes writes through `FieldRoutesClient`), `state.py` (SQLite), `enrich_places.py` (phase 3, feature-flagged), `digest.py`, `cli.py` (`fr-leads` entry point in `pyproject.toml`). One small refactor in `server.py`: move the pure helpers `_int`, `_clean`, `_pick`, `_j`, `_id_list` into `src/fr_mcp/util.py` and re-import them, and extract the param-building bodies of `add_note` and `create_task` into plain coroutines the tools call unchanged. No tool count change in phase 1.
 
 Runtime: a second Railway service in the existing project, same repo and Dockerfile, start command `fr-leads run`, cron schedule `30 12 * * 1-5` (05:30 Pacific weekdays, after the county's refresh; Railway evaluates cron in UTC, requires the process to exit, and skips overlapping runs), restart policy never so a failed run does not re-fire. A Railway Volume at `/data` holds `leads.sqlite` and the PDF cache. Env: the same `FR_*` credentials as the MCP service plus `LEADS_SOURCE_ID`, `LEADS_TASK_CATEGORY_ID`, `LEADS_NOTE_TYPE_ID=0`, `LEADS_ASSIGN_TO=10007`, `LEADS_DAILY_CAP=15`, `LEADS_TERRITORY_CAP=5`, `LEADS_RETOUCH_CAP=10`, `LEADS_DRY_RUN`, `LEADS_DIGEST_WEBHOOK`, later `GOOGLE_PLACES_KEY`. Alternative if the owner prefers no second service: a GitHub Actions cron with the credentials copied to repository secrets; not the default because it duplicates credentials.
 
@@ -130,7 +153,8 @@ State store tables: `facilities` (Facility_ID, name, address parts, lat/lng, per
 
 ```mermaid
 flowchart LR
-  A[ArcGIS feed<br/>layer 1 since watermark<br/>layer 0 weekly] --> B[Normalise<br/>collapse permits by Facility_ID]
+  A[Sacramento ArcGIS feed<br/>layer 1 since watermark<br/>layer 0 weekly] --> B[Normalise<br/>collapse permits by facility]
+  A2[Placer + Yolo portal JSON<br/>date window, 25 rows/page] --> B
   B --> C[Hard filters<br/>types, staleness, distance, chains]
   C --> D{Signal in 180d?}
   D -- yes --> E[Fetch + parse PDF<br/>owner, phone, narrative]
@@ -145,7 +169,7 @@ flowchart LR
   K --> M[MCP tools<br/>lead_preview / lead_import]
 ```
 
-Per-run cost: 1 to 5 ArcGIS requests, 1 to 5 PDF fetches at 2-second spacing, 3 to 6 FieldRoutes reads and 3 to 4 writes per pushed lead, one webhook POST; under two minutes.
+Per-run cost: 1 to 5 ArcGIS requests, 2 to 6 portal search requests for Placer and Yolo, 1 to 8 PDF fetches at 2-second spacing, 3 to 6 FieldRoutes reads and 3 to 4 writes per pushed lead, one webhook POST; under two minutes.
 
 ## 5. FieldRoutes lead model
 
@@ -166,8 +190,8 @@ All writes go through `FieldRoutesClient.call` (form encoding, auth in body, 55/
 | `status` | 0 (Inactive). Matches Zest's real leads and keeps the record out of routing and `due_for_service` |
 | `commercialAccount` | 1 |
 | `sourceID` | `LEADS_SOURCE_ID`, a new "Health Dept Inspections" customer source the owner creates in Admin, Preferences, Customer Sources (no create endpoint exists); the run refuses to write until `customerSource/search` confirms it |
-| `regionID` | from the zip table (proposed defaults in 12); unmapped zips get 0 and a flag in the note |
-| `customerLink` | `SACEMD:<Facility_ID>`, e.g. `SACEMD:FA0003412` (prefix leaves room for PLACER:/YOLO:) |
+| `regionID` | from the zip table (proposed defaults in 12), including Placer zips to regions 1, 7 and 11 and West Sacramento to region 6; unmapped zips (Auburn, Davis, Woodland, Winters) get 0 and a flag in the note |
+| `customerLink` | `SACEMD:<Facility_ID>` for Sacramento, `PCHD:<FA id>` for Placer, `YOLO:<FA id>` for Yolo (e.g. `SACEMD:FA0003412`, `PCHD:FA0000599`, `YOLO:FA0002270`); the `FA` id comes from the feed for Sacramento and from the PDF header for the other two, with `permitID` as the interim key until a PDF is read |
 | `employeeID` | `FR_DEFAULT_EMPLOYEE_ID` (honest bot attribution; lets `customer/search employeeID=` list what the scraper created) |
 | `smsReminders`, `phoneReminders`, `emailReminders` | 0, so FieldRoutes never messages a prospect |
 | `notes` | never sent (this is the Red Notes banner) |
@@ -205,7 +229,8 @@ Per new lead: 2 to 3 reads and 3 writes (4 with the lead subscription). Per re-t
 | Source | What it adds | When | Cost |
 | --- | --- | --- | --- |
 | PDF header (public record) | owner name or entity, phone (often the owner's cell), department string, PE code cross-check | phase 1, every event-lane facility | free; 1 to 3 fetches/day, about 150 on a 180-day backfill |
-| ArcGIS geometry | lat/lng for route density and region | phase 1 | free |
+| ArcGIS geometry | lat/lng for route density and region (Sacramento only; Placer and Yolo rows have no coordinates, so distance comes from Places or a zip centroid table) | phase 1 | free |
+| Placer and Yolo portal rows | inspector narrative inline (`comments`), placard colour (Placer), purpose; Yolo PDF adds permit-holder email and sometimes a phone; Placer PDF adds nothing about the owner | phase 2 | free; same politeness rules |
 | Google Places API (New) Text Search, field mask `places.id,displayName,formattedAddress,nationalPhoneNumber,websiteUri,businessStatus,userRatingCount,primaryType` | business phone when the header is blank, website for the ZoomInfo match, CLOSED_PERMANENTLY to park dead leads (255 facilities have no inspection in over a year), rating count as a size proxy | phase 3, only for rows about to be pushed, 90-day cache | Pro SKU; 5,000 free calls/month covers the whole pool (**unverified**, no key in this sandbox) |
 | ZoomInfo via the owner's Zapier app | decision-maker names and direct lines for entity-owned Hot/Warm leads and multi-location operators | phase 3, triggered by the digest webhook (`zoominfo_candidate: true`), writes a second note through Zapier's FieldRoutes action | Zapier task per lead; 1 FieldRoutes write on the shared quota; keep under 5/day |
 
@@ -219,6 +244,7 @@ Do not use ZoomInfo for single-location person-owned facilities: the PDF header 
 - **Kill switches inherited**: `FR_WRITES=off` makes the cron read-only; `FR_ALLOW_DELETE` and `FR_ALLOW_CHARGES` stay off; the pipeline never calls delete, payment or appointment endpoints and never writes Red Notes.
 - **Rollback**: `fr-leads rollback --run <id>` appends a note "Imported in error, ignore", closes the task via `task/update status 1`, and marks the state row. Deletion stays a UI action.
 - **Fail-closed startup**: abort before any write if `LEADS_SOURCE_ID` is not found in `customerSource/search`, the task category is unset, `LEADS_ASSIGN_TO` is not an active employee, or `FR_OFFICE_ID` is not 1.
+- **Portal politeness and circuit breaker**: browser User-Agent, one request every 2 seconds, 25-row pages, date-window pulls only, results cached by inspection GUID, and an immediate stop of all portal calls for the rest of the run on any 403, captcha page or non-JSON response, with the run still completing Sacramento work. Never enumerate the full portal, never run more than one worker.
 - **Feed drift**: assert the 11 field names and that layer 0 returns at least 5,000 rows; on failure exit 2 with no writes. Pull from watermark minus 7 days to absorb late rows.
 - **Observability**: one JSON line per lead decision (facility, tier, score, classification, action, IDs), a run summary with `tokenUsage` before and after, never the API key or PDF bodies. A non-zero exit shows in Railway's cron history. A Zapier "no digest received by 07:00" watchdog catches silent failures.
 - **Digest**: the morning list (Hot/Warm pushed today, re-touches, territory adds, backlog count, quota, failures) POSTed to `LEADS_DIGEST_WEBHOOK`; Zapier fans it out to Slack and Sean's Gmail.
@@ -239,9 +265,9 @@ Phase 1 needs no tool: the cron's output is Sean's task list, and the owner can 
 | --- | --- | --- | --- |
 | 0. Owner setup and live verification | Customer source "Health Dept Inspections" and task category "Sales - Commercial" created in the UI; zip-to-region table reviewed; chain exception list decided; note type confirmed | 0.5 day | `lookups` shows the new IDs; region table signed off |
 | 1. Event lane MVP with PDF classification | `leads/` package (arcgis, reports, classify, score, regions, fr_push, state, cli), `util.py` refactor, pypdf added to `pyproject.toml` and `requirements.lock`; tests (classifier fixtures from the seven extracted PDFs, scorer tables, address parser, FakeFR dedupe/idempotency/dry-run, cap and quota abort); 180-day backfill in dry run reviewed with the owner; capped first live push; Railway cron service with volume; CI green; README and CLAUDE.md sections | 4 days | Weekday cron runs unattended; every pushed lead has `customerLink`, one note with a quotable evidence line, one task assigned to 10007; re-running the same day creates zero duplicates; dry run makes zero writes |
-| 2. Territory lane, MCP tools, digest, rollback | Territory lane at 5/day; `lead_preview` and `lead_import`; digest webhook to Zapier (Slack + Gmail) and the 07:00 watchdog; `rollback` and `rebuild-state` commands; nightly SQLite backup | 2 days | Sean gets a morning list with evidence quotes and FieldRoutes IDs; Claude can show this week's rodent leads and import one after confirmation |
+| 2. Placer and Yolo, territory lane, MCP tools, digest, rollback | Portal JSON adapter with per-county field and permit-type maps, 25-row paging, circuit breaker, Placer and Yolo PDF parsers (Yolo email, Placer violation blocks), `PCHD:`/`YOLO:` keys, Placer and Yolo zip-to-region rows; territory lane at 5/day across all three counties; `lead_preview` and `lead_import`; digest webhook to Zapier (Slack + Gmail) and the 07:00 watchdog; `rollback` and `rebuild-state` commands; nightly SQLite backup | 3.5 days | Placer and Yolo events appear in the same scored list with county tags; a week of daily portal pulls completes without a block; Sean gets a morning list with evidence quotes and FieldRoutes IDs; Claude can show this week's rodent leads and import one after confirmation |
 | 3. Enrichment and lead subscriptions | Google Places with cache and free-tier accounting; ZoomInfo Zap for entity-owned Hot/Warm leads; lead subscription (serviceID 103, leadValue, soldBy 10007) once verified; PDF-derived phone updates for adopted records | 2 days | Hot leads carry phone, website and business status; leads appear on the FieldRoutes Leads board with the right source |
-| 4. Calibration, density, neighbouring counties | Re-weighting from at least 30 task dispositions; route-density bonus from existing customers within 1 mile; Placer and Yolo (check their open-data portals first, portal JSON API as last resort); optional weekly dashboard | 1.5 days | Weights adjusted from real outcomes; other counties added only where a lawful bulk source exists |
+| 4. Calibration, density, further counties | Re-weighting from at least 30 task dispositions; route-density bonus from existing customers within 1 mile; San Joaquin or El Dorado only if the owner wants them (same portal platform); optional weekly dashboard | 1.5 days | Weights adjusted from real outcomes; further counties added only where the portal stays reachable and a lawful bulk source or the same polite pull works |
 
 ## 10. Live-tenant validation checklist (in order)
 
@@ -259,6 +285,9 @@ Phase 1 needs no tool: the cron's output is Sean's task list, and the owner can 
 12. Cron: deploy, run once manually, check exit code 0, the volume file and the schedule; next weekday confirm the digest by 06:00 Pacific.
 13. Quota after a week: `health_check` daily usage and the run summaries agree with the expected 3 to 4 writes per lead; Zapier and website forms still have headroom.
 14. Compliance read-through with the owner: note wording, manual dialing, do-not-call handling.
+15. Placer and Yolo pulls: run the portal adapter in dry run for a 45-day window on each county; confirm row counts match a manual check of the portal for two dates, that food programs are the only rows kept, and that the run completes with no 403 or captcha for five consecutive days before any live push.
+16. Placer and Yolo PDFs: parse one Placer report (violation blocks with "Inspector Comments") and one Yolo report (Permit Holder, Email, Phone, MAJ count, FA id) with the fixtures saved during planning; confirm the FA id lands in `customerLink` and the Yolo email in `email`.
+17. Placer and Yolo regions: the first live lead in each county reads back with the expected `regionID` (Roseville to 1 or 7, Rocklin/Lincoln to 11, West Sacramento to 6) and unmapped cities carry the flag in the note.
 
 ## 11. Risks and mitigations
 
@@ -268,6 +297,7 @@ Phase 1 needs no tool: the cron's output is Sean's task list, and the owner can 
 | Regex false positives or negatives ("rat-proof" in recommendations, merged words in PDF text) | Boilerplate and "shall"-sentence exclusion; raw quote and report link in every note; dispositions feed re-weighting |
 | ArcGIS schema change, outage or growing lag | Field assertion and row-count sanity check fail the run before any write; watermark minus 7 days; weekly count comparison |
 | The portal starts blocking PDF fetches | Browser UA, 2-second spacing, permanent cache, only signal facilities; leads still flow as vermin_unclassified with a "read the report" link |
+| The portal blocks or captchas the JSON search, which is the only bulk source for Placer and Yolo | Date-window pulls of 1 to 3 requests a day, circuit breaker, no enumeration; if blocked for more than a week, fall back to a weekly manual check of the portal's follow-up and complaint lists, and ask the counties about a data feed (Sacramento already publishes one) |
 | Shared FieldRoutes quota exhausted by the pipeline plus Zapier and web forms | Headroom check before writes, per-run ceilings, daily caps, the client's 95% refusal; steady state under 3% of the write quota |
 | Flooding Sean with low-value or dead businesses | Tiers (Park never pushes), territory lane capped at 5, Places CLOSED_PERMANENTLY gate, 540-day staleness exclusion, one open task per facility |
 | Duplicate customers when a facility is already a customer under another name | Three-step resolver including inactive customers; existing active customers get an upsell task only |
@@ -290,11 +320,14 @@ Phase 1 needs no tool: the cron's output is Sean's task list, and the owner can 
 9. Google Places key and Zapier Catch Hook now, or a plain Slack webhook first? Default: Catch Hook (Zapier is already in daily use).
 10. Second Railway cron service (recommended) versus GitHub Actions cron? Default: Railway.
 11. Go-ahead to fetch inspection PDFs from the portal with a browser User-Agent at low volume, given the county publishes the same records CC0? Default: yes, with the politeness rules above.
+12. Placer geography: Roseville, Rocklin, Lincoln, Granite Bay and Loomis only, or include Auburn and Foresthill (25 to 35 miles)? Default: exclude Auburn for now; Tahoe basin always excluded. Proposed zip rows: 95661 95678 95747 to region 1 or 7 (owner splits Roseville A/B), 95746 to 7, 95677 95765 95648 95650 to 11.
+13. Yolo geography: West Sacramento only (region 6), or also Davis, Woodland and Winters? Default: West Sacramento live from day one; Davis and Woodland as territory-lane prospects only if the owner wants a Yolo route.
+14. Placer phone numbers: the county's reports carry none, so Placer leads either wait for the Google Places key (phase 3) or go out with address only. Default: bring Places forward for Placer.
 
 ## 13. Out of scope for now
 
 - Food distributors and warehouses (state-licensed; ZoomInfo or other list sources).
-- Placer, Yolo, San Joaquin and El Dorado counties (same portal platform; look for open-data equivalents first).
+- San Joaquin and El Dorado counties (same portal platform; only if the owner wants them after Placer and Yolo prove out).
 - Any customer-facing messaging, SMS, or email automation.
 - Scraping the portal HTML or permit pages at volume.
 - A dashboard; a weekly digest artifact can follow once conversions exist.
