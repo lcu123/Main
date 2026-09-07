@@ -9,7 +9,7 @@ Build a small, scheduled pipeline inside this repo that turns Sacramento County'
 Key findings that shape the design:
 
 - **Don't scrape the portal HTML.** The county publishes the same data as an open ArcGIS feature service under a CC0 licence (6,211 facilities, 41,055 inspection rows back to 2023, refreshed nightly, about 3 days behind the portal). It is a clean JSON API, polite to use, and legally unambiguous. The portal itself (`inspections.myhealthdepartment.com`) returns 403 to non-browser clients and has a captcha path.
-- **The rodent signal lives in the PDF, not the feed.** The feed's violation category "VERMIN AND ANIMAL CONTAMINATION" is mostly German cockroaches. The inspection report PDFs (linked from every feed row) have a text layer with the inspector's narrative ("hundreds of rodent droppings observed on the counter below the merchandisers") plus the **owner's name and a phone number** in the page header. Fetching one PDF per flagged facility (1 to 3 per working day) gives the rep a quotable, dated fact and a number to dial, with no ZoomInfo needed for single-location owners.
+- **The pest evidence lives in the PDF, not the feed.** The feed's violation category "VERMIN AND ANIMAL CONTAMINATION" only says that vermin were found; the inspection report PDFs (linked from every feed row) have a text layer with the inspector's narrative ("hundreds of rodent droppings observed on the counter below the merchandisers", "4 to 5 adult live German cockroaches under the dishwasher") plus the **owner's name and a phone number** in the page header. Fetching one PDF per flagged facility (1 to 3 per working day) gives the rep a quotable, dated fact, the pest type to pitch against, and a number to dial, with no ZoomInfo needed for single-location owners. Per the owner (2026-09-07), rodent and cockroach infestations are both wanted leads; the classification labels the pitch, it does not demote the lead.
 - **The ICP-tier event pool is small.** In the last 12 months only about 38 facilities in the A/B tiers (large and mid markets, commissaries, ethnic markets, multi-location restaurants) had a vermin or closure event. Rodent-only events are fewer still. So the pipeline needs a second "territory" lane: the 319 independent ICP-A facilities with no violation, fed at a few per day ordered by distance from the Rio Linda office, so the list is never empty and stays route-dense.
 - **Food warehouses and distributors are not in this data.** They are licensed by the state (CDPH Food and Drug Branch), not the county, and no public list was found. That ICP segment is a ZoomInfo play, out of scope for this scraper.
 - **Placer and Yolo are on the same portal but have no open-data feed.** Placer (`/pchd`) and Yolo (`/yolocountyeh`) expose the same JSON search call as Sacramento, with the inspector's narrative inline in a `comments` field, so pest mentions are visible without opening a PDF. There is no ArcGIS feed for either, so for these two counties the portal's JSON call is the primary source and must be used gently: 25 rows per request, date-window pulls, 2 seconds between calls. Placer runs about 20 inspections a working day (including pools and body art), Yolo about 8. Placer's report PDFs carry no owner name or phone; Yolo's carry the permit holder's email and sometimes a phone.
@@ -110,7 +110,7 @@ What this means for the design: the portal adapter pulls each county by date win
 
 **icp_fit (0-40)** by best permit under the facility: 15000+ market 30; 6000-14999 market 30; commissary 28; satellite distribution 25; bakery 22; small market 12, or 24 with a market keyword in the name; restaurant with bar 14; restaurant 12; food prep 8, or 18 with a bakery/catering/kitchen/meat/seafood keyword; health-care facility 12. Add +5 per extra permit (cap +10), +6 for meat/seafood words, +4 for bakery words, +3 when the PDF department string mentions warehouse/meat/produce, +4 for a local multi-location operator (base name appears 2 to 4 times and is not on the chain list).
 
-**pest_signal (0-40)** from the strongest inspection in 24 months: rodent confirmed in the narrative 40; vermin with unavailable or unparsed PDF ("vermin_unclassified") 22; cockroach-only 12; flies/ants only 6; closure or suspension for non-vermin reasons 8; critical violations or conditional pass without vermin 4. Modifiers: +8 when that inspection's result was CLOSED or SUSPENSION (quotable), +6 per additional vermin-flagged inspection in 24 months (cap +12), +6 when the narrative says no pest-control provider or invoice was found, +3 for live evidence versus dead-only, 0 extra when an existing provider is mentioned (tagged for a displacement pitch).
+**pest_signal (0-40)** from the strongest inspection in 24 months: rodent confirmed in the narrative 40; cockroach confirmed 36 (owner decision 2026-09-07: cockroach work is wanted; the small gap only orders rodent cases first when everything else is equal); mixed rodent and cockroach 40; vermin with unavailable or unparsed PDF ("vermin_unclassified") 22; flies, ants or other insects only 20; closure or suspension for non-vermin reasons 8; critical violations or conditional pass without vermin 4. Modifiers: +8 when that inspection's result was CLOSED or SUSPENSION (quotable), +6 per additional vermin-flagged inspection in 24 months (cap +12), +6 when the narrative says no pest-control provider or invoice was found, +3 for live evidence versus dead-only, 0 extra when an existing provider is mentioned (tagged for a displacement pitch).
 
 **recency (0-10)** of that inspection: 7 days or less 10; 30 days 8; 90 days 5; 180 days 2; older 0.
 
@@ -118,11 +118,13 @@ What this means for the design: the portal adapter pulls each county by date win
 
 **geo multiplier** by distance from 6948 West 2nd St, Rio Linda: 10 miles or less 1.00; 10 to 20 0.90; 20 to 30 0.75; over 30 0.50; unmapped region a further -0.05.
 
-**Tiers**: Hot 70+, Warm 50 to 69, Cool 30 to 49, Park under 30. Caps: cockroach-only or flies-only leads never exceed 55 (Warm at best, so the top of the list is always rodent); vermin_unclassified caps at 65 until the PDF is parsed (retried on the next three runs).
+**Tiers**: Hot 70+, Warm 50 to 69, Cool 30 to 49, Park under 30. One cap: vermin_unclassified stays at 65 or below until the PDF is parsed (retried on the next three runs), so an unread report cannot outrank a confirmed infestation. There is no cap on cockroach leads; the task text names the pest so the rep opens with the right offer (rodent audit versus cockroach clean-out and exclusion).
 
-Worked examples from live data: an ethnic 15000+ supermarket with four vermin flags in 24 months and a rodent narrative scores 85 to 95 (Hot). NATOMAS FOOD & LIQUOR (small market, no keyword, rodent narrative, no provider, phone present, 9 miles) scores 65 (Warm); the owner can lift such cases with a "rodent narrative at any food retail +10" rule, which is recommended. SEAPOT (restaurant with bar, cockroach closure, no phone) scores 42 (Cool).
+Worked examples from live data: an ethnic 15000+ supermarket with four vermin flags in 24 months and a rodent narrative scores 85 to 95 (Hot). NATOMAS FOOD & LIQUOR (small market, no keyword, rodent narrative, no provider, phone present, 9 miles) scores 65 (Warm); the owner can lift such cases with a "confirmed infestation at any food retail +10" rule, which is recommended. SEAPOT (restaurant with bar, German cockroach closure on 2026-09-01, live evidence, no phone, 7 miles) scores 14 + 47 + 8 + 0 = 69 (Warm, one point short of Hot; the +10 rule makes it Hot). CURRIES & BIRYANIS (Folsom restaurant, cockroach closure, phone present, inspector recommended sealing gaps) scores 12 + 47 + 8 + 5 = 72 (Hot).
 
-### 3.3 Rodent versus cockroach classification
+### 3.3 Pest classification (rodent, cockroach, other)
+
+The classifier's job is to name the pest for the pitch and the task text, catch "no provider" and "live evidence" phrases, and pull the quotable line.
 
 Apply only to the Observations text of blocks whose category is VERMIN AND ANIMAL CONTAMINATION, after deleting everything from `Code Description:` to the next numbered heading and any sentence containing " shall " (CalCode language).
 
@@ -132,7 +134,7 @@ Apply only to the Observations text of blocks whose category is VERMIN AND ANIMA
 - no_pco: "no pest control", "invoice could not be located", "no service records"; has_pco: "pest control company", "serviced by", "invoice from".
 - live_evidence: live, adult, activity, fresh, nesting.
 
-Mixed rodent+cockroach counts as rodent. Every lead note carries the raw 200-character quote and the report URL so the rep can verify in ten seconds; misclassifications reported through task completion notes feed the phase-4 re-weighting. Unit tests use the seven PDF texts already extracted during planning as fixtures.
+Mixed rodent and cockroach is labelled "rodent + cockroach". Every lead note carries the raw 200-character quote and the report URL so the rep can verify in ten seconds; misclassifications reported through task completion notes feed the phase-4 re-weighting. Unit tests use the seven PDF texts already extracted during planning as fixtures.
 
 ### 3.4 County permit-type mapping
 
@@ -293,7 +295,7 @@ Phase 1 needs no tool: the cron's output is Sean's task list, and the owner can 
 
 | Risk | Mitigation |
 | --- | --- |
-| Cockroach-only cases dominate the vermin category and waste rodent-focused calls | Narrative classification with the 55-point cap; the task names the pest; cockroach leads are offered as a pest-program call, not a rodent call |
+| The pest type is mislabelled (rodent versus cockroach) and the rep opens with the wrong offer | Narrative classification with the raw quote and report link in every note; the task names the pest; the rep can verify in ten seconds and the correction feeds re-weighting |
 | Regex false positives or negatives ("rat-proof" in recommendations, merged words in PDF text) | Boilerplate and "shall"-sentence exclusion; raw quote and report link in every note; dispositions feed re-weighting |
 | ArcGIS schema change, outage or growing lag | Field assertion and row-count sanity check fail the run before any write; watermark minus 7 days; weekly count comparison |
 | The portal starts blocking PDF fetches | Browser UA, 2-second spacing, permanent cache, only signal facilities; leads still flow as vermin_unclassified with a "read the report" link |
@@ -312,7 +314,7 @@ Phase 1 needs no tool: the cron's output is Sean's task list, and the owner can 
 1. Names for the new customer source and task category. Default: "Health Dept Inspections" and "Sales - Commercial". (Using Billing 10002 for tasks is the fallback.)
 2. Zip-to-region defaults. Proposed: Downtown 3 = 95811 95814 95816 95817 95818 95819; South Sacramento 4 = 95820 95822 95823 95824 95826 95828 95829 95831 95832 plus Elk Grove 95624 95757 95758 and Galt 95632; Carmichael 5 = 95608 95821 95825 95864 plus Fair Oaks 95628 and Orangevale 95662; Rancho Cordova 2 = 95670 95742 95827 95655 95683; North Highlands/Antelope/Rio Linda 8 = 95660 95673 95841 95842 95843 95652 95626 95837 plus Natomas 95833 95834 95835 95838; Citrus Heights 9 = 95610 95621; Folsom 10 = 95630; West Sacramento 6 = 95691; everything else 0.
 3. Sole assignee Sean (10007), or Hot A-tier leads to Iggy (10002)? Default: Sean.
-4. Accept the "rodent narrative at any food retail +10" rule? Default: yes.
+4. Accept the "confirmed infestation at any food retail +10" rule (rodent or cockroach)? Default: yes. Decided 2026-09-07: cockroach and other pest infestations are wanted leads, scored nearly level with rodents; only the pitch wording differs.
 5. Chain policy: park all national chains; treat regional ethnic operators (99 Ranch, La Superior, Seafood City, Viva) as eligible? Default: park nationals, allow regionals.
 6. Daily caps: 15 new leads with 5 from the territory lane? Default: yes, review after two weeks.
 7. Territory radius: 20 miles from Rio Linda (306 of 319 independent ICP-A facilities)? Default: 20.
