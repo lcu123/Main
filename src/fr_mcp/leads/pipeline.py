@@ -110,9 +110,13 @@ async def build_candidates(
 ) -> list[LeadCandidate]:
     """Score every facility that survives the hard filters into an event-lane,
     territory-lane, or parked-chain candidate. `fetcher`, when given, is used
-    to read inspection-report PDFs for vermin signals (None means "score
-    every vermin signal as vermin_unclassified" -- used by callers that
-    don't want network access, e.g. `preview --no-fetch` or tests).
+    to read one inspection-report PDF per pushable candidate: it is the only
+    place the owner's name and phone live (the feed has neither), so an event-
+    lane candidate fetches its signal's report and a territory-lane candidate
+    fetches its latest routine one. Vermin signals additionally get their
+    narrative classified from that same fetch. None means "no network": vermin
+    signals score as vermin_unclassified and no candidate gets a phone -- used
+    by `preview --no-fetch` and tests.
     """
     counts = _base_name_counts(facilities)
     out: list[LeadCandidate] = []
@@ -133,31 +137,35 @@ async def build_candidates(
         days_since = (today - signal.date).days if signal else None
         event_eligible = signal is not None and days_since is not None and days_since <= EVENT_SIGNAL_WINDOW_DAYS
 
-        classification = UNCLASSIFIED
-        header: ReportHeader | None = None
-        if event_eligible and signal.is_vermin and fetcher is not None:
-            text = await fetcher.fetch_text(signal.report_url, signal.pkey)
-            if text:
-                parsed: ParsedReport = parse_report(text)
-                classification = parsed.classification
-                header = parsed.header
-
         icp = _icp_inputs_for(facility, local_multi_location=local_multi)
         region_id, region_name = regions.region_for_zip(facility.zip5)
         geo = regions.geo_multiplier(distance, region_mapped=region_id != 0)
 
         if event_eligible:
             lane = LANE_CHAIN if is_chain else LANE_EVENT
-            pest = _pest_inputs_for(facility, signal, classification)
+            report_url, report_pkey = signal.report_url, signal.pkey
         elif icp.base >= TERRITORY_ICP_MIN:
             # Would have been a territory-lane prospect if it weren't a chain -- keep it
             # recorded (never pushed) so a future corporate play has the list ready;
             # a chain facility below the ICP-A bar (a 7-Eleven, a gas station) is just
             # dropped, same as any other facility with no signal and low icp_fit.
             lane = LANE_CHAIN if is_chain else LANE_TERRITORY
-            pest = PestInputs(kind="none")
+            report_url, report_pkey = facility.latest_report_url, facility.latest_pkey
         else:
             continue  # no lane: not a fresh signal, not ICP-A enough for the territory lane
+
+        classification = UNCLASSIFIED
+        header: ReportHeader | None = None
+        # Chains are never pushed, so their report isn't worth a request against the portal.
+        if fetcher is not None and lane != LANE_CHAIN and report_pkey:
+            text = await fetcher.fetch_text(report_url, report_pkey)
+            if text:
+                parsed: ParsedReport = parse_report(text)
+                header = parsed.header
+                if event_eligible and signal.is_vermin:
+                    classification = parsed.classification
+
+        pest = _pest_inputs_for(facility, signal, classification) if event_eligible else PestInputs(kind="none")
 
         result = score_candidate(
             icp,

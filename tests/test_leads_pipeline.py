@@ -98,6 +98,76 @@ def test_two_to_four_same_base_name_locations_get_the_local_multi_location_bonus
         assert c.score.icp_fit == 30 + 4  # base + local_multi_location bonus
 
 
+# --- report fetching: the PDF header is the only phone source (plan 6.1) --------
+
+
+class _StubFetcher:
+    """Answers every fetch with one real report's text and records what was asked
+    for, so a test can assert *which* report a candidate fetched (its signal's or
+    its latest routine one) without a network."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.requests: list[tuple[str, str]] = []
+
+    async def fetch_text(self, report_url: str, pkey: str) -> str | None:
+        self.requests.append((report_url, pkey))
+        return self.text
+
+
+def _run_with(facilities: dict[str, ag.Facility], fetcher) -> list[pl.LeadCandidate]:
+    return asyncio.run(pl.build_candidates(facilities, today=TODAY, fetcher=fetcher))
+
+
+def test_territory_lane_fetches_the_latest_routine_report_for_the_phone():
+    import leads_fixtures as fx
+
+    fac = _facility("FA1", "BUD'S BUFFET MARKET", "RETAIL MARKET (6000-14999 SQ.FT.)")
+    fac.latest_report_url, fac.latest_pkey = "https://x/latest", "LATEST-PKEY"
+    fetcher = _StubFetcher(fx.BUDS_NO_VERMIN)  # a plain routine report: header, no vermin block
+    candidates = _run_with({"FA1": fac}, fetcher)
+    assert fetcher.requests == [("https://x/latest", "LATEST-PKEY")]
+    c = candidates[0]
+    assert c.lane == pl.LANE_TERRITORY
+    assert c.header.phone == "5103763395"
+    assert c.header.owner == "HAROON KHAN"
+    assert c.signal is None
+    assert c.score.reachability == 5 + 3  # phone present, owner is a person
+
+
+def test_non_vermin_closure_signal_still_fetches_its_report_for_the_phone():
+    import leads_fixtures as fx
+
+    fac = _facility("FA1", "BUD'S BUFFET", "RESTAURANT")
+    fac.latest_report_url, fac.latest_pkey = "https://x/latest", "LATEST-PKEY"
+    fac.signals.append(ag.Signal("CLOSE-PKEY", date(2026, 9, 1), "CLOSED", "ROUTINE", None, "https://x/closure"))
+    fetcher = _StubFetcher(fx.BUDS_NO_VERMIN)
+    candidates = _run_with({"FA1": fac}, fetcher)
+    # The signal's own report, not the latest routine one.
+    assert fetcher.requests == [("https://x/closure", "CLOSE-PKEY")]
+    c = candidates[0]
+    assert c.lane == pl.LANE_EVENT
+    assert c.header.phone == "5103763395"
+    assert c.classification.label == "unclassified"  # not a vermin signal: no narrative to classify
+    assert c.score.pest_signal == 8 + 8  # closure base plus the closed_or_suspended bonus, untouched by the fetch
+
+
+def test_parked_chain_never_spends_a_report_fetch():
+    fac = _facility("FA1", "COSTCO WHOLESALE #123", "RETAIL MARKET (15000+SQ.FT)")
+    fac.latest_report_url, fac.latest_pkey = "https://x/latest", "LATEST-PKEY"
+    fetcher = _StubFetcher("irrelevant")
+    candidates = _run_with({"FA1": fac}, fetcher)
+    assert candidates[0].lane == pl.LANE_CHAIN
+    assert fetcher.requests == []
+
+
+def test_no_fetcher_means_no_header_and_no_request():
+    fac = _facility("FA1", "LOCAL MARKET", "RETAIL MARKET (15000+SQ.FT)")
+    fac.latest_report_url, fac.latest_pkey = "https://x/latest", "LATEST-PKEY"
+    candidates = _run({"FA1": fac})
+    assert candidates[0].header is None
+
+
 def test_rank_orders_event_before_territory_before_chain_and_hot_before_warm():
     hot = _facility("FA1", "HOT MARKET", "RETAIL MARKET (15000+SQ.FT)")
     hot.signals.append(ag.Signal("p1", date(2026, 9, 5), "CLOSED", "ROUTINE", "VERMIN AND ANIMAL CONTAMINATION", "https://x/1"))

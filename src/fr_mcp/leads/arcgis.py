@@ -242,6 +242,11 @@ class Facility:
     permits: set[str] = field(default_factory=set)
     latest_inspection: date | None = None
     latest_result: str | None = None
+    # Layer 0's own Inspection_Report: the facility's most recent report, whatever its
+    # result. Its header carries the owner name and phone even on a plain PASS, which
+    # makes it the phone source for territory-lane facilities that have no signal.
+    latest_report_url: str = ""
+    latest_pkey: str = ""
     signals: list[Signal] = field(default_factory=list)
     vermin_count_24mo: int = 0
 
@@ -296,6 +301,8 @@ def normalize_layer0(rows: list[dict]) -> dict[str, Facility]:
             permits={(attrs.get("Description") or "").strip()} if attrs.get("Description") else set(),
             latest_inspection=_epoch_ms_to_date(attrs.get("Inspection_Date")),
             latest_result=attrs.get("Inspection_Result"),
+            latest_report_url=attrs.get("Inspection_Report") or "",
+            latest_pkey=_pkey_from_url(attrs.get("Inspection_Report")),
         )
     return out
 

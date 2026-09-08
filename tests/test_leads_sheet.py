@@ -107,6 +107,37 @@ def test_a_new_signal_on_a_known_row_flags_it_without_touching_rep_columns():
     assert {s["guid"] for s in signals} == {"PKEY-1", "PKEY-2"}
 
 
+def test_a_later_run_backfills_blank_contact_columns_without_touching_rep_columns():
+    backend = sheet.FakeSheetBackend()
+    sheet.sync_leads(backend, [_event_candidate()], today=TODAY)  # no header: phone/owner land blank
+    backend.update_row(sheet.LEADS_TAB, 0, {"rep": "Alex", "status": "called"})
+    assert backend.read_rows(sheet.LEADS_TAB)[0]["phone"] == ""
+
+    header = ReportHeader(owner="HAROON KHAN", is_entity=False, facility_id="FA9001", permit_id="PR1", phone="5103763395")
+    result = sheet.sync_leads(backend, [_event_candidate(header=header)], today=date(2026, 9, 9))
+    assert result.enriched == 1
+    assert result.added == 0
+    assert result.skipped_duplicate == 0  # the same signal is still a no-op for evidence, but the contact fill counts
+    row = backend.read_rows(sheet.LEADS_TAB)[0]
+    assert row["phone"] == "5103763395"
+    assert row["phone source"] == "report_pdf"
+    assert row["owner name"] == "HAROON KHAN"
+    assert row["owner type"] == "person"
+    assert row["last updated"] == "2026-09-09"
+    assert row["rep"] == "Alex" and row["status"] == "called"
+    assert len(backend.read_rows(sheet.SIGNALS_TAB)) == 1  # no duplicate signal row
+
+
+def test_backfill_never_overwrites_a_contact_value_already_present():
+    backend = sheet.FakeSheetBackend()
+    header = ReportHeader(owner="J DOE", is_entity=False, facility_id="FA9001", permit_id="PR1", phone="9165550000")
+    sheet.sync_leads(backend, [_event_candidate(header=header)], today=TODAY)
+    backend.update_row(sheet.LEADS_TAB, 0, {"phone": "9165559999"})  # a rep corrected it by hand
+    result = sheet.sync_leads(backend, [_event_candidate(header=header)], today=date(2026, 9, 9))
+    assert result.enriched == 0
+    assert backend.read_rows(sheet.LEADS_TAB)[0]["phone"] == "9165559999"
+
+
 def test_dnc_by_key_is_skipped_and_logged():
     backend = sheet.FakeSheetBackend()
     backend.ensure_tab(sheet.DNC_TAB, sheet.DNC_COLUMNS)

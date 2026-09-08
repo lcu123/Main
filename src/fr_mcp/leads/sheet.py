@@ -261,6 +261,29 @@ def _evidence_update(candidate: LeadCandidate, *, existing_signal_count: str, to
     }
 
 
+CONTACT_COLUMNS = ("owner name", "owner type", "phone", "phone source", "email", "email source", "email confidence")
+
+
+def _blank(value: Any) -> bool:
+    return not str(value if value is not None else "").strip()
+
+
+def _contact_update(candidate: LeadCandidate, existing: dict[str, Any], *, today: date) -> dict[str, Any]:
+    """Fill contact columns that are still blank on a known row from what this
+    run's candidate carries (a report fetched this time that wasn't last time,
+    a Yolo email). Never overwrites a value already there -- a rep may have
+    typed a better number by hand into these columns, and the tool losing it
+    would be worse than the tool never filling it."""
+    fresh = _leads_row(candidate, today=today)
+    update = {c: fresh[c] for c in CONTACT_COLUMNS if _blank(existing.get(c)) and not _blank(fresh[c])}
+    if update:
+        # Reachability is part of the score, so a newly found phone moves it.
+        update["tier"] = candidate.score.tier
+        update["score"] = candidate.score.total
+        update["last updated"] = today.isoformat()
+    return update
+
+
 def _signal_row(candidate: LeadCandidate, *, today: date) -> dict[str, Any]:
     s = candidate.signal
     assert s is not None
@@ -312,6 +335,7 @@ def _is_dnc(candidate: LeadCandidate, dnc_keys: set[str], dnc_phones: set[str], 
 class SyncResult:
     added: int = 0
     flagged: int = 0
+    enriched: int = 0  # known rows that gained contact info (owner/phone/email) this run
     skipped_dnc: int = 0
     skipped_cap: int = 0
     skipped_duplicate: int = 0
@@ -372,16 +396,24 @@ def sync_leads(
             new_rows_this_run += 1
             result.added += 1
             continue
+        existing_row = leads_rows[existing_index]
+        update = _contact_update(c, existing_row, today=today)
+        if update:
+            result.enriched += 1
         if not c.signal:
-            result.skipped_no_change += 1
+            if update:
+                pending_updates.append((existing_index, update))
+            else:
+                result.skipped_no_change += 1
             continue
         if (c.customer_link, c.signal.pkey) in seen_signals:
-            result.skipped_duplicate += 1
+            if update:
+                pending_updates.append((existing_index, update))
+            else:
+                result.skipped_duplicate += 1
             continue
-        existing_row = leads_rows[existing_index]
-        pending_updates.append(
-            (existing_index, _evidence_update(c, existing_signal_count=existing_row.get("signal count", "0"), today=today))
-        )
+        update.update(_evidence_update(c, existing_signal_count=existing_row.get("signal count", "0"), today=today))
+        pending_updates.append((existing_index, update))
         pending_signals.append(_signal_row(c, today=today))
         result.flagged += 1
 

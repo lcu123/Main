@@ -126,6 +126,15 @@ def test_normalize_layer0_builds_one_facility_per_row():
     assert f.permits == {"RETAIL MARKET (15000+SQ.FT)"}
 
 
+def test_normalize_layer0_keeps_the_latest_report_url_and_its_pkey():
+    row = _row("FA1", "TEST MARKET", "1 Main St, Sacramento 95814", "RETAIL MARKET (15000+SQ.FT)")
+    url = "https://inspections.myhealthdepartment.com/sacramento/print/?task=getPrintable&path=sacramento&pKey=D6DAA211-5335-4C15-AE99-FA1F380507BA"
+    row["attributes"]["Inspection_Report"] = url
+    f = ag.normalize_layer0([row])["FA1"]
+    assert f.latest_report_url == url
+    assert f.latest_pkey == "D6DAA211-5335-4C15-AE99-FA1F380507BA"
+
+
 def test_attach_signals_collapses_shared_pkey_and_extends_permits():
     rows = [_row("FA1", "TEST MARKET", "1 Main St, Sacramento 95814", "RETAIL MARKET (15000+SQ.FT)")]
     facs = ag.normalize_layer0(rows)

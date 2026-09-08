@@ -181,6 +181,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
                 "dryRun": args.dry_run,
                 "added": result.added,
                 "flagged": result.flagged,
+                "enriched": result.enriched,
                 "skippedDnc": result.skipped_dnc,
                 "skippedCap": result.skipped_cap,
                 "skippedDuplicate": result.skipped_duplicate,
