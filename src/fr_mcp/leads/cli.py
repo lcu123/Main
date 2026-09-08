@@ -140,13 +140,19 @@ async def _build_all(*, since_days: int, today: date, fetch_pdfs: bool, counties
     return pl.rank(candidates)
 
 
-async def _enrich_phones(candidates: list[pl.LeadCandidate]) -> dict:
-    """Fill the phone (and website/business status) on every pushable candidate
-    the county records left blank, cheapest-source-first: this only runs for rows
-    the report PDFs couldn't cover, which is all of Placer and Yolo plus the ~10%
-    of Sacramento whose header phone is empty. Ranked order, so a spent budget
-    costs the coldest leads rather than the hottest."""
-    needs = [c for c in candidates if c.pushable and not c.best_phone]
+async def _enrich_phones(candidates: list[pl.LeadCandidate], *, skip_keys: set[str] | None = None) -> dict:
+    """Look every pushable candidate up in Places for its listed business number,
+    website and open/closed status, and fill `phone` too when the county gave us
+    none (all of Placer, all of Yolo, ~10% of Sacramento).
+
+    The county's own number comes off the inspection report header and is often
+    the owner's personal mobile rather than the line a rep should dial, so the
+    Places number is kept alongside it rather than replacing it. `skip_keys` is
+    the set already carrying one: this is the only billed step in the pipeline,
+    so a row is looked up once, not every morning. Ranked order, so a spent
+    budget costs the coldest leads rather than the hottest."""
+    skip = skip_keys or set()
+    needs = [c for c in candidates if c.pushable and c.customer_link not in skip]
     if not needs:
         return {"attempted": 0, "matched": 0}
     async with httpx.AsyncClient(timeout=30.0) as http_client:
@@ -157,7 +163,8 @@ async def _enrich_phones(candidates: list[pl.LeadCandidate]) -> dict:
             hit = await client.lookup(name=c.name, street=c.street, city=c.city, zip5=c.zip5)
             if hit is None:
                 continue
-            if hit.phone:
+            c.business_phone = hit.phone
+            if hit.phone and not c.best_phone:
                 c.phone, c.phone_source = hit.phone, "google_places"
             c.website = hit.website
             c.business_status = hit.business_status
@@ -202,12 +209,13 @@ async def cmd_run(args: argparse.Namespace) -> int:
     if args.limit:
         candidates = candidates[: args.limit]
 
+    backend = sheet.open_backend() if args.destination == "sheet" else None
     enrichment = {"attempted": 0, "matched": 0}
     if not args.no_places:
-        enrichment = await _enrich_phones(candidates)
+        already = sheet.keys_with_business_phone(backend) if backend is not None else set()
+        enrichment = await _enrich_phones(candidates, skip_keys=already)
 
     if args.destination == "sheet":
-        backend = sheet.open_backend()
         result = sheet.sync_leads(backend, candidates, today=today, dry_run=args.dry_run)
         _print(
             {

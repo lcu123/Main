@@ -23,6 +23,7 @@ separate rows).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import time
 from dataclasses import dataclass
@@ -346,6 +347,18 @@ def _yolo_header_to_report_header(yolo_facility_id: str, yolo_permit_id: str, yo
     )
 
 
+def _address_key(name: str, street: str, zip5: str) -> str:
+    """Fallback identity when the county gives us no durable ID of its own: a
+    digest of the same (base name, street, zip) the rows were grouped on.
+
+    It must never fall back to `permitID` -- that GUID belongs to a single
+    *inspection*, so the moment the facility is inspected again the "latest row"
+    changes and the same business arrives under a new key, landing in the sheet
+    a second time as a fresh lead."""
+    raw = "|".join((ag.base_name(name), " ".join(street.split()).upper(), zip5))
+    return "ADDR" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12].upper()
+
+
 def _group_key(row: dict[str, Any]) -> tuple[str, str]:
     return (ag.base_name(row.get("establishmentName") or ""), _row_street(row).upper())
 
@@ -451,9 +464,9 @@ async def build_candidates(
 
         if config is PLACER:
             pr_m = re.search(r"(PR\d+)", latest_row.get("permitName") or "")
-            interim_key = pr_m.group(1) if pr_m else (latest_row.get("permitID") or "")
+            interim_key = pr_m.group(1) if pr_m else _address_key(name, street, zip5)
         else:
-            interim_key = header.facility_id if header else (latest_row.get("permitID") or "")
+            interim_key = header.facility_id if header else _address_key(name, street, zip5)
 
         signal = None
         if event_eligible:

@@ -284,8 +284,21 @@ def test_yolo_skips_pdf_fetch_when_circuit_is_blocked():
     candidates = _run(rows, myhd.YOLO, fetcher=fetcher, circuit=circuit)
     assert fetcher.calls == 0
     assert candidates[0].email is None
-    # Falls back to the raw permitID GUID as the interim key (plan section 4).
-    assert candidates[0].customer_link == f"YOLO:{rows[0]['permitID']}"
+    # With no PDF there is no FA id, so the key falls back to an address digest.
+    # It must NOT be the row's permitID: that GUID identifies one *inspection*, so
+    # the next inspection would change the key and file the business a second time.
+    assert candidates[0].customer_link.startswith("YOLO:ADDR")
+    assert rows[0]["permitID"] not in candidates[0].customer_link
+
+
+def test_the_address_fallback_key_survives_a_new_inspection():
+    first = _yolo_row(name="BRYTE WAY MARKET", inspection_id="insp-1")
+    first["permitID"] = "GUID-ONE"
+    later = _yolo_row(name="BRYTE WAY MARKET", inspection_id="insp-2", inspection_date="2026-09-05T00:00:00.000Z")
+    later["permitID"] = "GUID-TWO"
+    before = _run([first], myhd.YOLO)[0].customer_link
+    after = _run([first, later], myhd.YOLO)[0].customer_link
+    assert before == after
 
 
 def test_yolo_low_icp_with_no_signal_is_dropped():

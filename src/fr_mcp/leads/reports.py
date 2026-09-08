@@ -45,7 +45,13 @@ _YOLO_PERMIT_HOLDER_RE = re.compile(r"Permit Holder(.*?)Email address", re.S)
 _YOLO_EMAIL_RE = re.compile(r"Email address(\S+@\S+?)\s+Phone", re.S)
 _YOLO_PIC_EMAIL_RE = re.compile(r"PIC Email(\S+@\S+?)\s+Accepted By", re.S)
 _YOLO_PHONE_RE = re.compile(r"Phone\(?(\d{3})\)?[\s.\-]?(\d{3})[\s.\-]?(\d{4})")
-_YOLO_FACILITY_ID_RE = re.compile(r"Facility ID(FA\d+)\s*PR ID(PR\d+)")
+# Two label spellings for the same field, both seen live 2026-09-08: retail-food
+# reports say "Facility ID…PR ID", recreational-health ones say "Establishment
+# ID…Permit ID". Missing the second spelling costs the facility its real ID.
+_YOLO_FACILITY_ID_RE = re.compile(r"(?:Facility|Establishment) ID(FA\d+)\s*(?:PR|Permit) ID(PR\d+)")
+# The address field runs straight into the next label, so the captured address
+# keeps whatever punctuation separated them (";" and ":" both seen live).
+_EMAIL_TRAILING_JUNK_RE = re.compile(r"[^A-Za-z0-9]+$")
 
 
 @dataclass(frozen=True)
@@ -126,9 +132,17 @@ def parse_yolo_header(text: str) -> YoloHeader | None:
         facility_id=fa_m.group(1),
         permit_id=fa_m.group(2),
         owner=_clean(owner_m.group(1)) if owner_m else "",
-        email=email_m.group(1).strip() if email_m else None,
+        email=clean_email(email_m.group(1)) if email_m else None,
         phone="".join(phone_m.groups()) if phone_m else None,
     )
+
+
+def clean_email(raw: str) -> str | None:
+    """Strip the separator the next label leaves glued to the address. A rep
+    pasting "owner@example.com;" into a mail client gets a bounce, and the sheet
+    is the reps' only source for these."""
+    cleaned = _EMAIL_TRAILING_JUNK_RE.sub("", (raw or "").strip())
+    return cleaned or None
 
 
 def parse_report(text: str) -> ParsedReport:

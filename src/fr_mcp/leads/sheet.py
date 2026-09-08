@@ -43,7 +43,7 @@ TOOL_COLUMNS = [
     "pest", "evidence quote", "signal date", "signal result", "report link",
     "prior vermin flags (24 mo)", "new-signal flag", "signal count",
     "owner name", "owner type",
-    "phone", "phone source",
+    "phone", "phone source", "business phone",
     "email", "email source", "email confidence",
     "website", "business status", "first seen", "last updated",
 ]
@@ -96,6 +96,15 @@ class SheetBackend(ABC):
         for row_index, values in updates:
             self.update_row(tab, row_index, values)
 
+    def ensure_columns(self, tab: str, columns: list[str]) -> list[str]:
+        """Append any of `columns` the tab's header doesn't have yet, at the far
+        right, and return the ones added. Writes are addressed by column *name*,
+        so a tool-owned column the live sheet has never heard of is silently
+        dropped -- which is what happens the first time a new field ships. Adding
+        at the right rather than in TOOL_COLUMNS order deliberately leaves the
+        owner's own column arrangement untouched."""
+        return []
+
 
 class FakeSheetBackend(SheetBackend):
     """In-memory stand-in for a real spreadsheet -- mirrors gspread's shape
@@ -121,6 +130,15 @@ class FakeSheetBackend(SheetBackend):
 
     def update_row(self, tab: str, row_index: int, values: dict[str, Any]) -> None:
         self.rows[tab][row_index].update(values)
+
+    def ensure_columns(self, tab: str, columns: list[str]) -> list[str]:
+        header = self.columns.setdefault(tab, [])
+        added = [c for c in columns if c not in header]
+        header.extend(added)
+        for row in self.rows.get(tab, []):
+            for c in added:
+                row.setdefault(c, "")
+        return added
 
 
 class GspreadBackend(SheetBackend):
@@ -152,6 +170,23 @@ class GspreadBackend(SheetBackend):
             ws = self._ss.add_worksheet(title=tab, rows=1000, cols=max(len(columns), 10))
             ws.update([columns], "A1")
             self._ws_cache[tab] = ws
+
+    def ensure_columns(self, tab: str, columns: list[str]) -> list[str]:
+        ws = self._worksheet(tab)
+        if ws is None:
+            return []
+        header = ws.row_values(1)
+        added = [c for c in columns if c not in header]
+        if not added:
+            return []
+        if ws.col_count < len(header) + len(added):
+            ws.add_cols(len(header) + len(added) - ws.col_count)
+        import gspread.utils
+
+        first = gspread.utils.rowcol_to_a1(1, len(header) + 1)
+        last = gspread.utils.rowcol_to_a1(1, len(header) + len(added))
+        ws.update([added], f"{first}:{last}")
+        return added
 
     def read_rows(self, tab: str) -> list[dict[str, str]]:
         """Built from raw values rather than gspread's `get_all_records()`, which
@@ -275,6 +310,7 @@ def _leads_row(candidate: LeadCandidate, *, today: date) -> dict[str, Any]:
         "owner type": _owner_type(header),
         "phone": candidate.best_phone or "",
         "phone source": candidate.best_phone_source or "",
+        "business phone": candidate.business_phone or "",
         "email": candidate.email or "",
         "email source": candidate.email_source or "",
         "email confidence": "high" if candidate.email_source == "yolo_pdf" else "",
@@ -307,7 +343,10 @@ def _evidence_update(candidate: LeadCandidate, *, existing_signal_count: str, to
     }
 
 
-CONTACT_COLUMNS = ("owner name", "owner type", "phone", "phone source", "email", "email source", "email confidence")
+CONTACT_COLUMNS = (
+    "owner name", "owner type", "phone", "phone source", "business phone",
+    "email", "email source", "email confidence", "website", "business status",
+)
 
 
 def _blank(value: Any) -> bool:
@@ -354,6 +393,17 @@ def _run_row(result: "SyncResult", *, today: date) -> dict[str, Any]:
         "skipped dnc": result.skipped_dnc,
         "skipped cap": result.skipped_cap,
         "errors": "; ".join(result.errors),
+    }
+
+
+def keys_with_business_phone(backend: SheetBackend) -> set[str]:
+    """Keys already carrying a Places-sourced business number. Enrichment is the
+    only billed step in the pipeline, so a row that has one must not be looked up
+    again on tomorrow's run."""
+    return {
+        (r.get("key") or "").strip()
+        for r in backend.read_rows(LEADS_TAB)
+        if (r.get("key") or "").strip() and str(r.get("business phone") or "").strip()
     }
 
 
@@ -419,6 +469,7 @@ def sync_leads(
     `fr_push.push_candidate`'s territory-lane branch uses for FieldRoutes.
     """
     backend.ensure_tab(LEADS_TAB, LEADS_COLUMNS)
+    backend.ensure_columns(LEADS_TAB, TOOL_COLUMNS)
     backend.ensure_tab(SIGNALS_TAB, SIGNALS_COLUMNS)
     backend.ensure_tab(RUNS_TAB, RUNS_COLUMNS)
     backend.ensure_tab(DNC_TAB, DNC_COLUMNS)

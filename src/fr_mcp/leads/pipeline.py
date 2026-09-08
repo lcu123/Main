@@ -57,6 +57,10 @@ class LeadCandidate:
     # Yolo always, and the ~10% of Sacramento rows whose report header is blank.
     phone: str | None = None
     phone_source: str | None = None
+    # The county header number is frequently the owner's personal cell (plan 2.4).
+    # Places' listed number is the business line, so both are worth carrying: the
+    # rep gets a switchboard to call and a direct line if the switchboard stalls.
+    business_phone: str | None = None
     website: str | None = None
     business_status: str | None = None
 

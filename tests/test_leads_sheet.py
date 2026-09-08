@@ -176,6 +176,46 @@ def test_a_duplicated_tool_column_is_reported_without_stopping_the_run():
     assert backend.read_rows(sheet.RUNS_TAB)[0]["errors"].startswith("the Leads tab has more than one")
 
 
+def test_a_newly_shipped_tool_column_is_added_to_an_existing_sheet():
+    # A live sheet predates any column we add later. Writes are addressed by name,
+    # so without this the new column is silently dropped on every run.
+    backend = sheet.FakeSheetBackend()
+    backend.ensure_tab(sheet.LEADS_TAB, [c for c in sheet.LEADS_COLUMNS if c != "business phone"])
+    backend.append_rows(sheet.LEADS_TAB, [{"key": "SACEMD:FA1", "facility": "OLD ROW"}])
+
+    header = ReportHeader(owner="J DOE", is_entity=False, facility_id="F", permit_id="P", phone="9165550000")
+    c = _event_candidate(header=header)
+    c.business_phone = "9164445555"
+    sheet.sync_leads(backend, [c], today=TODAY)
+
+    assert "business phone" in backend.columns[sheet.LEADS_TAB]
+    assert backend.columns[sheet.LEADS_TAB][-1] == "business phone"  # appended right, layout untouched
+    assert backend.read_rows(sheet.LEADS_TAB)[0]["business phone"] == ""  # pre-existing row unharmed
+    assert backend.read_rows(sheet.LEADS_TAB)[1]["business phone"] == "9164445555"
+
+
+def test_the_county_phone_is_kept_when_places_supplies_a_business_number():
+    # The report-header number is often the owner's personal mobile; the Places
+    # number is the public line. A rep wants both, so neither overwrites the other.
+    backend = sheet.FakeSheetBackend()
+    header = ReportHeader(owner="J DOE", is_entity=False, facility_id="F", permit_id="P", phone="9165550000")
+    c = _event_candidate(header=header)
+    c.business_phone = "9164445555"
+    sheet.sync_leads(backend, [c], today=TODAY)
+    row = backend.read_rows(sheet.LEADS_TAB)[0]
+    assert row["phone"] == "9165550000"
+    assert row["phone source"] == "report_pdf"
+    assert row["business phone"] == "9164445555"
+
+
+def test_keys_with_business_phone_reports_only_rows_already_enriched():
+    backend = sheet.FakeSheetBackend()
+    c1, c2 = _event_candidate(facility_id="FA1", pkey="P1"), _event_candidate(facility_id="FA2", pkey="P2")
+    c1.business_phone = "9164445555"
+    sheet.sync_leads(backend, [c1, c2], today=TODAY)
+    assert sheet.keys_with_business_phone(backend) == {"SACEMD:FA1"}
+
+
 def test_dnc_by_key_is_skipped_and_logged():
     backend = sheet.FakeSheetBackend()
     backend.ensure_tab(sheet.DNC_TAB, sheet.DNC_COLUMNS)
