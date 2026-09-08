@@ -70,7 +70,9 @@ COLUMN_RENAMES = {"next step date": "followup date"}
 # they need only once the call connects (the pest evidence, the address, the
 # score) sits to the right of that. Ownership still governs what may be written:
 # `notes` and `followup` are the rep's, and the tool never touches them.
-DIALER_COLUMNS = ["facility", "phone", "notes", "followup", "followup date"]
+# `followup date` leads deliberately: sorting or filtering on column A turns the
+# tab into today's call queue, which is the first thing a rep does each morning.
+DIALER_COLUMNS = ["followup date", "facility", "phone", "notes", "followup"]
 _REMAINING = [c for c in TOOL_COLUMNS + REP_COLUMNS if c not in DIALER_COLUMNS]
 LEADS_COLUMNS = DIALER_COLUMNS + [
     # Kept adjacent to the primary number: the fallback line and the warning that
