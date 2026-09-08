@@ -138,6 +138,23 @@ def test_backfill_never_overwrites_a_contact_value_already_present():
     assert backend.read_rows(sheet.LEADS_TAB)[0]["phone"] == "9165559999"
 
 
+class _DuplicateHeaderBackend(sheet.FakeSheetBackend):
+    """A sheet whose Leads header repeats a tool-owned column, the way a rep
+    copying a column in the real spreadsheet does."""
+
+    def header(self, tab: str) -> list[str]:
+        cols = list(self.columns.get(tab, []))
+        return cols + ["report link"] if tab == sheet.LEADS_TAB else cols
+
+
+def test_a_duplicated_tool_column_is_reported_without_stopping_the_run():
+    backend = _DuplicateHeaderBackend()
+    result = sheet.sync_leads(backend, [_event_candidate()], today=TODAY)
+    assert result.added == 1  # the run still does its job
+    assert any("report link" in e for e in result.errors)
+    assert backend.read_rows(sheet.RUNS_TAB)[0]["errors"].startswith("the Leads tab has more than one")
+
+
 def test_dnc_by_key_is_skipped_and_logged():
     backend = sheet.FakeSheetBackend()
     backend.ensure_tab(sheet.DNC_TAB, sheet.DNC_COLUMNS)

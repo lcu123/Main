@@ -51,9 +51,12 @@ TOOL_COLUMNS = [
 # Rep-owned columns -- sync_leads never writes any of these on an update. `status`
 # is the one field it sets, but only at append time (plan 5.1: "a new facility
 # appends a row with status `new`"); every re-run of an existing row leaves it alone.
+# The live sheet's header is authoritative for column *order* (the owner has moved
+# columns around; GspreadBackend looks positions up by name on every write), and
+# any column the reps add that isn't listed here is simply never written.
 REP_COLUMNS = [
     "rep", "status", "last touch date", "next step date", "touch count", "notes",
-    "inspection date", "outcome", "FieldRoutes customer ID",
+    "followup", "inspection date", "outcome", "FieldRoutes customer ID",
 ]
 
 LEADS_COLUMNS = TOOL_COLUMNS + REP_COLUMNS
@@ -132,6 +135,10 @@ class GspreadBackend(SheetBackend):
                 self._ws_cache[tab] = None
         return self._ws_cache[tab]
 
+    def header(self, tab: str) -> list[str]:
+        ws = self._worksheet(tab)
+        return ws.row_values(1) if ws is not None else []
+
     def ensure_tab(self, tab: str, columns: list[str]) -> None:
         ws = self._worksheet(tab)
         if ws is None:
@@ -140,8 +147,26 @@ class GspreadBackend(SheetBackend):
             self._ws_cache[tab] = ws
 
     def read_rows(self, tab: str) -> list[dict[str, str]]:
+        """Built from raw values rather than gspread's `get_all_records()`, which
+        raises outright on a duplicated header -- and a duplicate is something a rep
+        can create by copying a column, which must never take the morning run down
+        (verified live 2026-09-08: a duplicated "report link"/"notes" pair crashed a
+        whole run before it wrote anything). First occurrence of a name wins, which
+        is the same rule `update_row`'s `header.index()` follows."""
         ws = self._worksheet(tab)
-        return ws.get_all_records() if ws is not None else []
+        if ws is None:
+            return []
+        values = ws.get_all_values()
+        if not values:
+            return []
+        header = values[0]
+        rows = []
+        for raw in values[1:]:
+            row: dict[str, str] = {}
+            for name, value in zip(header, raw):
+                row.setdefault(name, value)
+            rows.append(row)
+        return rows
 
     def append_rows(self, tab: str, rows: list[dict[str, Any]]) -> None:
         ws = self._worksheet(tab)
@@ -311,6 +336,18 @@ def _run_row(result: "SyncResult", *, today: date) -> dict[str, Any]:
     }
 
 
+def _duplicate_tool_columns(backend: SheetBackend, tab: str) -> set[str]:
+    """Tool-owned column names appearing more than once in `tab`'s header. Only
+    meaningful against a real spreadsheet, so a backend that can't report its
+    header (the in-memory fake, whose columns are a list the tool itself set)
+    reports none."""
+    header = getattr(backend, "header", None)
+    if not callable(header):
+        return set()
+    names = header(tab)
+    return {n for n in TOOL_COLUMNS if names.count(n) > 1}
+
+
 def _dnc_sets(rows: list[dict[str, str]]) -> tuple[set[str], set[str], set[str]]:
     keys = {r.get("key", "").strip() for r in rows if r.get("key", "").strip()}
     phones = {r.get("phone", "").strip() for r in rows if r.get("phone", "").strip()}
@@ -369,11 +406,19 @@ def sync_leads(
     signals_rows = backend.read_rows(SIGNALS_TAB)
     dnc_rows = backend.read_rows(DNC_TAB)
 
+    result = SyncResult()
+    # A duplicated tool-owned header is survivable but not silent: an append fills
+    # every copy, an update only ever touches the first, so the later copies go
+    # stale and the sheet quietly disagrees with itself.
+    for name in sorted(_duplicate_tool_columns(backend, LEADS_TAB)):
+        result.errors.append(
+            f'the Leads tab has more than one "{name}" column -- only the leftmost is kept up to date; delete the extras'
+        )
+
     key_to_index = {r.get("key", "").strip(): i for i, r in enumerate(leads_rows) if r.get("key", "").strip()}
     seen_signals = {(r.get("key", ""), r.get("guid", "")) for r in signals_rows}
     dnc_keys, dnc_phones, dnc_emails = _dnc_sets(dnc_rows)
 
-    result = SyncResult()
     pending_appends: list[dict[str, Any]] = []
     pending_updates: list[tuple[int, dict[str, Any]]] = []
     pending_signals: list[dict[str, Any]] = []
