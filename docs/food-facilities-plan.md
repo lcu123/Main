@@ -1,8 +1,12 @@
 # Plan: "Food Facilities" call-list tab for Zest Commercial Leads
 
-Status: **plan only, nothing built yet.** Revised 2026-09-08 (v2) after owner input: 28-mile radius from the office,
-category framing, and the question "is there a permit or portal that beats Google?" (answered in section 3). No code
-has been written and the Google Sheet has not been touched.
+Status: **plan only, nothing built yet.** Revised 2026-09-08 (v3) after owner input: 28-mile radius from the office,
+category framing, bakeries/breweries/wineries confirmed in scope, and the question "is there a permit or portal that
+beats Google?" (answered in section 3). No code has been written and the Google Sheet has not been touched.
+
+**Decided by the owner, 2026-09-08:** coverage is 28 straight-line miles from 6948 West 2nd St, Rio Linda; target
+categories are food processing, food manufacturing and food storage facilities; **bakeries, breweries and wineries are
+in scope.** Open items are listed in section 13.
 
 Target sheet: *Zest Commercial Leads*
 (`https://docs.google.com/spreadsheets/d/1u6e6psiW581rGr92r86aSJQW2XzPZfzsnhpJlolB4F8`).
@@ -10,8 +14,8 @@ Target sheet: *Zest Commercial Leads*
 ## 1. Goal
 
 Add one new tab that a salesperson works top-to-bottom to sell pest-control inspections to **food processing
-facilities, food manufacturers, food storage facilities and other wholesale food facilities** within 28 miles of
-Zest's office. Restaurants and retail markets are out; the county health-inspection pipeline in the `Leads` tab
+facilities, food manufacturers, food storage facilities and other wholesale food facilities, plus bakeries, breweries
+and wineries** within 28 miles of Zest's office. Restaurants and retail markets are out; the county health-inspection pipeline in the `Leads` tab
 already covers them. Every row needs business name, phone, type of business and city, plus Notes and Follow-up
 date for the rep.
 
@@ -85,8 +89,11 @@ egg processing, produce packing, fruit packing house, nut processing, almond pro
 mill, cannery, frozen food manufacturer, snack food manufacturer, candy manufacturer, spice manufacturer, sauce
 manufacturer, pet food manufacturer, ice manufacturer.
 
-Beverage: beverage manufacturer, bottling plant, juice processing, coffee roaster wholesale, brewery production
-facility, winery production facility, distillery.
+Beverage: beverage manufacturer, bottling plant, juice processing, coffee roaster wholesale, brewery, brewery production
+facility, winery, winery production facility, distillery.
+
+Bakery: bakery, commercial bakery, wholesale bakery, tortilla factory (bakeries are in scope per the owner, so the bare
+term is searched too, not just the wholesale variants). Type-driven pass: `includedType` = `bakery`.
 
 Storage/distribution: food storage facility, cold storage warehouse, refrigerated warehouse, food distribution
 center, food distributor, wholesale grocer, produce distributor, meat distributor, seafood distributor, beverage
@@ -160,12 +167,14 @@ Drop a candidate if its Google types include any restaurant-family type (`restau
 (Restaurant, Cafe, Grill, Taqueria, Pizza, Sushi, Deli, Bistro, ...). Registry rows are filtered on their own
 description/NAICS instead (keep 311, 312, 4244, 4931; drop 722 food service and 445 food retail).
 
-Keep `bakery`, `butcher_shop`, brewery and winery hits only when no restaurant/cafe type is present, flagged
-`Needs review? = yes`.
+**Bakeries, breweries and wineries are in scope (owner decision).** Every `bakery`, `butcher_shop`, brewery and winery
+hit is kept unless its *primary* type is a restaurant-family type. When a cafe, tasting-room or storefront type is
+also present the row is kept and flagged `Needs review? = yes`, so the rep knows it may be retail-facing.
 
 Type of business categories: Meat & poultry processing; Seafood processing; Dairy / creamery; Commercial bakery /
 tortilla; Produce packing / nut & rice processing; Snack, candy & confectionery manufacturing; Sauce, spice & prepared
-foods manufacturing; Frozen & ready-meal manufacturing; Beverage production; Cold storage / refrigerated warehouse;
+foods manufacturing; Frozen & ready-meal manufacturing; Brewery / winery / distillery; Beverage production (bottling,
+juice, coffee roasting); Cold storage / refrigerated warehouse;
 Food distribution / wholesale grocer; Commissary / central kitchen; Pet & animal food manufacturing; Food packaging /
 co-packer; Other food manufacturing. Assigned by registry NAICS/description first, then name keywords, then the search
 term, then Google `primaryType`.
@@ -237,12 +246,15 @@ use. Registry data (BOT, FSIS, ECHO, CalEPA, PRA) is public record. Not legal ad
    Follow-up date as columns A-B. One-line change.
 2. File the CDPH Public Records Act request for the Processed Food Registration list? (I draft, owner sends.)
 3. Does anyone have a Sacramento Public Library card for the Data Axle export?
-4. Include beverage producers (breweries, wineries, distilleries) and storefront bakeries, flagged for review?
-5. Include institutional kitchens (school-district central kitchens, hospital food service, food bank)?
-6. Keep rows already in `Leads` (flagged) or drop them?
-7. Status dropdown values OK, or match what the rep uses in `Leads`?
-8. Cadence: one-time pull plus monthly refresh on request, or a Railway cron?
-9. Who sets up the Google Cloud project and billing (Phase 0)?
+4. Include institutional kitchens (school-district central kitchens, hospital food service, food bank)? Default if
+   unanswered: include, flagged.
+5. Keep rows already in `Leads` (flagged) or drop them? Default: keep, flagged.
+6. Status dropdown values OK, or match what the rep uses in `Leads`? Default: as listed in section 6.
+7. Cadence: one-time pull plus monthly refresh on request, or a Railway cron? Default: manual.
+8. Who sets up the Google Cloud project and billing (Phase 0)? This one has no default; nothing Google-side can run
+   without it. The registry pull (Phase 1) can start without it.
+
+Already decided: 28-mile radius; bakeries, breweries and wineries included.
 
 ## 14. Known limits
 
