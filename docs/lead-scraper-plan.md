@@ -1,21 +1,30 @@
-# Commercial Rodent Lead Scraper: Sacramento County inspections to FieldRoutes
+# Commercial Pest Lead Engine: county inspections and ZoomInfo to a BDR pipeline sheet
 
-Status: plan only, no code written. Written 2026-09-07 from live checks against the county data, the portal, and Zest's FieldRoutes tenant (read-only). Anything not verified is marked **unverified** and appears in the validation checklist.
+**Revision 2, 2026-09-08.** Supersedes revision 1 (2026-09-07). What changed and why:
+
+- **Destination is a shared Google Sheet, not FieldRoutes.** The owner decided leads go to a sheet first; FieldRoutes gets a customer only when an inspection is booked (section 5). The FieldRoutes lead code built in phase 1 stays and becomes the handoff step.
+- **Two full-time BDRs, email first then call.** That makes email addresses a hard requirement, and the county data mostly doesn't have them. Section 6 is now mostly about getting emails, and section 7 is a new operating model for the reps.
+- **Placer and Yolo are in scope from the start**, not phase 2. Yolo is West Sacramento only; Placer excludes Auburn and the Tahoe basin (decided 2026-09-07).
+- **Priority 1 is large food processing and storage facilities; priority 2 is one-time exclusion jobs at restaurants.** Processors are not in county inspection data at all (they are state licensed), so they need their own source from day one: ZoomInfo and the USDA meat and poultry establishment directory, both covered in section 6.3.
+- **Sources in order: county inspections, then ZoomInfo when that runs dry.** The supply maths in section 7.4 says "dry" arrives in about six weeks, so the ZoomInfo pull is scheduled for week three rather than left open.
+
+Status: planning document. Phase 1 code (Sacramento feed, scoring, PDF classification, FieldRoutes push) exists on this branch and is tested; nothing in revision 2 has been built yet. Anything not verified is marked **unverified** and appears in the validation checklist (section 11).
 
 ## 1. Summary and recommendation
 
-Build a small, scheduled pipeline inside this repo that turns Sacramento County's public food-inspection records into a ranked morning call list for the commercial rodent division, delivered straight into FieldRoutes as inactive commercial customers with a note and a task in the sales rep's queue.
+Build a lead engine whose output is one shared Google Sheet the two BDRs live in. The tool refreshes it on a schedule, appends new prospects, flags known ones when something new happens, fills in phone, email, owner and website, and never touches the columns the reps own. FieldRoutes becomes the system of record only at the moment a lead books an inspection; until then the sheet is the pipeline.
 
-Key findings that shape the design:
+Three lists feed the sheet:
 
-- **Don't scrape the portal HTML.** The county publishes the same data as an open ArcGIS feature service under a CC0 licence (6,211 facilities, 41,055 inspection rows back to 2023, refreshed nightly, about 3 days behind the portal). It is a clean JSON API, polite to use, and legally unambiguous. The portal itself (`inspections.myhealthdepartment.com`) returns 403 to non-browser clients and has a captcha path.
-- **The pest evidence lives in the PDF, not the feed.** The feed's violation category "VERMIN AND ANIMAL CONTAMINATION" only says that vermin were found; the inspection report PDFs (linked from every feed row) have a text layer with the inspector's narrative ("hundreds of rodent droppings observed on the counter below the merchandisers", "4 to 5 adult live German cockroaches under the dishwasher") plus the **owner's name and a phone number** in the page header. Fetching one PDF per flagged facility (1 to 3 per working day) gives the rep a quotable, dated fact, the pest type to pitch against, and a number to dial, with no ZoomInfo needed for single-location owners. Per the owner (2026-09-07), rodent and cockroach infestations are both wanted leads; the classification labels the pitch, it does not demote the lead.
-- **The ICP-tier event pool is small.** In the last 12 months only about 38 facilities in the A/B tiers (large and mid markets, commissaries, ethnic markets, multi-location restaurants) had a vermin or closure event. Rodent-only events are fewer still. So the pipeline needs a second "territory" lane: the 319 independent ICP-A facilities with no violation, fed at a few per day ordered by distance from the Rio Linda office, so the list is never empty and stays route-dense.
-- **Food warehouses and distributors are not in this data.** They are licensed by the state (CDPH Food and Drug Branch), not the county, and no public list was found. That ICP segment is a ZoomInfo play, out of scope for this scraper.
-- **Placer and Yolo are on the same portal but have no open-data feed.** Placer (`/pchd`) and Yolo (`/yolocountyeh`) expose the same JSON search call as Sacramento, with the inspector's narrative inline in a `comments` field, so pest mentions are visible without opening a PDF. There is no ArcGIS feed for either, so for these two counties the portal's JSON call is the primary source and must be used gently: 25 rows per request, date-window pulls, 2 seconds between calls. Placer runs about 20 inspections a working day (including pools and body art), Yolo about 8. Placer's report PDFs carry no owner name or phone; Yolo's carry the permit holder's email and sometimes a phone.
-- **FieldRoutes already models leads the way we need.** Zest's existing leads are status-0 (inactive) customers with a lead subscription (`active = -3`), sold by Sean (employee 10007). The customer record's `customerLink` field is a free-text external ID that is searchable, which gives exact dedupe against the county's `Facility_ID`.
+1. **Event lane** (county inspections): facilities with a recent vermin, closure or suspension inspection in Sacramento, Placer or West Sacramento. Small, urgent, and the only list where the rep can quote a dated fact. Call the day the row appears; the email is the follow-up.
+2. **Territory lane** (county inspections): independent large markets, ethnic grocers, commissaries and bakeries with no violation. The audit-offer list. Email first, call two days later.
+3. **Processor list** (ZoomInfo and USDA): food manufacturers, wholesale grocers, cold storage and distribution in the three counties. Priority 1 for revenue, longer cycle, different pitch (audit-ready pest program for third-party food-safety audits, not a "rodent audit").
 
-Recommended shape: a `src/fr_mcp/leads/` package with an `fr-leads` command and one source adapter per county (Sacramento ArcGIS feed; Placer and Yolo portal JSON), run daily as a second Railway cron service from the same Docker image, writing through the repo's existing hardened FieldRoutes client and write guards. Two curated MCP tools (`lead_preview`, `lead_import`) come in phase 2 so Claude can show and import leads conversationally. Zapier receives a daily digest webhook and handles Slack/Gmail delivery and optional ZoomInfo enrichment. Total effort about 11.5 working days across four phases; first Sacramento leads in Sean's queue at the end of phase 1 (about 4 days), Placer and Yolo in phase 2.
+Emails come from a stack, in order: the Yolo report PDF (has one), the business website found through Google Places, ZoomInfo for anything owned by an LLC or corporation and for every processor, and an email-finder service for what's left. Expect roughly half of independent restaurants and corner markets to have no findable email; those go straight to the call step. Large facilities will be much better covered.
+
+Two BDRs can work a few hundred conversations a month. The county feeds produce a couple of new violation leads a day across the three counties and a few hundred good territory prospects in total, so the inspection source alone is exhausted in about six weeks. The ZoomInfo processor pull is therefore part of the initial build, not a fallback.
+
+The owner's interaction with all of this is the sheet plus this chat. There is no terminal in the daily loop.
 
 ## 2. What the data actually contains
 
@@ -140,44 +149,272 @@ Mixed rodent and cockroach is labelled "rodent + cockroach". Every lead note car
 
 Each county has its own vocabulary, so `icp_fit` is computed from a per-county mapping table (Sacramento in 2.2, Placer and Yolo in 2.6) that normalises to the same internal classes: large market (30), mid market (30), commissary/catering/bakery (22 to 28), small market (12, or 24 with a market keyword), large restaurant (14), restaurant (12), excluded. Placer's placard colour and Yolo's major-violation count feed `pest_signal` the same way Sacramento's `Inspection_Result` does: Red Placard or closure 8 extra, Yellow Placard or conditional placard 4.
 
-### 3.5 Two lanes
+### 3.5 Two lanes (plus a third, the processor list, that is not scored from county data)
 
 - **Event lane**: facilities with an unhandled vermin or closure/suspension inspection within 180 days. Pushed first, Hot then Warm; Cool goes to the backlog.
-- **Territory lane**: independent ICP-A facilities (icp_fit 24 or more) with no signal, ordered by distance then by days since last inspection ascending (recently inspected means confirmed operating). Capped at 5 per day. These are audit-offer prospects, not complaints, and the task text says so.
+- **Territory lane**: independent ICP-A facilities (icp_fit 24 or more) with no signal, ordered by distance then by days since last inspection ascending (recently inspected means confirmed operating). These are audit-offer prospects, not complaints, and the row says so.
+- **Processor list** (revision 2): food manufacturers, wholesale grocers and cold-storage warehouses from ZoomInfo and the USDA directory (section 6.3). They never appear in county inspection data, carry no pest signal, and are ranked by size and distance rather than by this score. They sit in the same sheet with lane `processor` so the reps work one list.
 
-## 4. Architecture
+## 4. Architecture (revision 2)
 
-Package `src/fr_mcp/leads/` with modules `sources/sacemd.py` (ArcGIS feed client, paging, schema assertion on the 11 field names), `sources/myhd.py` (portal JSON adapter parametrised by county path, with per-county field and permit-type maps, 25-row paging, date windows, and a circuit breaker that stops the run's portal calls on a 403 or captcha response), `reports.py` (polite cached PDF fetch, header and violation-block parsing), `classify.py` (pure regex rules), `score.py` (pure scoring), `regions.py` (zip-to-region table, haversine distance), `fr_push.py` (dedupe and FieldRoutes writes through `FieldRoutesClient`), `state.py` (SQLite), `enrich_places.py` (phase 3, feature-flagged), `digest.py`, `cli.py` (`fr-leads` entry point in `pyproject.toml`). One small refactor in `server.py`: move the pure helpers `_int`, `_clean`, `_pick`, `_j`, `_id_list` into `src/fr_mcp/util.py` and re-import them, and extract the param-building bodies of `add_note` and `create_task` into plain coroutines the tools call unchanged. No tool count change in phase 1.
-
-Runtime: a second Railway service in the existing project, same repo and Dockerfile, start command `fr-leads run`, cron schedule `30 12 * * 1-5` (05:30 Pacific weekdays, after the county's refresh; Railway evaluates cron in UTC, requires the process to exit, and skips overlapping runs), restart policy never so a failed run does not re-fire. A Railway Volume at `/data` holds `leads.sqlite` and the PDF cache. Env: the same `FR_*` credentials as the MCP service plus `LEADS_SOURCE_ID`, `LEADS_TASK_CATEGORY_ID`, `LEADS_NOTE_TYPE_ID=0`, `LEADS_ASSIGN_TO=10007`, `LEADS_DAILY_CAP=15`, `LEADS_TERRITORY_CAP=5`, `LEADS_RETOUCH_CAP=10`, `LEADS_DRY_RUN`, `LEADS_DIGEST_WEBHOOK`, later `GOOGLE_PLACES_KEY`. Alternative if the owner prefers no second service: a GitHub Actions cron with the credentials copied to repository secrets; not the default because it duplicates credentials.
-
-State store tables: `facilities` (Facility_ID, name, address parts, lat/lng, permit set, first/last seen), `inspections` (pKey, Facility_ID, date, type, result, categories, pdf_fetched_at, classification JSON, quote), `leads` (Facility_ID, fr_customer_id, customer_link, score, tier, lane, pushed_at, handled pKeys, note/task/subscription IDs, run_id), `runs` (id, timings, counts, quota before/after, digest JSON), `enrichment` (Facility_ID, Places JSON, fetched_at). FieldRoutes stays the source of truth: `fr-leads rebuild-state` re-derives `leads` from `customer/search customerLink STARTSWITH "SACEMD:"` (**unverified** that STARTSWITH is honoured on customerLink; fallback is `dateAddedStart` plus `employeeID` and client-side prefix filtering).
+The phase-1 package `src/fr_mcp/leads/` stays. What changes is the destination and the sources on either side of it.
 
 ```mermaid
 flowchart LR
-  A[Sacramento ArcGIS feed<br/>layer 1 since watermark<br/>layer 0 weekly] --> B[Normalise<br/>collapse permits by facility]
-  A2[Placer + Yolo portal JSON<br/>date window, 25 rows/page] --> B
-  B --> C[Hard filters<br/>types, staleness, distance, chains]
-  C --> D{Signal in 180d?}
-  D -- yes --> E[Fetch + parse PDF<br/>owner, phone, narrative]
-  E --> F[Classify<br/>rodent / cockroach / other]
-  F --> G[Score + tier]
-  D -- no, ICP-A --> H[Territory lane<br/>by distance]
-  H --> G
-  G --> I[Dedupe in FieldRoutes<br/>customerLink, address+zip, phone]
-  I --> J[Push under caps<br/>customer + note + task]
-  J --> K[(SQLite state<br/>Railway volume)]
-  J --> L[Digest webhook<br/>Zapier to Slack/Gmail/ZoomInfo]
-  K --> M[MCP tools<br/>lead_preview / lead_import]
+  S1[Sacramento ArcGIS feed] --> N[Normalise + hard filters<br/>one row per facility]
+  S2[Placer + Yolo portal JSON<br/>date windows, 25 rows/page] --> N
+  S3[Processor list<br/>ZoomInfo export + USDA FSIS CSV<br/>imported tab] --> E
+  N --> C{Signal in 180d?}
+  C -- yes --> P[Fetch + parse report PDF<br/>owner, phone, Yolo email, narrative] --> K[Classify + score]
+  C -- no, ICP-A --> K
+  K --> E[Enrich contacts<br/>Places: phone, website, open?<br/>website scrape: email<br/>ZoomInfo: entities + processors<br/>email finder: remainder]
+  E --> G[(Google Sheet<br/>Leads tab = system of record<br/>Signals, Runs, DNC tabs)]
+  G --> R[Two BDRs<br/>email, call, book audit]
+  R -- inspection booked --> F[FieldRoutes<br/>customer + note + task<br/>via existing fr_push]
+  G --> Q[Owner asks Claude<br/>what came in, re-score, digest]
 ```
 
-Per-run cost: 1 to 5 ArcGIS requests, 2 to 6 portal search requests for Placer and Yolo, 1 to 8 PDF fetches at 2-second spacing, 3 to 6 FieldRoutes reads and 3 to 4 writes per pushed lead, one webhook POST; under two minutes.
+**Components.** `sources/sacemd.py` (exists as `arcgis.py`), `sources/myhd.py` (new: portal JSON adapter for `pchd` and `yolocountyeh` with per-county field and permit-type maps, 25-row paging, date windows, circuit breaker on 403 or captcha), `reports.py` (exists; add the Yolo and Placer header layouts), `classify.py` and `score.py` (exist, unchanged), `enrich/places.py`, `enrich/website.py`, `enrich/zoominfo.py` (new), `sheet.py` (new: read the Leads tab, dedupe, append, update tool-owned columns only), `fr_push.py` (exists; used by the handoff), `cli.py` (exists; `run` gains `--destination sheet|fieldroutes`, default `sheet`).
 
-## 5. FieldRoutes lead model
+**State.** The sheet is the state store. The tool reads the Leads tab's key column at the start of every run to know what exists, and the Signals tab to know which inspection GUIDs it has already recorded. No SQLite, no volume; a lost cache directory just means re-fetching a few PDFs. The PDF cache stays on disk for politeness.
+
+**Runtime.** A Railway cron service from the same Docker image (or a GitHub Actions schedule, the owner's choice), weekday mornings. Env: the Google service-account JSON (one secret), the sheet ID, `GOOGLE_PLACES_KEY`, the county paths, the caps. FieldRoutes credentials are only needed once the handoff (5.3) is automated.
+
+**Keys.** Sacramento: `SACEMD:<Facility_ID>` from the feed. Yolo: `YOLO:<FA id>` from the PDF header (fetched anyway for the email). Placer: `PCHD:<PR permit number>` parsed from the row's `permitName` (the FA id only exists in a PDF that carries nothing else useful, so don't fetch it just for the key). Processors: `ZI:<ZoomInfo company id>` or `FSIS:<establishment number>`. One facility can hold several permits; the county rows collapse on facility, the Placer rows collapse on facility name plus address.
+
+## 5. Destinations
+
+### 5.1 The Google Sheet (system of record for prospects)
+
+Tabs:
+
+- **Leads**, one row per facility, the only tab the reps edit.
+- **Signals**, one row per inspection event the tool has seen (key, GUID, date, result, pest, quote, report URL). Append-only; this is the audit trail and the idempotency record.
+- **Runs**, one row per tool run (when, rows added, rows flagged, enrichment counts, quota used, errors).
+- **DNC**, keys or phone numbers or emails the reps mark do-not-contact. The tool never re-flags a key on this tab and never enriches it further.
+
+Leads tab columns the tool owns (never edited by reps):
+
+| Column | Source |
+| --- | --- |
+| key, county, lane, tier, score | pipeline |
+| facility, permit types, address, city, zip, region, distance (mi) | county feed |
+| pest, evidence quote, signal date, signal result, report link, prior vermin flags (24 mo), new-signal flag, signal count | PDF + feed |
+| owner name, owner type (person / entity) | Sacramento PDF, Yolo PDF, ZoomInfo |
+| phone, phone source | Sacramento PDF, Google Places, ZoomInfo |
+| email, email source, email confidence | Yolo PDF, website, ZoomInfo, email finder |
+| website, business status (open / permanently closed), first seen, last updated | Google Places, tool |
+
+Columns the reps own (never written by the tool): rep, status, last touch date, next step date, touch count, notes, inspection date, outcome, FieldRoutes customer ID.
+
+Status vocabulary (a dropdown): new, emailed, called, connected, inspection booked, inspected, won recurring, won one-time, lost, do not contact. Two views per rep (filter on the rep column) plus a manager view sorted by tier and next step date.
+
+Update rules: a new facility appends a row with status `new`; a known facility with a new inspection GUID gets its evidence columns updated, the new-signal flag set and the signal count incremented, and nothing else changes; a facility on the DNC tab is skipped entirely; a row whose business status comes back permanently closed is marked, not deleted. The tool writes in one batch at the end of a run, so a crashed run leaves the sheet untouched.
+
+Why direct writes rather than Zapier: the tool has to read the sheet to dedupe and to honour DNC, which a Zapier "add row" step cannot give it. Setup is a Google Cloud service account (one JSON key stored as a secret) and sharing the sheet with that account's email, about ten minutes once.
+
+### 5.2 Excel
+
+If the owner prefers a file, the same writer produces an `.xlsx` with the same tabs, but then dedupe across runs depends on the tool keeping its own copy, and rep edits live in a file nobody else can see. Recommended only as an export, not as the pipeline.
+
+### 5.3 FieldRoutes at the handoff
+
+When a rep sets status to `inspection booked`, a customer is created in FieldRoutes exactly as Appendix A describes (inactive, commercial, the new "Health Dept Inspections" or "Commercial Prospecting" source, `customerLink` = the sheet key, a note with the evidence, a task for the rep), then the audit appointment is scheduled. First version: the rep does this by hand in FieldRoutes and pastes the customer ID into the sheet. Second version: the tool sees the status change on its next run and does the create itself through `fr_push`, which already implements the dedupe and the writes, then fills the customer ID column. The lead subscription (`active -3`) and the ZoomInfo contacts as `additionalContact` rows come with that second version.
+
+## 6. Contacts: phone, email, owner, website
+
+### 6.1 What the county sources give us
+
+| County | Owner | Phone | Email | Narrative |
+| --- | --- | --- | --- | --- |
+| Sacramento | yes (PDF header, person or entity) | usually (PDF header) | no | PDF |
+| Placer | no | no | no | inline `comments` field, no PDF needed |
+| Yolo (West Sacramento) | business name only | sometimes (PDF) | yes, permit holder and person in charge (PDF) | inline `comments` and PDF |
+
+### 6.2 The enrichment stack, in order
+
+1. **Yolo report email** when present. Free. Store source `yolo_pdf`.
+2. **Google Places API (New)**, Text Search on name plus address, field mask for phone, website, business status, rating count. Gives Placer its phone numbers, everyone a website to scrape, and a permanently-closed flag that keeps dead businesses off the reps' lists. Pro-tier fields, about 5,000 free calls a month, which covers the initial pool of roughly 1,500 facilities across the three counties and the trickle after (**unverified** in this sandbox; one live call to confirm field names and free-tier accounting).
+3. **Website scrape** for the email: fetch the home page and an obvious contact page, take `mailto:` links and plain addresses, prefer role addresses on the business's own domain, discard webmail-hosted junk from page templates. Polite (one request every two seconds, one attempt per site). Store source `website` with a confidence of medium.
+4. **ZoomInfo** for entity-owned leads (LLC, INC, CORP owners), every processor, and any local multi-location operator: company enrich, contact search by title (owner, general manager, facilities, quality or plant manager), contact enrich for the top one or two. Credit rules and caps in 6.4. Store source `zoominfo`, confidence high.
+5. **Email finder** (Apollo, Hunter or similar; owner picks the vendor) by domain for rows that have a website but no email after step 3. Pay per credit; cap at a small daily number. Store source `finder`, confidence per the vendor's score.
+6. **Manual** for the rep to fill; source `manual`.
+
+Expected coverage after the stack (**unverified**, to be measured on the first 100 rows, section 11): most large markets, commissaries and processors will have an email; independent restaurants and corner markets will land near half. The sheet's `email source` column is what tells a rep how much to trust an address.
+
+### 6.3 The processor list (priority 1, not in county data)
+
+Food manufacturing, wholesale grocery and cold storage are licensed by the state's Food and Drug Branch, which publishes no list. Two sources do:
+
+- **ZoomInfo company search**: industries food production and manufacturing, grocery and related product wholesalers, refrigerated warehousing and storage; location in Sacramento, Placer or Yolo County; employee count 20 and up (owner to tune). Export to the sheet's import tab; the tool dedupes by ZoomInfo company ID, scores by size band and distance, and enriches contacts by title. This is where the two BDRs' priority-1 pipeline comes from, so it is built in the first phase, not held in reserve.
+- **USDA FSIS Meat, Poultry and Egg Product Inspection Directory**: a public CSV, updated weekly, of every federally inspected meat, poultry and egg plant with establishment number and address (https://www.fsis.usda.gov/inspection/establishments/meat-poultry-and-egg-product-inspection-directory). Filter to the three counties; these are the highest-value rodent-exposure sites in the region and they all carry third-party audit obligations.
+
+One geography note: much of the region's food processing sits in Woodland, which the owner excluded for the county-inspection lists. Recommendation: keep Woodland out of the restaurant and market lists as decided, but include it for processors only, since that is the segment the owner ranked first.
+
+### 6.4 ZoomInfo as an enrichment source (decided 2026-09-07: yes, with limits)
+
+ZoomInfo can enrich these leads, but its coverage is uneven for this market: strong for chains, franchise operators, food-service groups, distributors and any business with a website and staff on LinkedIn; thin for single-location taquerias and corner markets, where the county PDF header (owner name and cell) is usually the better source anyway. So the plan uses ZoomInfo selectively and measures its hit rate before spending credits broadly.
+
+**Two ways in.** (a) The ZoomInfo app in Zapier, which the owner already uses: no code, triggered by the digest webhook, and the same Zap writes the result back to FieldRoutes. (b) ZoomInfo's REST API called from the scraper directly, which is cleaner but needs API credentials on the ZoomInfo account (availability depends on the plan; **unverified**). Start with (a); move to (b) only if the Zapier path proves too slow or too many Zap tasks.
+
+**Credit rules (from ZoomInfo's documentation).** "Enrich Company" and "Enrich Contact" consume one credit per successful match unless the record is already under management; "Search Contacts" is free and only counts against request limits. So the Zap searches first and enriches only what it will use.
+
+**Which leads.** Hot and Warm leads whose county-record owner is an entity (LLC, INC, CORP, LP) or whose base name is a local multi-location operator, plus every parked chain lead the owner chooses to work as a corporate play. Not person-owned single locations (the PDF already names them). Cap: 5 enrichments per day, adjustable.
+
+**Match keys we can supply.** Company name, street address, city, zip, the phone from the PDF header when present, the owner entity name, and the website from Google Places (phase 3). Matching on name plus address is far more reliable than name alone for restaurants, so the Zap passes all of them.
+
+**What to pull.** Company: legal name, website, domain, employee count, revenue band, parent or franchisor, headquarters address, main phone. Contacts: Search Contacts filtered to seniority Owner, Partner, C-level, General Manager, Director of Operations or Facilities, then Enrich Contact on the top one or two: name, title, direct phone, mobile if present, email, LinkedIn URL.
+
+**Where it lands in FieldRoutes.** Each decision-maker becomes a contact column on the lead's sheet row (and, after the handoff, an `additionalContact/create` row on the FieldRoutes customer) (required: `customerID` and `additionalContactTypeID`, an office-configured contact type the owner creates or picks in the UI; fields `fname`, `lname`, `companyName`, `phone`, `phone2`, `email`, `contactType`, `addedBy`; reminders forced to 0), so the rep sees a proper contact card instead of a note. Company facts (website, employee count, parent, HQ) go into one note prefixed "ZoomInfo:" and the website into the note only (the customer record has no website field). Blank `email`/`phone2` on the customer are filled via `customer/update`; existing values are never overwritten. A `zoominfo_enriched_at` column in the state store prevents re-enriching the same facility within 180 days.
+
+**Cost and volume.** At 5 per day this is at most about 100 credits a month and roughly 10 Zapier tasks per lead (webhook, filter, search, enrich, two FieldRoutes writes, logging). FieldRoutes writes from the Zap count against the shared 3,000 per day; two to three per enriched lead is negligible.
+
+**Compliance.** ZoomInfo contact data is business contact data under its terms; direct dials are still for manual calls only, and any contact who asks not to be called is flagged the same way as the facility.
+
+## 7. Operating model for two BDRs
+
+### 7.1 Segments and sequences
+
+| Segment | Where it comes from | First touch | Cadence | Pitch |
+| --- | --- | --- | --- | --- |
+| Event lane (recent vermin, closure, suspension) | county feeds, daily | call the day the row appears; email the same day as follow-up | 4 touches in 10 days, then monthly | free Rodent Risk Audit (or cockroach clean-out and exclusion when the pest is roaches), reinspection readiness |
+| Territory lane (large markets, grocers, commissaries, bakeries, no violation) | county feeds, weekly refresh | email day 0, call day 2 | 4 touches in 3 weeks, then quarterly | free Rodent Risk Audit, route density means a good price |
+| Processors (manufacturers, wholesale, cold storage) | ZoomInfo and USDA, monthly refresh | email to the plant, facilities or QA manager, call day 3 | 6 touches in 5 weeks | audit-ready pest program: documentation, monitoring maps, trend reports for SQF/BRC/AIB audits; site walk instead of a free audit |
+| Restaurants (priority 2) | county feeds, event lane only | as event lane | as event lane | one-time exclusion job, upsell to recurring after |
+
+The existing call script is the base; the email for each segment is a different one-paragraph note. Recommendation, for the owner to confirm: outreach does not cite the county finding. The violation decides who and when; the message leads with the audit and with being local. Quoting a closure back to an owner reads as surveillance.
+
+### 7.2 A day in the sheet
+
+Morning: the tool has already run. Each rep opens their view, works the `new` rows top down (event lane first, then territory, then processors), sets status and next-step date on every row touched, and logs a two-line note. Replies and connects move the row forward; a booked audit sets `inspection booked` and triggers the FieldRoutes handoff. Do-not-contact requests go on the DNC tab the same day.
+
+Weekly: the owner reviews the Runs tab and the five numbers below, decides on weight changes (for example, lowering cockroach relative to rodent), and asks Claude for the digest.
+
+### 7.3 The audit is the product
+
+The free Rodent Risk Audit closes the deal, so standardise it before the first one: a fixed checklist matching Phase 1 of the division plan (exterior and perimeter, doors and docks, trash and food storage, evidence and harborage, existing devices), photos of every entry point, and a one-page findings sheet with critical, potential and acceptable areas and a price for exclusion and for the recurring program, handed over on site. Inspection-to-close is the number the division lives on; record it from the first audit in the `outcome` column.
+
+### 7.4 Capacity and supply (assumptions, to be replaced with real numbers after month one)
+
+| | Per rep per day | Two reps per month |
+| --- | --- | --- |
+| Dials | 60 to 80 | about 2,500 |
+| Personalised emails | 25 to 35 | about 1,200 |
+| Conversations | 6 to 10 | about 300 |
+| Audits booked (at 1 in 8 conversations) | | about 35 |
+
+| Supply | Initial pool | Ongoing |
+| --- | --- | --- |
+| Event lane, three counties, all eligible types | about 60 | 10 to 15 a week |
+| Territory lane, Sacramento | about 275 independent ICP-A | a few a week |
+| Territory lane, Placer (Roseville, Rocklin, Lincoln, Granite Bay, Loomis) | **unverified**, likely 100 to 150 | a few a week |
+| Territory lane, West Sacramento | **unverified**, likely 20 to 40 | rare |
+| Processors, three counties | **unverified**, likely 80 to 150 companies | monthly refresh |
+
+At the rates above the county lists are worked through in about six weeks. That is why the ZoomInfo processor pull is in the first build, and why the territory lane is refreshed rather than treated as a one-time backlog.
+
+### 7.5 Five numbers, weekly, by lane and county
+
+Rows worked, replies, connects, audits booked, audits won (split recurring and one-time). The Runs tab and the status column carry all of it; a pivot on the sheet is enough until the CRM move.
+
+### 7.6 Email deliverability and compliance
+
+Send cold email from a separate domain, not the main company domain, with SPF, DKIM and DMARC set up and two to three weeks of warm-up before volume; keep each mailbox under a modest daily send; include a physical address and a working opt-out line; suppress anyone who opts out or lands on the DNC tab. A sequencing tool (HubSpot sequences, Apollo, Instantly or Smartlead; owner's choice) handles warm-up, cadences and reply detection better than a sheet will. Calls are business-to-business and manually dialled; no auto-texting to cell numbers.
+
+### 7.7 When the sheet stops being enough
+
+With two reps running multi-touch cadences, the sheet will hurt within a couple of months: no sequencing, no reply capture, no per-rep reporting. At that point the pipeline moves to a lightweight sales CRM in front of FieldRoutes, the sheet columns map onto it one for one, and the tool writes to the CRM's API instead of the sheet (the writer is one module). FieldRoutes stays the system of record for customers, as discussed with the owner on 2026-09-07.
+
+## 8. Operations and safety
+
+- **Politeness**: ArcGIS is open data; the portal (Placer, Yolo, PDFs) gets a browser User-Agent, one request every two seconds, 25-row pages, date-window pulls only, results cached by inspection GUID, and a circuit breaker that stops all portal calls for the rest of the run on a 403, captcha page or non-JSON response. Website scrapes get one attempt per site with the same spacing. Never enumerate a whole portal.
+- **Sheet safety**: batch write at the end of a run; tool-owned and rep-owned columns are disjoint and enforced by column name, not position; every run logs to the Runs tab; a `--dry-run` prints the rows it would add and change without writing; the DNC tab wins over everything.
+- **Caps**: new rows per run (default 40 across lanes), Places calls per run, email-finder credits per day, ZoomInfo enrichments per day (5). A cap hit is logged, never silent.
+- **Feed drift**: field-name assertions on the full-field ArcGIS pulls and on the portal row shape; a run that fails them writes nothing.
+- **Observability**: JSON lines to stdout, a summary line, the Runs tab, and a "no run row today" watchdog in Zapier that pings Slack.
+- **Compliance guardrails**: public records; business-to-business outreach; manual dialling; inspection detail stays internal (the sheet is internal); never imply affiliation with the county; DNC honoured by key, phone and email.
+- **FieldRoutes**: nothing is written there until the handoff; when it is, the same `FR_WRITES`, allowlist and quota guards apply as everywhere else in this repo.
+
+## 9. How the owner and the reps interact with the tool
+
+- **Reps**: the sheet, and nothing else. Their views, their columns, the DNC tab.
+- **Owner**: the sheet's manager view, plus this chat. Claude can read the sheet through the Google Drive connector already attached to this workspace to answer "what came in this week", "which processors have no email yet", "show me every Folsom lead with a rodent finding". Changing weights, caps or the chain list is a config change I make on request. Later, two MCP tools (`lead_preview`, `lead_import`, as in revision 1) let Claude run the pipeline on demand; not needed while the cron and the sheet do the job.
+- **Engineer (me, in a coding session)**: the `fr-leads` command, which already exists. `preview` to look, `run --dry-run` to rehearse, `run` for the scheduled job, `push --facility` for one-off checks.
+
+## 10. Delivery phases (revised)
+
+| Phase | Deliverables | Effort | Exit criteria |
+| --- | --- | --- | --- |
+| A (done) | Sacramento feed adapter, ICP mapping, hard filters, PDF fetch and parse, pest classification, scoring, two lanes, FieldRoutes push with dedupe, `fr-leads` CLI, 110 tests | done | on this branch |
+| B. Sheet destination and the other two counties | `sheet.py` (service account, read keys and DNC, batch append and update, Signals and Runs tabs), `--destination sheet`, Placer and Yolo adapters with per-county maps and the circuit breaker, Yolo PDF header parser, keys per county, a first live run into the owner's sheet in dry-run then for real | 4 days | the owner's sheet fills with three counties' rows; a second run adds nothing; a DNC row is skipped; a new inspection on a known row flags it without touching rep columns |
+| C. Contacts | Google Places (phone, website, closed flag), website email scrape, email-finder step, ZoomInfo via the existing Zapier app for entities, source and confidence columns, per-run caps, coverage report in the Runs tab | 3 days | email or phone present on at least 80% of event-lane and territory rows; coverage by source reported |
+| D. Processor list | ZoomInfo export template and import tab, USDA FSIS CSV pull filtered to the three counties (Woodland included for this segment if the owner agrees), size and distance ranking, contact enrichment by title, lane `processor` in the same sheet | 2 days | at least 80 processor companies with a named contact; reps can start the processor sequence |
+| E. Schedule and handoff | Railway cron (or Actions) weekday mornings; the `inspection booked` handoff creating the FieldRoutes customer, note and task through the existing push code and filling the customer ID column; Slack digest via Zapier; watchdog | 2 days | runs unattended for a week; one booked audit lands in FieldRoutes correctly |
+| F. Later | CRM front end, MCP tools, lead subscriptions, calibration from outcomes, other counties | as needed | |
+
+Phases B, C and D can overlap; C and D are where the BDRs' week-one and week-three lists come from.
+
+## 11. Validation checklist (in order)
+
+1. Google service account created; sheet shared with its email; a dry-run reads the empty Leads tab and prints the rows it would add. Pass: no error, row count matches the preview.
+2. First real write, Sacramento only, capped at 40 rows. Pass: the rows appear with every tool-owned column filled where data exists; rep columns empty.
+3. Idempotency: re-run the same day. Pass: zero rows added; the Runs tab shows the run.
+4. Placer and Yolo pulls in dry-run for a 45-day window for five consecutive days. Pass: no 403 or captcha; counts match a manual look at the portal for two dates; Placer rows are only the five in-scope cities; Yolo rows are only West Sacramento.
+5. Yolo PDF parse on three reports. Pass: permit holder email extracted; FA id becomes the key.
+6. New-signal flagging: seed a known key with an older GUID, run against a feed containing a newer one. Pass: evidence columns update, flag set, rep columns untouched.
+7. DNC: add a key to the DNC tab, run. Pass: skipped, logged.
+8. Google Places: one live call for a known facility. Pass: phone matches the PDF, website present, field names as expected, free-tier accounting visible in the console.
+9. Enrichment coverage on the first 100 rows: percentage with an email and a phone, by source. This number sets the reps' expectations and decides whether the email finder is worth its credits.
+10. ZoomInfo pilot: twenty rows by hand (ten entity-owned independents, five multi-location operators, five processors). Pass: half or better of the independents match; all processors match with a named plant, facilities or quality contact.
+11. USDA FSIS CSV filtered to the three counties. Pass: a list of plants with addresses the owner recognises.
+12. Sending domain authenticated and warmed; a test sequence to internal addresses. Pass: lands in the inbox, opt-out works.
+13. Handoff: one `inspection booked` row creates the FieldRoutes customer per Appendix A (read back: office 1, status 0, commercial, source, customerLink) and the customer ID lands in the sheet.
+14. A week of unattended morning runs with the watchdog quiet.
+
+## 12. Risks and mitigations
+
+| Risk | Mitigation |
+| --- | --- |
+| Emails are missing for most independents and the email-first plan stalls | Measure coverage on the first 100 rows (step 9); route no-email rows to call-first; the event lane is call-first anyway |
+| The processor list is thin or ZoomInfo matches poorly in this region | USDA FSIS as a second source; Woodland included for processors; the pilot in step 10 before spending credits |
+| Cold email from the main domain damages the company's deliverability | Separate sending domain, authentication, warm-up, modest volume, a sequencing tool |
+| Reps edit tool-owned columns or the tool overwrites rep columns | Disjoint column sets enforced by name; data validation on status; a weekly check in the Runs tab |
+| The portal blocks the Placer and Yolo pulls | Circuit breaker; date windows; fall back to weekly manual review of the portal's follow-up and complaint lists; ask the counties for a feed |
+| Google Places or email-finder costs creep | Per-run and per-day caps; only rows about to be worked get enriched |
+| County findings quoted to prospects create backlash | Recommendation not to cite them; owner decides; the note template stays internal |
+| The county source runs dry and the reps idle | ZoomInfo pull in phase D, weekly territory refresh, monthly processor refresh |
+| A wrong-county or dead business wastes calls | Zip allowlists per county; Places permanently-closed flag; staleness filter |
+| The sheet becomes the bottleneck | Planned CRM move in 7.7; the writer is one module |
+
+## 13. Decisions needed from the owner (with defaults)
+
+1. **Google Sheet written directly by the tool** via a service account (default) versus Zapier add-row versus an `.xlsx` export. Default: direct.
+2. **Sheet name or link**, or I create one and share it.
+3. **Cite the county finding in outreach?** Default: no; use it for timing and priority only.
+4. **Email-finder vendor and monthly credit budget** (Apollo, Hunter, or none for now). Default: none until step 9 shows the gap.
+5. **Sending domain and sequencing tool** for cold email. Default: a new domain plus whichever sequencer the reps already know.
+6. **Woodland for processors only?** Default: yes.
+7. **ZoomInfo processor criteria**: industries and the employee-count floor. Default: food production and manufacturing, grocery wholesale, refrigerated warehousing; 20 employees and up.
+8. **New rows per run cap.** Default: 40 across lanes so the first week isn't a wall of rows.
+9. **Who owns the sheet** and which rep gets which rows: by county, by lane, or round robin. Default: by lane (one rep owns event plus restaurants, the other territory plus processors), swapped monthly.
+10. **Railway cron versus GitHub Actions** for the schedule. Default: Railway.
+11. **FieldRoutes handoff**: manual by the rep first (default) or automated from day one.
+
+Already decided (2026-09-07): Yolo is West Sacramento only; Placer excludes Auburn and Tahoe; cockroach and rodent both count; national chains stay parked; regional ethnic operators are eligible; ZoomInfo yes with caps.
+
+## 14. Out of scope for now
+
+- Any customer-facing automation (SMS, robocalls, auto-replies).
+- Scraping the portal HTML or permit pages at volume.
+- San Joaquin and El Dorado counties.
+- A dashboard beyond the sheet's own pivots.
+- Lead subscriptions and the Leads board in FieldRoutes until the handoff is automated.
+
+## Appendix A. FieldRoutes lead model (used at the handoff, section 5.3; the code for this exists in `src/fr_mcp/leads/fr_push.py`)
 
 All writes go through `FieldRoutesClient.call` (form encoding, auth in body, 55/min limiter, daily quota counter that adopts FieldRoutes' own `tokenUsage`, and the guard that raises when a sent param comes back in `ignoredParams`). Every param name below exists in `fieldroutes_spec.json`.
 
-### 5.1 Create a new lead
+### A.1 Create a new lead
 
 `customer/create`:
 
@@ -210,7 +447,7 @@ The GUID in the note is the per-inspection idempotency key.
 
 Optional (phase 3, gated by `LEADS_LEAD_SUBSCRIPTION`): `subscription/create` with `serviceID`=103 Pest Exclusion Inspection, `customerID`, `sourceID`, `regionID`, `soldBy`=10007, `leadValue` (markets/commissaries 3600, restaurants 1800, others 1200), `frequency`=0, `convertToLead`=1 so the lead appears on FieldRoutes' Leads board with `active = -3`. **Unverified**: whether `convertToLead` on create yields `active -3`, or whether `subscription/updateLeadStage` is needed afterwards; must be proven on test customer 10000 with a check that no appointment or invoice was generated.
 
-### 5.2 Dedupe and re-touch
+### A.2 Dedupe and re-touch
 
 Resolution order before any write, all with `FR_OFFICE_ID` applied and no `active` filter (leads are status 0):
 
@@ -222,137 +459,6 @@ A hit in 2 or 3 adopts the record: set `customerLink` via `customer/update` only
 
 Idempotency: the state row records each step's result ID; a run that crashes after `customer/create` resumes by finding the customer through `customerLink` and completing the missing note and task, never creating a second customer. Each inspection GUID is handled once. A new unhandled vermin or closure inspection on a known facility adds one note; a task is added only if `task/search {customerID, status: 0}` finds none open, otherwise the note says "see open task". Re-touch cadence: at most one per facility per 14 days.
 
-### 5.3 Quota budget
+### A.3 Quota budget
 
 Per new lead: 2 to 3 reads and 3 writes (4 with the lead subscription). Per re-touch: 2 reads and 1 to 2 writes. Daily worst case at caps: about 60 reads and 80 writes against the shared 3,000/3,000, under 3% of the write quota. The run reads `tokenUsage` from its first response and aborts before any write if reads or writes already exceed 2,400 that day; the client's own counter stops it at 95% regardless.
-
-## 6. Enrichment
-
-| Source | What it adds | When | Cost |
-| --- | --- | --- | --- |
-| PDF header (public record) | owner name or entity, phone (often the owner's cell), department string, PE code cross-check | phase 1, every event-lane facility | free; 1 to 3 fetches/day, about 150 on a 180-day backfill |
-| ArcGIS geometry | lat/lng for route density and region (Sacramento only; Placer and Yolo rows have no coordinates, so distance comes from Places or a zip centroid table) | phase 1 | free |
-| Placer and Yolo portal rows | inspector narrative inline (`comments`), placard colour (Placer), purpose; Yolo PDF adds permit-holder email and sometimes a phone; Placer PDF adds nothing about the owner | phase 2 | free; same politeness rules |
-| Google Places API (New) Text Search, field mask `places.id,displayName,formattedAddress,nationalPhoneNumber,websiteUri,businessStatus,userRatingCount,primaryType` | business phone when the header is blank, website for the ZoomInfo match, CLOSED_PERMANENTLY to park dead leads (255 facilities have no inspection in over a year), rating count as a size proxy | phase 3, only for rows about to be pushed, 90-day cache | Pro SKU; 5,000 free calls/month covers the whole pool (**unverified**, no key in this sandbox) |
-| ZoomInfo via the owner's Zapier app (design in 6.1) | company profile (website, size, parent), decision-maker contacts with direct dial and email, stored as FieldRoutes additional contacts | phase 3, triggered by the digest webhook (`zoominfo_candidate: true`) for entity-owned Hot/Warm leads, multi-location operators and chosen chains | 1 credit per successful company or contact enrichment; Search Contacts free; about 10 Zapier tasks and 2 to 3 FieldRoutes writes per lead; capped at 5 a day |
-
-Never overwrite a phone or name a human typed; enrichment only fills blanks.
-
-### 6.1 ZoomInfo enrichment (owner asked 2026-09-07: yes, with limits)
-
-ZoomInfo can enrich these leads, but its coverage is uneven for this market: strong for chains, franchise operators, food-service groups, distributors and any business with a website and staff on LinkedIn; thin for single-location taquerias and corner markets, where the county PDF header (owner name and cell) is usually the better source anyway. So the plan uses ZoomInfo selectively and measures its hit rate before spending credits broadly.
-
-**Two ways in.** (a) The ZoomInfo app in Zapier, which the owner already uses: no code, triggered by the digest webhook, and the same Zap writes the result back to FieldRoutes. (b) ZoomInfo's REST API called from the scraper directly, which is cleaner but needs API credentials on the ZoomInfo account (availability depends on the plan; **unverified**). Start with (a); move to (b) only if the Zapier path proves too slow or too many Zap tasks.
-
-**Credit rules (from ZoomInfo's documentation).** "Enrich Company" and "Enrich Contact" consume one credit per successful match unless the record is already under management; "Search Contacts" is free and only counts against request limits. So the Zap searches first and enriches only what it will use.
-
-**Which leads.** Hot and Warm leads whose county-record owner is an entity (LLC, INC, CORP, LP) or whose base name is a local multi-location operator, plus every parked chain lead the owner chooses to work as a corporate play. Not person-owned single locations (the PDF already names them). Cap: 5 enrichments per day, adjustable.
-
-**Match keys we can supply.** Company name, street address, city, zip, the phone from the PDF header when present, the owner entity name, and the website from Google Places (phase 3). Matching on name plus address is far more reliable than name alone for restaurants, so the Zap passes all of them.
-
-**What to pull.** Company: legal name, website, domain, employee count, revenue band, parent or franchisor, headquarters address, main phone. Contacts: Search Contacts filtered to seniority Owner, Partner, C-level, General Manager, Director of Operations or Facilities, then Enrich Contact on the top one or two: name, title, direct phone, mobile if present, email, LinkedIn URL.
-
-**Where it lands in FieldRoutes.** Each decision-maker becomes an `additionalContact/create` row on the lead (required: `customerID` and `additionalContactTypeID`, an office-configured contact type the owner creates or picks in the UI; fields `fname`, `lname`, `companyName`, `phone`, `phone2`, `email`, `contactType`, `addedBy`; reminders forced to 0), so the rep sees a proper contact card instead of a note. Company facts (website, employee count, parent, HQ) go into one note prefixed "ZoomInfo:" and the website into the note only (the customer record has no website field). Blank `email`/`phone2` on the customer are filled via `customer/update`; existing values are never overwritten. A `zoominfo_enriched_at` column in the state store prevents re-enriching the same facility within 180 days.
-
-**Cost and volume.** At 5 per day this is at most about 100 credits a month and roughly 10 Zapier tasks per lead (webhook, filter, search, enrich, two FieldRoutes writes, logging). FieldRoutes writes from the Zap count against the shared 3,000 per day; two to three per enriched lead is negligible.
-
-**Compliance.** ZoomInfo contact data is business contact data under its terms; direct dials are still for manual calls only, and any contact who asks not to be called is flagged the same way as the facility.
-
-## 7. Operations and safety
-
-- **Caps**: `LEADS_DAILY_CAP` 15 new customers per run (event lane first, then up to 5 territory rows), `LEADS_RETOUCH_CAP` 10, hard ceiling 60 writes and 120 reads per run.
-- **Dry run**: `LEADS_DRY_RUN=1` (the cron service's initial setting) or `fr-leads run --dry-run` does every read, PDF fetch and dedupe lookup, prints the exact param dicts it would send, and makes zero writes (asserted in tests). `--limit N` and `--facility FA…` scope a real push.
-- **Allowlist validation**: with `FR_WRITE_CUSTOMER_IDS=10000` on the cron service only, `fr-leads push --facility FA… --as-customer 10000` writes the note and task onto "Test Sean" with real payloads. `customer/create` cannot be allowlisted (no customerID yet) and is refused while the allowlist is set, so the first real create is a deliberate `--limit 1` on a hand-picked facility.
-- **Kill switches inherited**: `FR_WRITES=off` makes the cron read-only; `FR_ALLOW_DELETE` and `FR_ALLOW_CHARGES` stay off; the pipeline never calls delete, payment or appointment endpoints and never writes Red Notes.
-- **Rollback**: `fr-leads rollback --run <id>` appends a note "Imported in error, ignore", closes the task via `task/update status 1`, and marks the state row. Deletion stays a UI action.
-- **Fail-closed startup**: abort before any write if `LEADS_SOURCE_ID` is not found in `customerSource/search`, the task category is unset, `LEADS_ASSIGN_TO` is not an active employee, or `FR_OFFICE_ID` is not 1.
-- **Portal politeness and circuit breaker**: browser User-Agent, one request every 2 seconds, 25-row pages, date-window pulls only, results cached by inspection GUID, and an immediate stop of all portal calls for the rest of the run on any 403, captcha page or non-JSON response, with the run still completing Sacramento work. Never enumerate the full portal, never run more than one worker.
-- **Feed drift**: assert the 11 field names and that layer 0 returns at least 5,000 rows; on failure exit 2 with no writes. Pull from watermark minus 7 days to absorb late rows.
-- **Observability**: one JSON line per lead decision (facility, tier, score, classification, action, IDs), a run summary with `tokenUsage` before and after, never the API key or PDF bodies. A non-zero exit shows in Railway's cron history. A Zapier "no digest received by 07:00" watchdog catches silent failures.
-- **Digest**: the morning list (Hot/Warm pushed today, re-touches, territory adds, backlog count, quota, failures) POSTed to `LEADS_DIGEST_WEBHOOK`; Zapier fans it out to Slack and Sean's Gmail.
-- **Compliance guardrails**: leads are business-to-business; phone numbers are for manual dialing only (the digest says so); no SMS or robocall automation anywhere; reminders forced off on the customer record; note wording says "public record, Sacramento County EMD" and never implies affiliation with the county; inspection text stays in internal notes as a short quote plus link, never in customer-visible fields; a do-not-call request is recorded as a customer flag or task note that the pipeline honours by skipping the facility.
-
-## 8. MCP tools to add (phase 2)
-
-Two curated tools, taking the count from 31 to 33 (update README's table, CLAUDE.md's inventory, and `test_http_app_secret_path_healthz_and_bearer`; about 1,400 characters of schema, within `test_context_budget.py`'s headroom if params stay few and avoid `X | None` unions where a default suffices).
-
-- `lead_preview(days: int = 7, tier: str = "hot,warm", lane: str = "event", limit: int = 20, facility_id: str = "")`: read-only; returns the scored list for the window with facility, type, tier, score breakdown, classification, evidence quote, owner, phone, address, region, distance, FieldRoutes customer ID and status (new / known / adopted / existing customer). With `facility_id` it returns one facility's inspection timeline and parsed vermin observations so Claude can answer "what did the county actually find".
-- `lead_import(facility_ids: list[str], dry_run: bool = True)`: runs the same push path as the cron for the named facilities; the docstring says to call with `dry_run=true` first and confirm the list with the user; goes through `_require_writes` and the allowlist; returns created IDs and the quota after.
-
-Phase 1 needs no tool: the cron's output is Sean's task list, and the owner can already inspect results through the existing `search`, `customer_360`, `list_notes` and `lookups` tools.
-
-## 9. Delivery phases
-
-| Phase | Deliverables | Effort | Exit criteria |
-| --- | --- | --- | --- |
-| 0. Owner setup and live verification | Customer source "Health Dept Inspections" and task category "Sales - Commercial" created in the UI; zip-to-region table reviewed; chain exception list decided; note type confirmed | 0.5 day | `lookups` shows the new IDs; region table signed off |
-| 1. Event lane MVP with PDF classification | `leads/` package (arcgis, reports, classify, score, regions, fr_push, state, cli), `util.py` refactor, pypdf added to `pyproject.toml` and `requirements.lock`; tests (classifier fixtures from the seven extracted PDFs, scorer tables, address parser, FakeFR dedupe/idempotency/dry-run, cap and quota abort); 180-day backfill in dry run reviewed with the owner; capped first live push; Railway cron service with volume; CI green; README and CLAUDE.md sections | 4 days | Weekday cron runs unattended; every pushed lead has `customerLink`, one note with a quotable evidence line, one task assigned to 10007; re-running the same day creates zero duplicates; dry run makes zero writes |
-| 2. Placer and Yolo, territory lane, MCP tools, digest, rollback | Portal JSON adapter with per-county field and permit-type maps, 25-row paging, circuit breaker, Placer and Yolo PDF parsers (Yolo email, Placer violation blocks), `PCHD:`/`YOLO:` keys, Placer and Yolo zip-to-region rows; territory lane at 5/day across all three counties; `lead_preview` and `lead_import`; digest webhook to Zapier (Slack + Gmail) and the 07:00 watchdog; `rollback` and `rebuild-state` commands; nightly SQLite backup | 3.5 days | Placer and Yolo events appear in the same scored list with county tags; a week of daily portal pulls completes without a block; Sean gets a morning list with evidence quotes and FieldRoutes IDs; Claude can show this week's rodent leads and import one after confirmation |
-| 3. Enrichment and lead subscriptions | Google Places with cache and free-tier accounting; ZoomInfo Zap for entity-owned Hot/Warm leads; lead subscription (serviceID 103, leadValue, soldBy 10007) once verified; PDF-derived phone updates for adopted records | 2 days | Hot leads carry phone, website and business status; leads appear on the FieldRoutes Leads board with the right source |
-| 4. Calibration, density, further counties | Re-weighting from at least 30 task dispositions; route-density bonus from existing customers within 1 mile; San Joaquin or El Dorado only if the owner wants them (same portal platform); optional weekly dashboard | 1.5 days | Weights adjusted from real outcomes; further counties added only where the portal stays reachable and a lawful bulk source or the same polite pull works |
-
-## 10. Live-tenant validation checklist (in order)
-
-1. `lookups(kind="customer_sources")` and `lookups(kind="task_categories")` show the new source and category; record the IDs (create one manual task in the new category first, since categories are derived from existing tasks). Pass: both IDs present.
-2. Note type: `add_note` on test customer 10000 with `note_type_id=0` shows as "Notes" in the UI. Pass: visible with the right type.
-3. Allowlisted write: `FR_WRITE_CUSTOMER_IDS=10000` on the cron service; `fr-leads push --facility <a real vermin facility> --as-customer 10000 --dry-run`, then live. Pass: note text and task (assignee 10007, category, due date, urgency, phone) look right in FieldRoutes; a second identical run writes nothing.
-4. First real create: clear the allowlist; `fr-leads run --limit 1` on the top Hot facility; read back with `find_customer` and `customer_360`. Pass: `officeID` 1, `status` 0, `commercialAccount` 1, `sourceID`, `regionID`, lat/lng, `customerLink`, reminders 0; `customer/search {customerLink}` returns exactly that ID; `due_for_service` and `day_schedule` do not show it.
-5. UI rendering of a company-only record (empty first name) in the customer list, search and Leads board. Pass or switch to `lname` = company name before the backfill.
-6. Idempotency: re-run the same day. Pass: zero new customers, notes or tasks; `customer/search customerLink STARTSWITH "SACEMD:"` returns the created set (this also verifies STARTSWITH; if it returns nothing, switch `rebuild-state` to the dateAdded + employeeID path).
-7. Address and phone fallback: dry-run a fabricated row pointing at customer 10000's address and phone. Pass: resolver reports "adopted", not "new".
-8. Backfill: `--since 180 days --dry-run`, review the ranked list with the owner, spot-check ten classifications against the PDFs (expect NATOMAS FOOD & LIQUOR rodent; SEAPOT, CURRIES & BIRYANIS cockroach; KFC/A&W cockroach + fly). Then live at the cap on consecutive days.
-9. Lead subscription (phase 3 only): on customer 10000, `subscription/create` with serviceID 103, `convertToLead` 1, `leadValue`; read back `active` and lead fields; confirm no appointment or invoice appeared; then remove the test subscription in the UI. Pass: `active -3`. Fail: try `subscription/updateLeadStage`, else leave subscriptions out.
-10. Google Places: one Text Search for a known facility; confirm field names, that the phone matches the PDF, and the free-tier accounting in the console.
-11. Digest: fire the Zapier Catch Hook with a sample payload; confirm Slack and Gmail delivery and that the ZoomInfo Zap fires only for flagged rows.
-12. Cron: deploy, run once manually, check exit code 0, the volume file and the schedule; next weekday confirm the digest by 06:00 Pacific.
-13. Quota after a week: `health_check` daily usage and the run summaries agree with the expected 3 to 4 writes per lead; Zapier and website forms still have headroom.
-14. Compliance read-through with the owner: note wording, manual dialing, do-not-call handling.
-15. Placer and Yolo pulls: run the portal adapter in dry run for a 45-day window on each county; confirm row counts match a manual check of the portal for two dates, that food programs are the only rows kept, and that the run completes with no 403 or captcha for five consecutive days before any live push.
-16. Placer and Yolo PDFs: parse one Placer report (violation blocks with "Inspector Comments") and one Yolo report (Permit Holder, Email, Phone, MAJ count, FA id) with the fixtures saved during planning; confirm the FA id lands in `customerLink` and the Yolo email in `email`.
-17. Placer and Yolo regions: the first live lead in each county reads back with the expected `regionID` (Roseville to 1 or 7, Rocklin/Lincoln to 11, West Sacramento to 6), no Yolo lead outside West Sacramento is created (assert in the dry run that Davis and Woodland rows are dropped), and unmapped Placer cities carry the flag in the note.
-18. ZoomInfo pilot before the Zap goes live: run Enrich Company and Search Contacts by hand in ZoomInfo for 20 recent leads (10 entity-owned independents, 5 local multi-location operators, 5 chains) and record the match rate and whether a usable owner, GM or facilities contact came back. Pass: 50% or better on the entity-owned independents; below that, restrict the Zap to multi-location operators and chains. Also confirm the `additionalContactTypeID` to use via `additionalContact/search` on an existing customer with a contact, or create one contact type in the UI.
-
-## 11. Risks and mitigations
-
-| Risk | Mitigation |
-| --- | --- |
-| The pest type is mislabelled (rodent versus cockroach) and the rep opens with the wrong offer | Narrative classification with the raw quote and report link in every note; the task names the pest; the rep can verify in ten seconds and the correction feeds re-weighting |
-| Regex false positives or negatives ("rat-proof" in recommendations, merged words in PDF text) | Boilerplate and "shall"-sentence exclusion; raw quote and report link in every note; dispositions feed re-weighting |
-| ArcGIS schema change, outage or growing lag | Field assertion and row-count sanity check fail the run before any write; watermark minus 7 days; weekly count comparison |
-| The portal starts blocking PDF fetches | Browser UA, 2-second spacing, permanent cache, only signal facilities; leads still flow as vermin_unclassified with a "read the report" link |
-| The portal blocks or captchas the JSON search, which is the only bulk source for Placer and Yolo | Date-window pulls of 1 to 3 requests a day, circuit breaker, no enumeration; if blocked for more than a week, fall back to a weekly manual check of the portal's follow-up and complaint lists, and ask the counties about a data feed (Sacramento already publishes one) |
-| Shared FieldRoutes quota exhausted by the pipeline plus Zapier and web forms | Headroom check before writes, per-run ceilings, daily caps, the client's 95% refusal; steady state under 3% of the write quota |
-| Flooding Sean with low-value or dead businesses | Tiers (Park never pushes), territory lane capped at 5, Places CLOSED_PERMANENTLY gate, 540-day staleness exclusion, one open task per facility |
-| Duplicate customers when a facility is already a customer under another name | Three-step resolver including inactive customers; existing active customers get an upsell task only |
-| Wrong office or attribution (no `officeID` param on create) | First real create read back before any backfill; run aborts if `FR_OFFICE_ID` is not 1 |
-| Lead subscription semantics unverified; a mis-created active subscription could enter the job pool | Phase 3 only, feature-flagged, verified on test customer 10000 with a no-appointment check; customers stay status 0 regardless |
-| Region assignment errors (FieldRoutes regions have no polygons; Elk Grove, Natomas, Galt unassigned) | Owner-reviewed zip table; unmapped gets 0 and a flag |
-| Compliance and perception | Wording rules, manual dialing only, reminders off, do-not-call honoured, inspection detail kept internal |
-| ZoomInfo credits spent on facilities it cannot match (small independents), or contacts that are stale | Search before enrich, entity-owned and multi-location only, daily cap, 180-day re-enrich guard, pilot hit-rate check before go-live; the PDF owner and phone remain the primary contact for independents |
-| Railway volume loss or cron misconfiguration | FieldRoutes is the source of truth; `rebuild-state`; nightly SQLite backup; digest watchdog |
-
-## 12. Decisions needed from the owner (with recommended defaults)
-
-1. Names for the new customer source and task category. Default: "Health Dept Inspections" and "Sales - Commercial". (Using Billing 10002 for tasks is the fallback.)
-2. Zip-to-region defaults. Proposed: Downtown 3 = 95811 95814 95816 95817 95818 95819; South Sacramento 4 = 95820 95822 95823 95824 95826 95828 95829 95831 95832 plus Elk Grove 95624 95757 95758 and Galt 95632; Carmichael 5 = 95608 95821 95825 95864 plus Fair Oaks 95628 and Orangevale 95662; Rancho Cordova 2 = 95670 95742 95827 95655 95683; North Highlands/Antelope/Rio Linda 8 = 95660 95673 95841 95842 95843 95652 95626 95837 plus Natomas 95833 95834 95835 95838; Citrus Heights 9 = 95610 95621; Folsom 10 = 95630; West Sacramento 6 = 95691; everything else 0.
-3. Sole assignee Sean (10007), or Hot A-tier leads to Iggy (10002)? Default: Sean.
-4. Accept the "confirmed infestation at any food retail +10" rule (rodent or cockroach)? Default: yes. Decided 2026-09-07: cockroach and other pest infestations are wanted leads, scored nearly level with rodents; only the pitch wording differs.
-5. Chain policy: **decided 2026-09-07: national chains stay parked for the first 90 days** (recorded, never pushed, not enriched); revisit once the independent pipeline is converting. Regional ethnic operators (99 Ranch, La Superior, Seafood City, Viva) remain eligible.
-6. Daily caps: 15 new leads with 5 from the territory lane? Default: yes, review after two weeks.
-7. Territory radius: 20 miles from Rio Linda (306 of 319 independent ICP-A facilities)? Default: 20.
-8. Create lead subscriptions so leads show on the FieldRoutes Leads board (phase 3)? Default: yes, after validation.
-9. Google Places key and Zapier Catch Hook now, or a plain Slack webhook first? Default: Catch Hook (Zapier is already in daily use).
-10. Second Railway cron service (recommended) versus GitHub Actions cron? Default: Railway.
-11. Go-ahead to fetch inspection PDFs from the portal with a browser User-Agent at low volume, given the county publishes the same records CC0? Default: yes, with the politeness rules above.
-12. Placer geography: **decided 2026-09-07: Roseville, Rocklin, Lincoln, Granite Bay and Loomis only; Auburn is out.** Zip rows: 95661 95678 95747 to region 1 or 7 (owner still to split Roseville A/B), 95746 to 7, 95677 95765 95648 95650 to 11.
-13. Yolo geography: **decided 2026-09-07: West Sacramento only** (region 6). Davis and Woodland are out of scope for now; revisit only if the owner opens a Yolo route.
-14. Placer phone numbers: the county's reports carry none, so Placer leads either wait for the Google Places key (phase 3) or go out with address only. Default: bring Places forward for Placer.
-15. ZoomInfo: proceed with the Zapier path on entity-owned and multi-location leads at 5 a day (decided in principle 2026-09-07), pending the 20-lead pilot in validation step 18 and confirmation of the plan's credit allotment. Parked chains are not enriched (decision 5).
-
-## 13. Out of scope for now
-
-- Food distributors and warehouses (state-licensed; ZoomInfo or other list sources).
-- San Joaquin and El Dorado counties (same portal platform; only if the owner wants them after Placer and Yolo prove out).
-- Any customer-facing messaging, SMS, or email automation.
-- Scraping the portal HTML or permit pages at volume.
-- A dashboard; a weekly digest artifact can follow once conversions exist.
