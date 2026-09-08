@@ -191,7 +191,10 @@ class PoliteFetcher:
             resp = await self._client.get(report_url, headers={"User-Agent": USER_AGENT})
         except httpx.TransportError:
             return None
-        if resp.status_code != 200 or "pdf" not in resp.headers.get("content-type", ""):
+        # Sniff the body rather than trust Content-Type: verified live 2026-09-08, the
+        # portal serves some reports as a valid PDF with no Content-Type header at all,
+        # and a header-only check read those as a captcha page and blocked the whole run.
+        if resp.status_code != 200 or not resp.content.startswith(b"%PDF"):
             self.blocked = True
             return None
         cached.write_bytes(resp.content)

@@ -106,6 +106,33 @@ async def test_fetch_caches_to_disk_and_skips_the_network_on_a_hit(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_pdf_served_without_a_content_type_header_is_accepted(tmp_path):
+    # Verified live 2026-09-08: the portal serves some reports with no Content-Type at
+    # all. Trusting that header read a valid report as a block and silently stopped
+    # every later fetch in the run.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_pdf_bytes())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        fetcher = PoliteFetcher(tmp_path, client)
+        assert await fetcher.fetch_text("https://example.test/report", "PKEY-1") is not None
+        assert fetcher.blocked is False
+        assert (tmp_path / "PKEY-1.pdf").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_200_html_page_still_counts_as_a_block(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>please verify you are human</html>", headers={"content-type": "text/html"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        fetcher = PoliteFetcher(tmp_path, client)
+        assert await fetcher.fetch_text("https://example.test/report", "PKEY-1") is None
+        assert fetcher.blocked is True
+        assert not (tmp_path / "PKEY-1.pdf").exists()
+
+
+@pytest.mark.asyncio
 async def test_a_non_200_response_blocks_the_rest_of_the_run(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, text="blocked")
