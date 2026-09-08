@@ -153,28 +153,34 @@ python -m venv /tmp/lockenv && /tmp/lockenv/bin/pip install -e . && /tmp/lockenv
 
 ## Lead scraper (`fr-leads`)
 
-A second, separate CLI (`src/fr_mcp/leads/`) that pulls Sacramento County's public food-inspection feed, scores facilities for a commercial rodent/pest sales wedge, and pushes leads into this same FieldRoutes tenant as inactive commercial customers with a note and a task. It runs as its own process -- a Railway cron service, or by hand -- never inside the MCP server, so a cron run never has to construct the 31-tool MCPServer and the MCP server never has to know the scraper exists. Full design, data sources, scoring model, and the live-tenant validation checklist: [`docs/lead-scraper-plan.md`](docs/lead-scraper-plan.md).
+A second, separate CLI (`src/fr_mcp/leads/`) that pulls Sacramento, Placer, and Yolo counties' public food-inspection data, scores facilities for a commercial rodent/pest sales wedge, and writes them into a Google Sheet -- the system of record the two BDRs work from day to day. FieldRoutes (`--destination fieldroutes`, the original phase-1 behaviour) is reserved for the "inspection booked" handoff. It runs as its own process -- a scheduled job, or by hand -- never inside the MCP server, so a run never has to construct the 31-tool MCPServer and the MCP server never has to know the scraper exists. Full design, data sources, scoring model, sheet schema, and the live-tenant validation checklist: [`docs/lead-scraper-plan.md`](docs/lead-scraper-plan.md).
 
-Phase 1 (shipped): the Sacramento County ArcGIS feed only, event lane (facilities with a recent vermin/closure inspection) and territory lane (independent ICP-A facilities with no violation), pest classification from the inspection report PDF, customer/note/task creation with customerLink-based dedupe. Placer and Yolo counties, Google Places and ZoomInfo enrichment, and the `lead_preview`/`lead_import` MCP tools are later phases in the plan, not built yet.
+Shipped: all three counties (Sacramento's ArcGIS feed; Placer and Yolo's own inspection-portal JSON API, West Sacramento/Roseville-Rocklin-Lincoln-Granite Bay-Loomis only per the owner's scope), event lane (a recent vermin/closure/suspension inspection) and territory lane (independent ICP-A facilities with no violation) for each, pest classification from the inspection report PDF or (Placer/Yolo) the portal's own inline narrative, and the Google Sheet writer (Leads/Signals/Runs/DNC tabs, dedupe by key, DNC honored by key/phone/email, a new signal on a known row updates only tool-owned columns). Google Places/website/ZoomInfo enrichment, the processor list (ZoomInfo + USDA FSIS), and the `lead_preview`/`lead_import` MCP tools are later phases, not built yet.
 
 ```
-fr-leads preview --since-days 45 --top 20         # score only, zero FieldRoutes access, even reads
-fr-leads preview --since-days 180 --no-fetch      # backfill-size look without fetching any PDFs
-fr-leads run --dry-run                            # full pipeline, every FieldRoutes read, zero writes
-fr-leads run                                       # what the cron service runs
-fr-leads push --facility FA0044262 --as-customer 10000 --dry-run   # validation mode: note+task on an allowlisted test customer, never creates one
+fr-leads preview --since-days 45 --top 20                       # score only, zero writes anywhere, even reads
+fr-leads preview --since-days 180 --no-fetch                    # backfill-size look without fetching any PDFs
+fr-leads preview --counties placer,yolo --since-days 45          # just the two portal counties
+fr-leads run --dry-run                                           # full pipeline, every read, zero writes to the sheet
+fr-leads run                                                      # what the scheduled job runs (writes to the sheet)
+fr-leads run --destination fieldroutes --dry-run                 # legacy path: push straight into FieldRoutes instead
+fr-leads push --facility FA0044262 --as-customer 10000 --dry-run   # FieldRoutes validation mode: note+task on an allowlisted test customer, never creates one
 ```
 
 Every subcommand prints one JSON line per candidate/decision, then a summary line -- pipe through `jq` or grep for `"summary": true`.
 
 | Var | Purpose |
 | --- | --- |
-| `LEADS_SOURCE_ID` | Customer source ID for scraper-created leads (create it in Admin → Preferences → Customer Sources first; `lookups(kind="customer_sources")` lists IDs). Required before `fr-leads run` (not `--dry-run` or `preview`) will write anything. |
-| `LEADS_TASK_CATEGORY_ID` | Task Category for scraper tasks. Falls back to `FR_DEFAULT_TASK_CATEGORY_ID`. |
-| `LEADS_NOTE_TYPE_ID` | Note Type for scraper notes. Falls back to `FR_DEFAULT_NOTE_TYPE_ID`. |
-| `LEADS_ASSIGN_TO` | Employee ID leads are assigned to. Falls back to `FR_DEFAULT_EMPLOYEE_ID`. |
-| `LEADS_DAILY_CAP`, `LEADS_TERRITORY_CAP` | New leads per run, event lane and territory lane (default 15 and 5). |
-| `LEADS_MAX_RUN_WRITES` | Hard ceiling on writes in one run (default 100). |
-| `LEADS_PDF_CACHE_DIR` | Where fetched inspection report PDFs are cached (default `./leads_cache/pdf`; point this at a Railway volume in production). |
+| `LEADS_SHEET_ID` | The Google Sheet's ID (from its URL). Required for `fr-leads run` (default destination) to write anything. |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | The service account key file's JSON, pasted inline (Railway's variables UI has no separate secret-file mechanism). Never paste this into chat -- add it directly in Railway's dashboard, or hand it to Claude for a single, not-echoed-back `set-variables` call. |
+| `GOOGLE_SERVICE_ACCOUNT_JSON_PATH` | Alternative to the above for local/dev use: a path to the key file on disk. |
+| `LEADS_SHEET_NEW_ROW_CAP` | New rows per run across all lanes (default 40, plan section 13). |
+| `LEADS_SOURCE_ID` | Customer source ID for FieldRoutes-created leads (create it in Admin → Preferences → Customer Sources first; `lookups(kind="customer_sources")` lists IDs). Only needed for `--destination fieldroutes` or `push`. |
+| `LEADS_TASK_CATEGORY_ID` | Task Category for FieldRoutes-destination tasks. Falls back to `FR_DEFAULT_TASK_CATEGORY_ID`. |
+| `LEADS_NOTE_TYPE_ID` | Note Type for FieldRoutes-destination notes. Falls back to `FR_DEFAULT_NOTE_TYPE_ID`. |
+| `LEADS_ASSIGN_TO` | Employee ID FieldRoutes-destination tasks are assigned to. Falls back to `FR_DEFAULT_EMPLOYEE_ID`. |
+| `LEADS_DAILY_CAP`, `LEADS_TERRITORY_CAP` | `--destination fieldroutes` only: new leads per run, event lane and territory lane (default 15 and 5). |
+| `LEADS_MAX_RUN_WRITES` | `--destination fieldroutes` only: hard ceiling on FieldRoutes writes in one run (default 100). |
+| `LEADS_PDF_CACHE_DIR` | Where fetched inspection report PDFs are cached (default `./leads_cache/pdf`; point this at a persistent volume in production). |
 
-Same write guards as the MCP server (`FR_WRITES`, `FR_WRITE_CUSTOMER_IDS`, `FR_ALLOW_DELETE`/`FR_ALLOW_CHARGES`) apply, since `fr-leads` calls the same `fr_mcp.server` helpers rather than its own copy of them. It never touches Red Notes, never sends SMS/email/phone reminders on a lead it creates, and is polite to the county's portal when fetching PDFs (one request every 2 seconds, cached forever by inspection ID, stops fetching for the rest of the run on anything but a 200).
+The FieldRoutes destination path uses the same write guards as the MCP server (`FR_WRITES`, `FR_WRITE_CUSTOMER_IDS`, `FR_ALLOW_DELETE`/`FR_ALLOW_CHARGES`), since `fr-leads` calls the same `fr_mcp.server` helpers rather than its own copy of them; the sheet destination has its own guards (DNC, the new-row cap, batch-at-end-of-run writes) instead. Either way it never touches FieldRoutes Red Notes, never sends SMS/email/phone reminders on a lead it creates, and is polite to every county portal it talks to (25-row pages, one request every 2 seconds, PDFs cached forever by inspection ID, a shared circuit breaker that stops all portal traffic for the rest of the run on anything but a clean 200/JSON response).

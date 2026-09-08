@@ -1,19 +1,25 @@
 """`fr-leads`: the lead scraper's command line entry point.
 
 Subcommands:
-  run       Full pipeline: pull the county feed, score, dedupe, push into
-            FieldRoutes. This is what the Railway cron service runs.
-  preview   Same pull and scoring, no FieldRoutes access at all (not even
-            reads) -- a quick look at what a run would find.
-  push      Push one or more named facilities. `--as-customer` is the
-            validation mode: writes a note + task to an existing (allowlisted)
-            customer instead of creating a new one, per
-            docs/lead-scraper-plan.md's validation checklist.
+  run       Full pipeline: pull every in-scope county feed (Sacramento,
+            Placer, Yolo -- `--counties` narrows this), score, dedupe, and
+            push into the destination (`--destination sheet|fieldroutes`,
+            default `sheet` -- plan section 5). This is what the scheduled
+            job runs.
+  preview   Same pull and scoring, no writes to either destination at all
+            (not even reads) -- a quick look at what a run would find.
+  push      Push one or more named Sacramento facilities straight to
+            FieldRoutes. `--as-customer` is the validation mode: writes a
+            note + task to an existing (allowlisted) customer instead of
+            creating one, per docs/lead-scraper-plan.md's validation
+            checklist. This one stays FieldRoutes-only and Sacramento-only --
+            it is a validation tool for Appendix A's write path, not part of
+            the sheet pipeline.
 
 Every subcommand prints one JSON line per candidate decision, then a final
-JSON summary line, to stdout -- easy to grep, easy for Railway's log drain.
-Nothing here prints the FieldRoutes key/token (client.py already strips
-`params` from every response before it reaches this code).
+JSON summary line, to stdout -- easy to grep, easy for a log drain. Nothing
+here prints the FieldRoutes key/token (client.py already strips `params`
+from every response before it reaches this code) or a Google credential.
 """
 
 from __future__ import annotations
@@ -33,13 +39,27 @@ from fr_mcp.client import FieldRoutesError
 
 from . import arcgis as ag
 from . import fr_push as push
+from . import myhd
 from . import pipeline as pl
+from . import sheet
 from .reports import PoliteFetcher
 
 DEFAULT_LOOKBACK_DAYS = 45
 DEFAULT_BACKFILL_DAYS = 180
+ALL_COUNTIES = ("sacramento", "placer", "yolo")
+_MYHD_CONFIGS = {"placer": myhd.PLACER, "yolo": myhd.YOLO}
+
+
 def _cache_dir() -> Path:
     return Path(os.environ.get("LEADS_PDF_CACHE_DIR", "./leads_cache/pdf"))
+
+
+def _parse_counties(raw: str) -> tuple[str, ...]:
+    wanted = tuple(c.strip().lower() for c in raw.split(",") if c.strip())
+    unknown = sorted(set(wanted) - set(ALL_COUNTIES))
+    if unknown:
+        raise SystemExit(f"unknown --counties value(s) {unknown} -- choose from {ALL_COUNTIES}")
+    return wanted or ALL_COUNTIES
 
 
 def _print(obj: object) -> None:
@@ -49,6 +69,7 @@ def _print(obj: object) -> None:
 def _candidate_row(c: pl.LeadCandidate) -> dict:
     return {
         "facilityId": c.facility_id,
+        "county": c.county,
         "name": c.name,
         "address": ", ".join(p for p in (c.street, c.city, c.zip5) if p),
         "lane": c.lane,
@@ -81,27 +102,62 @@ async def _build(
     facilities: dict[str, ag.Facility], *, today: date, fetch_pdfs: bool
 ) -> list[pl.LeadCandidate]:
     if not fetch_pdfs:
-        return pl.rank(await pl.build_candidates(facilities, today=today, fetcher=None))
+        return await pl.build_candidates(facilities, today=today, fetcher=None)
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         fetcher = PoliteFetcher(_cache_dir(), http_client)
-        candidates = await pl.build_candidates(facilities, today=today, fetcher=fetcher)
+        return await pl.build_candidates(facilities, today=today, fetcher=fetcher)
+
+
+async def _pull_placer_yolo(
+    *, since_days: int, today: date, fetch_pdfs: bool, counties: tuple[str, ...]
+) -> list[pl.LeadCandidate]:
+    """Placer and Yolo share one PortalCircuit (and, for Yolo, one PoliteFetcher)
+    so a block on either county's search stops the other's search and Yolo's PDF
+    fetches too for the rest of this run (plan section 8)."""
+    wanted = [c for c in ("placer", "yolo") if c in counties]
+    if not wanted:
+        return []
+    circuit = myhd.PortalCircuit()
+    out: list[pl.LeadCandidate] = []
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        fetcher = PoliteFetcher(_cache_dir(), client) if fetch_pdfs else None
+        for name in wanted:
+            out.extend(
+                await myhd.pull_and_build(
+                    client, _MYHD_CONFIGS[name], circuit, lookback_days=since_days, today=today, fetcher=fetcher
+                )
+            )
+    return out
+
+
+async def _build_all(*, since_days: int, today: date, fetch_pdfs: bool, counties: tuple[str, ...]) -> list[pl.LeadCandidate]:
+    candidates: list[pl.LeadCandidate] = []
+    if "sacramento" in counties:
+        facilities = await _pull_facilities(since_days=since_days, today=today)
+        candidates.extend(await _build(facilities, today=today, fetch_pdfs=fetch_pdfs))
+    candidates.extend(await _pull_placer_yolo(since_days=since_days, today=today, fetch_pdfs=fetch_pdfs, counties=counties))
     return pl.rank(candidates)
 
 
 async def cmd_preview(args: argparse.Namespace) -> int:
     today = date.today()
-    facilities = await _pull_facilities(since_days=args.since_days, today=today)
-    candidates = await _build(facilities, today=today, fetch_pdfs=not args.no_fetch)
+    counties = _parse_counties(args.counties)
+    candidates = await _build_all(since_days=args.since_days, today=today, fetch_pdfs=not args.no_fetch, counties=counties)
     shown = [c for c in candidates if c.lane != pl.LANE_CHAIN][: args.top]
     for c in shown:
         _print(_candidate_row(c))
     _print(
         {
             "summary": True,
+            "counties": list(counties),
             "totalCandidates": len(candidates),
             "event": sum(1 for c in candidates if c.lane == pl.LANE_EVENT),
             "territory": sum(1 for c in candidates if c.lane == pl.LANE_TERRITORY),
             "parkedChains": sum(1 for c in candidates if c.lane == pl.LANE_CHAIN),
+            "byCounty": {
+                county: sum(1 for c in candidates if c.county == county)
+                for county in sorted({c.county for c in candidates})
+            },
             "shown": len(shown),
         }
     )
@@ -110,10 +166,30 @@ async def cmd_preview(args: argparse.Namespace) -> int:
 
 async def cmd_run(args: argparse.Namespace) -> int:
     today = date.today()
-    facilities = await _pull_facilities(since_days=args.since_days, today=today)
-    candidates = await _build(facilities, today=today, fetch_pdfs=True)
+    counties = _parse_counties(args.counties)
+    candidates = await _build_all(since_days=args.since_days, today=today, fetch_pdfs=True, counties=counties)
     if args.limit:
         candidates = candidates[: args.limit]
+
+    if args.destination == "sheet":
+        backend = sheet.open_backend()
+        result = sheet.sync_leads(backend, candidates, today=today, dry_run=args.dry_run)
+        _print(
+            {
+                "summary": True,
+                "destination": "sheet",
+                "dryRun": args.dry_run,
+                "added": result.added,
+                "flagged": result.flagged,
+                "skippedDnc": result.skipped_dnc,
+                "skippedCap": result.skipped_cap,
+                "skippedDuplicate": result.skipped_duplicate,
+                "skippedNoChange": result.skipped_no_change,
+                "errors": result.errors,
+            }
+        )
+        return 1 if result.errors and result.added == 0 and result.flagged == 0 else 0
+
     summary = await push.push_run(candidates, today=today, dry_run=args.dry_run)
     for r in summary.results:
         _print(
@@ -129,6 +205,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
     _print(
         {
             "summary": True,
+            "destination": "fieldroutes",
             "dryRun": args.dry_run,
             "created": summary.created,
             "retouched": summary.retouched,
@@ -166,20 +243,28 @@ async def cmd_push(args: argparse.Namespace) -> int:
 
 
 def _add_common_pull_args(p: argparse.ArgumentParser, default_days: int) -> None:
-    p.add_argument("--since-days", type=int, default=default_days, help="how far back to pull the county feed")
+    p.add_argument("--since-days", type=int, default=default_days, help="how far back to pull the county feed(s)")
+    p.add_argument(
+        "--counties", default=",".join(ALL_COUNTIES), help="comma-separated subset of sacramento,placer,yolo (default: all)"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="fr-leads", description="Sacramento County inspection lead scraper")
+    parser = argparse.ArgumentParser(prog="fr-leads", description="Sacramento/Placer/Yolo commercial pest lead scraper")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_run = sub.add_parser("run", help="pull, score, dedupe, and push into FieldRoutes")
+    p_run = sub.add_parser("run", help="pull, score, dedupe, and push into the destination")
     _add_common_pull_args(p_run, DEFAULT_LOOKBACK_DAYS)
-    p_run.add_argument("--dry-run", action="store_true", help="do every read but make zero FieldRoutes writes")
+    p_run.add_argument(
+        "--destination", choices=("sheet", "fieldroutes"), default="sheet",
+        help="sheet (default, plan section 5): the Google Sheet is the system of record for prospects. "
+        "fieldroutes: push straight into FieldRoutes as a lead, the old phase-1 behaviour.",
+    )
+    p_run.add_argument("--dry-run", action="store_true", help="do every read but make zero writes to the destination")
     p_run.add_argument("--limit", type=int, default=None, help="only consider the top N ranked candidates")
     p_run.set_defaults(func=cmd_run)
 
-    p_preview = sub.add_parser("preview", help="score without touching FieldRoutes at all")
+    p_preview = sub.add_parser("preview", help="score without writing to either destination")
     _add_common_pull_args(p_preview, DEFAULT_BACKFILL_DAYS)
     p_preview.add_argument("--top", type=int, default=20)
     p_preview.add_argument("--no-fetch", action="store_true", help="skip PDF fetches; score vermin hits as unclassified")

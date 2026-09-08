@@ -8,7 +8,7 @@
 - **Priority 1 is large food processing and storage facilities; priority 2 is one-time exclusion jobs at restaurants.** Processors are not in county inspection data at all (they are state licensed), so they need their own source from day one: ZoomInfo and the USDA meat and poultry establishment directory, both covered in section 6.3.
 - **Sources in order: county inspections, then ZoomInfo when that runs dry.** The supply maths in section 7.4 says "dry" arrives in about six weeks, so the ZoomInfo pull is scheduled for week three rather than left open.
 
-Status: planning document. Phase 1 code (Sacramento feed, scoring, PDF classification, FieldRoutes push) exists on this branch and is tested; nothing in revision 2 has been built yet. Anything not verified is marked **unverified** and appears in the validation checklist (section 11).
+Status: phase B code complete (2026-09-08), not yet live-validated end to end. Phase 1/A (Sacramento feed, scoring, PDF classification, FieldRoutes push) exists on this branch and is tested. Phase B (`myhd.py`: Placer/Yolo portal adapter; `sheet.py`: the Google Sheet destination) is also built and tested (387 tests), and the portal wire format is confirmed live (`fr-leads preview --counties placer,yolo`, 2026-09-08, clean 200/JSON, a real facility scored correctly). Still open: the sheet itself has no live credential wired up anywhere yet (`LEADS_SHEET_ID` / `GOOGLE_SERVICE_ACCOUNT_JSON`), so validation checklist items 1-7 (section 11) are unrun; phases C (contacts/enrichment) and D (processor list) are design only, not built. Anything not verified is marked **unverified** and appears in the validation checklist (section 11).
 
 ## 1. Summary and recommendation
 
