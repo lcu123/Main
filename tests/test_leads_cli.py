@@ -5,6 +5,7 @@ cmd_preview/cmd_push) are exercised live via `fr-leads preview`, not here."""
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from fr_mcp.leads import cli
 
@@ -22,16 +23,11 @@ def test_parse_counties_rejects_unknown_values():
         cli._parse_counties("sacramento,tahoe")
 
 
-def _candidate(key: str, pushable: bool = True):
-    class _C:
-        customer_link = key
-        pass_ = pushable
-
-        @property
-        def pushable(self):
-            return self.pass_
-
-    return _C()
+def _candidate(key: str, pushable: bool = True) -> SimpleNamespace:
+    """_worth_enriching only reads these two attributes, so a real LeadCandidate
+    (which needs a score, a classification and a dozen other fields) is more
+    setup than the behaviour under test deserves."""
+    return SimpleNamespace(customer_link=key, pushable=pushable)
 
 
 def test_enrichment_skips_candidates_the_row_cap_will_discard():
