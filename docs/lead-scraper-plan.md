@@ -317,9 +317,17 @@ At the rates above the county lists are worked through in about six weeks. That 
 
 Rows worked, replies, connects, audits booked, audits won (split recurring and one-time). The Runs tab and the status column carry all of it; a pivot on the sheet is enough until the CRM move.
 
-### 7.6 Email deliverability and compliance
+### 7.6 Email setup, deliverability and compliance (decided 2026-09-08: personalised one-to-one emails, not bulk sequences)
 
-Send cold email from a separate domain, not the main company domain, with SPF, DKIM and DMARC set up and two to three weeks of warm-up before volume; keep each mailbox under a modest daily send; include a physical address and a working opt-out line; suppress anyone who opts out or lands on the DNC tab. A sequencing tool (HubSpot sequences, Apollo, Instantly or Smartlead; owner's choice) handles warm-up, cadences and reply detection better than a sheet will. Calls are business-to-business and manually dialled; no auto-texting to cell numbers.
+The reps write each email by hand, one prospect at a time, at a few dozen a day. That is ordinary business correspondence, not bulk mail, so the heavy cold-email infrastructure (separate sending domain, warm-up services, a sequencer) is not needed on day one. What is needed:
+
+- **One mailbox per rep on the company's own domain** (Google Workspace, e.g. firstname@zestlawnpest.com), not the shared main business inbox. Replies must land with the person who wrote, the main inbox must stay clean for quotes and customers, and a shared inbox makes it impossible to tell who owns a thread. If the business email is a consumer @gmail.com address, move to Workspace on the company domain first; cold outreach from @gmail.com reads as spam and has lower send limits.
+- **Authentication on the domain** (SPF, DKIM, DMARC), which most Workspace domains already have; confirm rather than assume.
+- **Volume discipline**: new mailboxes ramp over two weeks; stay well under Workspace's daily limits; a bounce or spam complaint is a signal to slow down, not push through.
+- **Every email**: a real signature with the company's physical address and phone, a plain opt-out sentence, and the DNC tab updated the same day anyone asks not to be contacted.
+- **Reply tracking**: a Gmail label per rep plus the sheet's status column is enough at this volume. A shared alias (e.g. commercial@) in CC gives the owner visibility without owning the thread.
+
+If the reps later move to automated multi-touch sequences, revisit this: a separate sending domain and a sequencing tool become worth it at that point (section 7.7). Calls are business-to-business and manually dialled; no auto-texting to cell numbers.
 
 ### 7.7 When the sheet stops being enough
 
@@ -392,7 +400,7 @@ Phases B, C and D can overlap; C and D are where the BDRs' week-one and week-thr
 2. **Sheet name or link**, or I create one and share it.
 3. **Cite the county finding in outreach?** Default: no; use it for timing and priority only.
 4. **Email-finder vendor and monthly credit budget** (Apollo, Hunter, or none for now). Default: none until step 9 shows the gap.
-5. **Sending domain and sequencing tool** for cold email. Default: a new domain plus whichever sequencer the reps already know.
+5. **Rep mailboxes**: one Workspace mailbox per rep on the company domain (default), and confirm the main business email is a Workspace domain address rather than @gmail.com. No separate sending domain or sequencer while emails are written one-to-one.
 6. **Woodland for processors only?** Default: yes.
 7. **ZoomInfo processor criteria**: industries and the employee-count floor. Default: food production and manufacturing, grocery wholesale, refrigerated warehousing; 20 employees and up.
 8. **New rows per run cap.** Default: 40 across lanes so the first week isn't a wall of rows.
