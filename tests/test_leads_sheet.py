@@ -269,6 +269,17 @@ def test_reorder_moves_the_values_with_their_columns():
     assert row["key"] == "K1"
 
 
+def test_reorder_renames_a_column_and_carries_the_reps_values_across():
+    backend = sheet.FakeSheetBackend()
+    backend.ensure_tab(sheet.LEADS_TAB, ["key", "facility", "phone", "next step date"])
+    backend.append_rows(sheet.LEADS_TAB, [{"key": "K1", "next step date": "2026-09-15"}])
+    result = sheet.reorder_leads_tab(backend, sheet.DIALER_COLUMNS, {"next step date": "followup date"})
+    header = backend.header(sheet.LEADS_TAB)
+    assert "followup date" in header and "next step date" not in header
+    assert backend.read_rows(sheet.LEADS_TAB)[0]["followup date"] == "2026-09-15"
+    assert result["renamed"] == {"next step date": "followup date"}
+
+
 def test_reorder_is_idempotent():
     backend = sheet.FakeSheetBackend()
     backend.ensure_tab(sheet.LEADS_TAB, sheet.LEADS_COLUMNS)

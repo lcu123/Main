@@ -56,9 +56,13 @@ TOOL_COLUMNS = [
 # columns around; GspreadBackend looks positions up by name on every write), and
 # any column the reps add that isn't listed here is simply never written.
 REP_COLUMNS = [
-    "rep", "status", "last touch date", "next step date", "touch count", "notes",
+    "rep", "status", "last touch date", "followup date", "touch count", "notes",
     "followup", "inspection date", "outcome", "FieldRoutes customer ID",
 ]
+
+# Columns renamed after rows already existed. `reorder_leads_tab` carries the old
+# column's values across, so a rep's entries survive the rename.
+COLUMN_RENAMES = {"next step date": "followup date"}
 
 # Display order, which is a different question from ownership above. A rep on the
 # phone reads left to right and should never scroll to dial: who am I calling,
@@ -66,7 +70,7 @@ REP_COLUMNS = [
 # they need only once the call connects (the pest evidence, the address, the
 # score) sits to the right of that. Ownership still governs what may be written:
 # `notes` and `followup` are the rep's, and the tool never touches them.
-DIALER_COLUMNS = ["facility", "phone", "notes", "followup"]
+DIALER_COLUMNS = ["facility", "phone", "notes", "followup", "followup date"]
 _REMAINING = [c for c in TOOL_COLUMNS + REP_COLUMNS if c not in DIALER_COLUMNS]
 LEADS_COLUMNS = DIALER_COLUMNS + [
     # Kept adjacent to the primary number: the fallback line and the warning that
@@ -466,18 +470,25 @@ def plan_reorder(header: list[str], wanted: list[str]) -> list[str]:
     return [c for c in out if c in set(header) | set(wanted)]
 
 
-def reorder_leads_tab(backend: SheetBackend, wanted: list[str] | None = None) -> dict[str, Any]:
+def reorder_leads_tab(
+    backend: SheetBackend, wanted: list[str] | None = None, renames: dict[str, str] | None = None
+) -> dict[str, Any]:
     """Rewrite the Leads tab with its columns in `wanted` order, carrying every
-    row's values with them. Returns what changed, for the caller to report."""
+    row's values with them. `renames` maps an old column name to its new one and
+    moves the values too, so renaming a column a rep has been filling in does not
+    throw their entries away. Returns what changed, for the caller to report."""
     wanted = wanted or LEADS_COLUMNS
+    renames = COLUMN_RENAMES if renames is None else renames
     header = backend.header(LEADS_TAB)
     if not header:
         return {"reordered": False, "reason": "no header"}
+    header = [renames.get(c, c) for c in header]
+    rows = [{renames.get(k, k): v for k, v in row.items()} for row in backend.read_rows(LEADS_TAB)]
     new_header = plan_reorder(header, wanted)
-    rows = backend.read_rows(LEADS_TAB)
     backend.rewrite_tab(LEADS_TAB, new_header, rows)
     return {
-        "reordered": new_header != header,
+        "reordered": new_header != backend.header(LEADS_TAB) or new_header != header,
+        "renamed": {k: v for k, v in renames.items() if v in new_header},
         "rows": len(rows),
         "duplicatesDropped": len(header) - len(set(header)),
         "added": [c for c in new_header if c not in header],
