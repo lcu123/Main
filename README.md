@@ -175,6 +175,8 @@ Every subcommand prints one JSON line per candidate/decision, then a summary lin
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | The service account key file's JSON, pasted inline (Railway's variables UI has no separate secret-file mechanism). Never paste this into chat -- add it directly in Railway's dashboard, or hand it to Claude for a single, not-echoed-back `set-variables` call. |
 | `GOOGLE_SERVICE_ACCOUNT_JSON_PATH` | Alternative to the above for local/dev use: a path to the key file on disk. |
 | `LEADS_SHEET_NEW_ROW_CAP` | New rows per run across all lanes (default 40, plan section 13). |
+| `LEADS_PLACES_MAX_CALLS` | Hard ceiling on Google Places lookups per run (default 50). Places is the only billed source in the pipeline; a row is looked up once, not every morning. |
+| `LEADS_PLACES_API_KEY` | Optional. An existing Maps Platform key; without it Places authenticates as the same service account the sheet writer uses, so there is no second credential to store. |
 | `LEADS_SOURCE_ID` | Customer source ID for FieldRoutes-created leads (create it in Admin → Preferences → Customer Sources first; `lookups(kind="customer_sources")` lists IDs). Only needed for `--destination fieldroutes` or `push`. |
 | `LEADS_TASK_CATEGORY_ID` | Task Category for FieldRoutes-destination tasks. Falls back to `FR_DEFAULT_TASK_CATEGORY_ID`. |
 | `LEADS_NOTE_TYPE_ID` | Note Type for FieldRoutes-destination notes. Falls back to `FR_DEFAULT_NOTE_TYPE_ID`. |
