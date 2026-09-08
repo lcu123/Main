@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 import leads_fixtures as fx
-from fr_mcp.leads.reports import PoliteFetcher, parse_header, parse_report
+from fr_mcp.leads.reports import PoliteFetcher, parse_header, parse_report, parse_yolo_header
 
 
 def test_natomas_header_owner_entity_and_phone():
@@ -46,6 +46,22 @@ def test_parse_report_combines_header_and_classification():
     assert r.header.facility_id == "FA0044262"
     assert r.classification.label == "rodent"
     assert r.text == fx.NATOMAS
+
+
+# --- Yolo header (different template from Sacramento's) ----------------
+
+
+def test_yolo_header_parses_facility_id_email_and_owner():
+    h = parse_yolo_header(fx.YOLO_AMPM)
+    assert h.facility_id == "FA0002270"
+    assert h.permit_id == "PR0022221"
+    assert h.owner == "AM/PM MINI MARKET #5731- FOOD"
+    assert h.email == "reedaveampm@gmail.com"
+    assert h.phone is None  # blank in the real report
+
+
+def test_yolo_header_returns_none_without_a_facility_id():
+    assert parse_yolo_header("no header here at all") is None
 
 
 # --- PoliteFetcher -----------------------------------------------------

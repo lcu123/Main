@@ -34,3 +34,20 @@ FOOD4LESS = "Entered Date08/24/2026\nPag1\nHeader\nRetail Food Facility\nOwners 
 # BUD'S BUFFET, 2026-07-29: no VERMIN section at all (hot/cold holding, handwashing,
 # etc.) -- the "no signal" / person-owner header case.
 BUDS_NO_VERMIN = "Entered Date07/29/2026\nPag1\nHeader\nRetail Food Facility\nOwners NameHAROON KHANEst NameBUD'S BUFFET\nCitySacramentoAddress1016 10th St Zip95814 Phone(510) 376-3395\nFAFA0001006 Permit IDPR160370 PurposeINSPECTION\nProg Identifier- PE: 1622 CT: 11.03\nIteration Violation7.HOT AND COLD HOLDING TEMPERATURES\nObservations: Grilled chicken at 117F. Voluntarily discarded at time of inspection. \nCode Description: Potentially hazardous foods shall be maintained at or below 41F or at or above 135F.\n1b.FOOD SAFETY CERTIFICATION\nObservations: Facility lacks an employee with a valid food manager certificate."
+
+# AM/PM MINI MARKET #5731, West Sacramento, 2026-07-08 (Yolo County's own report
+# template -- different layout from Sacramento's, no per-violation VERMIN block, a
+# single page). Extracted live via pypdf from the real cached report, 2026-09-08 --
+# confirms the facility-ID label is a single "Facility ID", not doubled the way
+# Sacramento's "FAFA..." is, and that the PIC email repeats as a fallback source.
+YOLO_AMPM = (
+    "Total \nMAJ1\nCategoryRisk Category 2\nEstablishment NameAM/PM MINI MARKET #5731- FOOD "
+    "Time Out09:15 AM Date07/08/2026Time In09:00 AM\nEstablishment CityWEST SACRAMENTO "
+    "Establishment ZipCAEstablishment Address805 REED AVE\nPermit HolderAM/PM MINI MARKET "
+    "#5731- FOOD Email addressreedaveampm@gmail.com Phone\nFacility IDFA0002270 PR IDPR0022221 "
+    "Follow-up\nNotesCOMMENTS:\nThis is a follow up to the routine inspection conducted on "
+    "7/7/26. The following has been corrected: \nThe ice machine is observed clean. Facility is "
+    "okay to package ice for sale.\nReinspection Date On or After\nEnvironmental Health "
+    "Specialist Emailboua.ly@yolocounty.govEnvironmental Health SpecialistBoua Ly\nPIC "
+    "Sign\nPIC Emailreedaveampm@gmail.comAccepted By:"
+)
