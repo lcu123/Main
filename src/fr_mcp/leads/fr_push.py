@@ -140,8 +140,8 @@ def build_customer_params(candidate: LeadCandidate) -> dict[str, Any]:
     if candidate.lat is not None and candidate.lng is not None:
         params["lat"] = candidate.lat
         params["lng"] = candidate.lng
-    if header and header.phone:
-        params["phone1"] = header.phone
+    if candidate.best_phone:
+        params["phone1"] = candidate.best_phone
     if candidate.email:
         params["email"] = candidate.email
     if spouse:
@@ -237,7 +237,7 @@ async def find_existing_customer(candidate: LeadCandidate) -> dict[str, Any] | N
         )
         if rows:
             return rows[0]
-    phone = candidate.header.phone if candidate.header else None
+    phone = candidate.best_phone
     if phone and len(phone) == 10:
         rows = await server._search_rows("customer", {"phone": phone})
         if rows:
@@ -312,8 +312,8 @@ async def create_lead(candidate: LeadCandidate, *, today: date, dry_run: bool) -
         "addedBy": server._default_employee(),
         "category": task_category_id(),
     }
-    if candidate.header and candidate.header.phone:
-        task_params["phone"] = candidate.header.phone
+    if candidate.best_phone:
+        task_params["phone"] = candidate.best_phone
     task_resp = await server.client().call("task", "create", task_params)
     return PushResult(
         candidate.facility_id,

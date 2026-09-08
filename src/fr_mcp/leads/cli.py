@@ -41,6 +41,7 @@ from . import arcgis as ag
 from . import fr_push as push
 from . import myhd
 from . import pipeline as pl
+from . import places
 from . import sheet
 from .reports import PoliteFetcher
 
@@ -139,6 +140,36 @@ async def _build_all(*, since_days: int, today: date, fetch_pdfs: bool, counties
     return pl.rank(candidates)
 
 
+async def _enrich_phones(candidates: list[pl.LeadCandidate]) -> dict:
+    """Fill the phone (and website/business status) on every pushable candidate
+    the county records left blank, cheapest-source-first: this only runs for rows
+    the report PDFs couldn't cover, which is all of Placer and Yolo plus the ~10%
+    of Sacramento whose header phone is empty. Ranked order, so a spent budget
+    costs the coldest leads rather than the hottest."""
+    needs = [c for c in candidates if c.pushable and not c.best_phone]
+    if not needs:
+        return {"attempted": 0, "matched": 0}
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        client = places.PlacesClient(http_client, places.service_account_token_provider())
+        for c in needs:
+            if client.blocked or client.budget_left <= 0:
+                break
+            hit = await client.lookup(name=c.name, street=c.street, city=c.city, zip5=c.zip5)
+            if hit is None:
+                continue
+            if hit.phone:
+                c.phone, c.phone_source = hit.phone, "google_places"
+            c.website = hit.website
+            c.business_status = hit.business_status
+    return {
+        "attempted": client.calls,
+        "matched": client.matched,
+        "addressMismatch": client.rejected,
+        "budgetLeft": client.budget_left,
+        "blocked": client.block_reason,
+    }
+
+
 async def cmd_preview(args: argparse.Namespace) -> int:
     today = date.today()
     counties = _parse_counties(args.counties)
@@ -171,6 +202,10 @@ async def cmd_run(args: argparse.Namespace) -> int:
     if args.limit:
         candidates = candidates[: args.limit]
 
+    enrichment = {"attempted": 0, "matched": 0}
+    if not args.no_places:
+        enrichment = await _enrich_phones(candidates)
+
     if args.destination == "sheet":
         backend = sheet.open_backend()
         result = sheet.sync_leads(backend, candidates, today=today, dry_run=args.dry_run)
@@ -182,6 +217,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
                 "added": result.added,
                 "flagged": result.flagged,
                 "enriched": result.enriched,
+                "places": enrichment,
                 "skippedDnc": result.skipped_dnc,
                 "skippedCap": result.skipped_cap,
                 "skippedDuplicate": result.skipped_duplicate,
@@ -262,6 +298,10 @@ def build_parser() -> argparse.ArgumentParser:
         "fieldroutes: push straight into FieldRoutes as a lead, the old phase-1 behaviour.",
     )
     p_run.add_argument("--dry-run", action="store_true", help="do every read but make zero writes to the destination")
+    p_run.add_argument(
+        "--no-places", action="store_true",
+        help="skip Google Places phone enrichment (it is the only billed source in the pipeline)",
+    )
     p_run.add_argument("--limit", type=int, default=None, help="only consider the top N ranked candidates")
     p_run.set_defaults(func=cmd_run)
 

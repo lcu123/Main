@@ -273,13 +273,13 @@ def _leads_row(candidate: LeadCandidate, *, today: date) -> dict[str, Any]:
         "signal count": 1 if candidate.signal else 0,
         "owner name": header.owner if header and header.owner else "",
         "owner type": _owner_type(header),
-        "phone": header.phone if header and header.phone else "",
-        "phone source": "report_pdf" if header and header.phone else "",
+        "phone": candidate.best_phone or "",
+        "phone source": candidate.best_phone_source or "",
         "email": candidate.email or "",
         "email source": candidate.email_source or "",
         "email confidence": "high" if candidate.email_source == "yolo_pdf" else "",
-        "website": "",
-        "business status": "",
+        "website": candidate.website or "",
+        "business status": candidate.business_status or "",
         "first seen": today.isoformat(),
         "last updated": today.isoformat(),
         "status": "new",
@@ -379,7 +379,7 @@ def _dnc_sets(rows: list[dict[str, str]]) -> tuple[set[str], set[str], set[str]]
 def _is_dnc(candidate: LeadCandidate, dnc_keys: set[str], dnc_phones: set[str], dnc_emails: set[str]) -> bool:
     if candidate.customer_link in dnc_keys:
         return True
-    if candidate.header and candidate.header.phone and candidate.header.phone in dnc_phones:
+    if candidate.best_phone and candidate.best_phone in dnc_phones:
         return True
     if candidate.email and candidate.email.strip().lower() in dnc_emails:
         return True

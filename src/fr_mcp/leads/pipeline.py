@@ -53,6 +53,27 @@ class LeadCandidate:
     # Placer leave this for phase C enrichment (Places/website/ZoomInfo/finder).
     email: str | None = None
     email_source: str | None = None
+    # Filled by places.py when the county records have no phone: Placer always,
+    # Yolo always, and the ~10% of Sacramento rows whose report header is blank.
+    phone: str | None = None
+    phone_source: str | None = None
+    website: str | None = None
+    business_status: str | None = None
+
+    @property
+    def best_phone(self) -> str | None:
+        """The report header's number when there is one, else whatever
+        enrichment found. Both destinations read this rather than reaching into
+        `header` -- a Placer or Yolo candidate has no header at all."""
+        if self.header and self.header.phone:
+            return self.header.phone
+        return self.phone
+
+    @property
+    def best_phone_source(self) -> str | None:
+        if self.header and self.header.phone:
+            return "report_pdf"
+        return self.phone_source if self.phone else None
 
     @property
     def pushable(self) -> bool:
