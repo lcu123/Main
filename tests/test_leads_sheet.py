@@ -138,6 +138,27 @@ def test_backfill_never_overwrites_a_contact_value_already_present():
     assert backend.read_rows(sheet.LEADS_TAB)[0]["phone"] == "9165559999"
 
 
+def test_every_row_update_in_a_run_goes_out_in_one_batched_call():
+    # Sheets allows 60 writes/minute/user; a cell-at-a-time loop 429'd partway
+    # through a 40-row backfill and left the sheet half-written.
+    class _CountingBackend(sheet.FakeSheetBackend):
+        batches = 0
+
+        def update_rows(self, tab, updates):
+            type(self).batches += 1
+            super().update_rows(tab, updates)
+
+    backend = _CountingBackend()
+    header = ReportHeader(owner="J DOE", is_entity=False, facility_id="F", permit_id="P", phone="9165550000")
+    candidates = [_event_candidate(facility_id=f"FA{i}", pkey=f"PK{i}") for i in range(5)]
+    sheet.sync_leads(backend, candidates, today=TODAY)
+    enriched = [_event_candidate(facility_id=f"FA{i}", pkey=f"PK{i}", header=header) for i in range(5)]
+    result = sheet.sync_leads(backend, enriched, today=date(2026, 9, 9))
+    assert result.enriched == 5
+    assert _CountingBackend.batches == 1  # five rows, one call
+    assert all(r["phone"] == "9165550000" for r in backend.read_rows(sheet.LEADS_TAB))
+
+
 class _DuplicateHeaderBackend(sheet.FakeSheetBackend):
     """A sheet whose Leads header repeats a tool-owned column, the way a rep
     copying a column in the real spreadsheet does."""

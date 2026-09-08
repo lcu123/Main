@@ -89,6 +89,13 @@ class SheetBackend(ABC):
         """Overwrite only the named columns in the data row at 0-based
         `row_index` (0 = the first row under the header)."""
 
+    def update_rows(self, tab: str, updates: list[tuple[int, dict[str, Any]]]) -> None:
+        """Apply many row updates at once. The default walks `update_row`, which
+        is fine in memory; a backend talking to a rate-limited API is expected to
+        override this with a single batched write (see GspreadBackend)."""
+        for row_index, values in updates:
+            self.update_row(tab, row_index, values)
+
 
 class FakeSheetBackend(SheetBackend):
     """In-memory stand-in for a real spreadsheet -- mirrors gspread's shape
@@ -177,15 +184,29 @@ class GspreadBackend(SheetBackend):
         ws.append_rows(values, value_input_option="USER_ENTERED")
 
     def update_row(self, tab: str, row_index: int, values: dict[str, Any]) -> None:
+        self.update_rows(tab, [(row_index, values)])
+
+    def update_rows(self, tab: str, updates: list[tuple[int, dict[str, Any]]]) -> None:
+        """One `batch_update` for every cell in every row. Sheets allows 60 write
+        requests per minute per user, and a cell-at-a-time loop blew straight
+        through that backfilling 40 rows (verified live 2026-09-08: HTTP 429 partway
+        through, leaving the sheet half-written)."""
         ws = self._worksheet(tab)
-        if ws is None or not values:
+        if ws is None or not updates:
             return
+        import gspread.utils
+
         header = ws.row_values(1)
-        sheet_row = row_index + 2  # +1 for the header row, +1 for 1-based indexing
-        for col_name, val in values.items():
-            if col_name not in header:
-                continue
-            ws.update_cell(sheet_row, header.index(col_name) + 1, val)
+        body = []
+        for row_index, values in updates:
+            sheet_row = row_index + 2  # +1 for the header row, +1 for 1-based indexing
+            for col_name, val in values.items():
+                if col_name not in header:
+                    continue
+                cell = gspread.utils.rowcol_to_a1(sheet_row, header.index(col_name) + 1)
+                body.append({"range": cell, "values": [[val]]})
+        if body:
+            ws.batch_update(body, value_input_option="USER_ENTERED")
 
 
 def open_backend() -> GspreadBackend:
@@ -465,8 +486,8 @@ def sync_leads(
     if not dry_run:
         if pending_appends:
             backend.append_rows(LEADS_TAB, pending_appends)
-        for idx, values in pending_updates:
-            backend.update_row(LEADS_TAB, idx, values)
+        if pending_updates:
+            backend.update_rows(LEADS_TAB, pending_updates)
         if pending_signals:
             backend.append_rows(SIGNALS_TAB, pending_signals)
         backend.append_rows(RUNS_TAB, [_run_row(result, today=today)])
