@@ -13,6 +13,7 @@ dependencies = [
     "mcp>=2.0,<3",
     "httpx>=0.27",
     "uvicorn>=0.30",
+    "pypdf>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,7 @@ dev = [
 
 [project.scripts]
 fr-mcp = "fr_mcp.server:main"
+fr-leads = "fr_mcp.leads.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fr_mcp"]

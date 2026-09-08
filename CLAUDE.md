@@ -49,6 +49,13 @@ requirements.lock          Pinned runtime deps; regenerate deliberately, see REA
 .github/workflows/ci.yml   pytest + a real `docker build`/`docker run`/`/healthz` smoke test on every push and PR
 .env.example               Every env var, commented
 README.md                  Deploy steps + first-run checklist (user-facing)
+docs/lead-scraper-plan.md  Design doc for the lead scraper below: data sources, scoring, FieldRoutes mapping, phases, validation checklist
+src/fr_mcp/leads/          Lead scraper (separate `fr-leads` CLI, not an MCP tool): arcgis.py (Sacramento feed + ICP mapping),
+                           classify.py (pest classification), score.py (pure scoring), regions.py (zip->region, distance),
+                           reports.py (PDF fetch/cache/parse), pipeline.py (pull+filter+score orchestration),
+                           fr_push.py (FieldRoutes dedupe + writes, reuses server.py's guards), cli.py (`fr-leads` entrypoint)
+tests/test_leads_*.py, tests/leads_*.py  Lead scraper tests + fixtures (real inspection-report text, a FakeFR
+                           subclass that persists writes -- see its docstring for why the shared `fake` fixture isn't enough)
 ```
 
 ## Tool inventory (server.py)
@@ -115,6 +122,20 @@ To smoke-test tools without credentials, inject `FieldRoutesClient(transport=htt
 3. Resolve IDs to names, include the property address, trim with `_pick`.
 4. If it writes: call `_require_writes(tool)`, then `_require_customer_allowed(tool, customer_id)` — either directly (if the tool already takes `customer_id`) or via `await _write_target_customer(entity, record_id)` if it only takes an existing record's ID. If it can cancel/charge/delete/freeze/overwrite Red Notes, say "confirm with the user" in the docstring.
 5. Add the tool to the README table, this file's inventory (and count), and `test_http_app_secret_path_healthz_and_bearer`'s expected tool count. Run `pytest`.
+
+## Lead scraper (fr-leads)
+
+A separate console script (`src/fr_mcp/leads/`, entry point `fr-leads`), not an MCP tool -- it never imports `server.py`'s `MCPServer`/tool registrations, so a cron run stays cheap and the MCP server stays unaware it exists. It reuses `server.py`'s write guards and client (`server.client()`, `_search_rows`, `_get_rows`, `_require_writes`, `_require_customer_allowed`, `_default_employee`/`_default_note_type`/`_default_task_category`) directly rather than a second copy of them, so `FR_WRITES`, `FR_WRITE_CUSTOMER_IDS`, and the daily quota apply to it exactly as they do to every curated tool.
+
+Full design lives in `docs/lead-scraper-plan.md` -- read it before touching this code, especially sections 3 (scoring), 5 (the exact FieldRoutes params) and 5.2 (dedupe). Phase 1 only: the Sacramento ArcGIS feed, no Placer/Yolo, no Places/ZoomInfo enrichment, no `lead_preview`/`lead_import` MCP tools yet.
+
+A few things worth knowing before changing this code:
+
+- **`customerLink = "SACEMD:<Facility_ID>"` is the dedupe key**, checked by exact match first, then an address+zip `CONTAINS` fallback, then an exact 10-digit phone match (`fr_push.find_existing_customer`). A hit found via the fallbacks gets `customerLink` backfilled via `customer/update`, but only when the existing value is empty (`fr_push._adopt_customer_link`) -- never overwrite one a human or an earlier run set.
+- **A lead is idempotent by inspection GUID, not by date.** `fr_push.already_noted` reads every note on the matched customer and looks for the signal's `pkey` inside the note text; that's what makes re-running the same day (or the whole cron re-running after a crash) safe with no local state at all. Territory-lane leads (no signal, no pKey) skip this entirely -- once created, a second run just sees the `customerLink` and does nothing (`push_candidate`'s `LANE_TERRITORY` branch).
+- **FieldRoutes returns every field as a string, even on create/write params you sent as ints** -- confirmed by `tests/leads_persistent_fake.py`'s `PersistentFakeFR`, which stores raw form values (all strings) the same way the real API's wire format does. Comparing a stored field against a bare Python `int`/`bool` in a test is the same bug CLAUDE.md warns about elsewhere in this file (`_int()`/never truth-test a raw field) -- it bit this code three times while it was being built (see the git history on `fr_push.py`/`classify.py`/`arcgis.py` if you want the specifics): a permit-type lookup key with a trailing space vs. a stripped one, a phone regex that matched the *inspector's* phone instead of the facility's because it searched the whole PDF instead of just the header block, and `has_open_task` filtering on `status == 0` (pending) alone, which missed Hot leads' tasks (created with `status 3`, urgent) and would have stacked a duplicate task on every retouch.
+- **Which key a `create` response uses for the new row's ID is unverified live**, especially for `task` (this file already notes elsewhere that a note's own ID field is `noteID` on reads but `contactID` on writes -- the same kind of inconsistency is plausible for a freshly created task, whose *read* field is `taskIDs`, not `taskID`). `fr_push._extract_id` tries several plausible key spellings rather than assuming one; this is logged/state-only, never load-bearing for correctness (the write itself already succeeded by the time it's called).
+- **The territory lane's "park" score label doesn't mean "don't push."** `pipeline.LeadCandidate.pushable` treats the event lane and the territory lane differently on purpose: an event-lane candidate with no real pest signal legitimately shouldn't be pushed (tier "park"), but a territory-lane candidate has no pest signal *by definition* (it's an audit-offer prospect, not a complaint) and can still score under 30 purely from geography -- it stays pushable once it clears the `icp_fit >= 24` gate at build time. Getting this backwards silently drops most of the territory lane; see the docstring on `pushable` before changing the tier logic.
 
 ## Verified against the live Zest tenant (2026-09-03)
 
