@@ -82,6 +82,23 @@ def centroid_for_zip(zip5: str) -> tuple[float, float] | None:
     return ZIP_CENTROID.get(zip5.strip()[:5])
 
 
+# Area codes covering the three counties this pipeline works: 916 and its 279
+# overlay for Sacramento/Placer, 530 for the outlying north-state edges.
+LOCAL_AREA_CODES = frozenset({"916", "279", "530"})
+
+
+def is_local_number(phone: str | None) -> bool:
+    """A county-published number whose area code is from somewhere else is a
+    warning sign, not a curiosity. Audited live 2026-09-08 across 30 Sacramento
+    rows: every out-of-area number checked (3 of 3) disagreed with the business's
+    listed line, including a Long Island number on a Folsom restaurant and one
+    that turned out to be a digit-transposed local number. Roughly a quarter of
+    county numbers differ from the business line overall, and this is the cheap
+    half of that -- detectable with no API call at all."""
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    return len(digits) == 10 and digits[:3] in LOCAL_AREA_CODES
+
+
 def region_for_zip(zip5: str) -> tuple[int, str | None]:
     """(regionID, region name); regionID 0 and name None when the zip isn't mapped."""
     hit = ZIP_REGION.get(zip5.strip()[:5])

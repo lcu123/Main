@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from . import regions
 from .fr_push import ConfigError
 from .pipeline import LeadCandidate
 
@@ -43,7 +44,7 @@ TOOL_COLUMNS = [
     "pest", "evidence quote", "signal date", "signal result", "report link",
     "prior vermin flags (24 mo)", "new-signal flag", "signal count",
     "owner name", "owner type",
-    "phone", "phone source", "business phone",
+    "phone", "phone source", "business phone", "phone flag",
     "email", "email source", "email confidence",
     "website", "business status", "first seen", "last updated",
 ]
@@ -273,6 +274,15 @@ def open_backend() -> GspreadBackend:
 # --- row shaping ---------------------------------------------------------
 
 
+def _phone_flag(candidate: LeadCandidate) -> str:
+    """Warn a rep off a county number that almost certainly is not the business.
+    Audited live: out-of-area county numbers were wrong in every case checked."""
+    phone = candidate.best_phone
+    if not phone or regions.is_local_number(phone):
+        return ""
+    return "out-of-area number -- use business phone" if candidate.business_phone else "out-of-area number -- verify"
+
+
 def _owner_type(header: Any) -> str:
     if not header or not header.owner:
         return ""
@@ -311,6 +321,7 @@ def _leads_row(candidate: LeadCandidate, *, today: date) -> dict[str, Any]:
         "phone": candidate.best_phone or "",
         "phone source": candidate.best_phone_source or "",
         "business phone": candidate.business_phone or "",
+        "phone flag": _phone_flag(candidate),
         "email": candidate.email or "",
         "email source": candidate.email_source or "",
         "email confidence": "high" if candidate.email_source == "yolo_pdf" else "",
@@ -344,7 +355,7 @@ def _evidence_update(candidate: LeadCandidate, *, existing_signal_count: str, to
 
 
 CONTACT_COLUMNS = (
-    "owner name", "owner type", "phone", "phone source", "business phone",
+    "owner name", "owner type", "phone", "phone source", "business phone", "phone flag",
     "email", "email source", "email confidence", "website", "business status",
 )
 

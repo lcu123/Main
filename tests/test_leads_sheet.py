@@ -208,6 +208,36 @@ def test_the_county_phone_is_kept_when_places_supplies_a_business_number():
     assert row["business phone"] == "9164445555"
 
 
+def _with_county_phone(number: str, business_phone: str | None = None) -> LeadCandidate:
+    header = ReportHeader(owner="J DOE", is_entity=False, facility_id="F", permit_id="P", phone=number)
+    c = _event_candidate(header=header)
+    c.business_phone = business_phone
+    return c
+
+
+def test_an_out_of_area_county_number_is_flagged_for_the_rep():
+    # Audited live: every out-of-area county number checked was not the business's
+    # line (a Long Island number on a Folsom restaurant, a transposed area code).
+    backend = sheet.FakeSheetBackend()
+    sheet.sync_leads(backend, [_with_county_phone("5165671898", "9167908152")], today=TODAY)
+    row = backend.read_rows(sheet.LEADS_TAB)[0]
+    assert row["phone"] == "5165671898"  # kept, not discarded
+    assert row["business phone"] == "9167908152"
+    assert row["phone flag"] == "out-of-area number -- use business phone"
+
+
+def test_an_out_of_area_number_with_no_alternative_says_verify():
+    backend = sheet.FakeSheetBackend()
+    sheet.sync_leads(backend, [_with_county_phone("4258009999")], today=TODAY)
+    assert backend.read_rows(sheet.LEADS_TAB)[0]["phone flag"] == "out-of-area number -- verify"
+
+
+def test_a_local_number_is_not_flagged():
+    backend = sheet.FakeSheetBackend()
+    sheet.sync_leads(backend, [_with_county_phone("9164161664", "9163492951")], today=TODAY)
+    assert backend.read_rows(sheet.LEADS_TAB)[0]["phone flag"] == ""
+
+
 def test_keys_with_business_phone_reports_only_rows_already_enriched():
     backend = sheet.FakeSheetBackend()
     c1, c2 = _event_candidate(facility_id="FA1", pkey="P1"), _event_candidate(facility_id="FA2", pkey="P2")
