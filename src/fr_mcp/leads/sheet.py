@@ -323,9 +323,15 @@ def open_backend() -> GspreadBackend:
 
 def _phone_flag(candidate: LeadCandidate) -> str:
     """Warn a rep off a county number that almost certainly is not the business.
-    Audited live: out-of-area county numbers were wrong in every case checked."""
+    Audited live: out-of-area county numbers were wrong in every case checked.
+
+    Unless Places lists the very same number, which settles it -- a business can
+    legitimately publish an out-of-area line, and four rows in the first live
+    backfill did. Flagging those would train reps to ignore the column."""
     phone = candidate.best_phone
     if not phone or regions.is_local_number(phone):
+        return ""
+    if candidate.business_phone == phone:
         return ""
     return "out-of-area number -- use business phone" if candidate.business_phone else "out-of-area number -- verify"
 

@@ -232,6 +232,14 @@ def test_an_out_of_area_number_with_no_alternative_says_verify():
     assert backend.read_rows(sheet.LEADS_TAB)[0]["phone flag"] == "out-of-area number -- verify"
 
 
+def test_an_out_of_area_number_places_confirms_is_not_flagged():
+    # A business may legitimately publish an out-of-area line; four rows in the
+    # first live backfill did. Flagging those teaches reps to ignore the column.
+    backend = sheet.FakeSheetBackend()
+    sheet.sync_leads(backend, [_with_county_phone("8318564132", "8318564132")], today=TODAY)
+    assert backend.read_rows(sheet.LEADS_TAB)[0]["phone flag"] == ""
+
+
 def test_a_local_number_is_not_flagged():
     backend = sheet.FakeSheetBackend()
     sheet.sync_leads(backend, [_with_county_phone("9164161664", "9163492951")], today=TODAY)
