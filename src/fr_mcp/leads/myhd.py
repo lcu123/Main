@@ -42,11 +42,26 @@ SEARCH_URL = "https://inspections.myhealthdepartment.com/"
 PAGE_SIZE = 25  # the portal's own cap (plan 2.6): a larger `count` is silently ignored
 MIN_INTERVAL_SECONDS = 2.0
 MAX_PAGES = 300  # circuit breaker on a runaway date window -- 7,500 rows, well past a 180-day backfill
+# The portal will not page past this many rows for one date range, so a range has
+# to be sliced small enough to fit under it or its tail is simply unreachable.
+# Placer runs ~20 inspections a working day across all programs, so a week is
+# ~100 rows -- comfortable headroom, and small enough that Yolo's lighter volume
+# costs only one request per slice.
+MAX_ROWS_PER_WINDOW = 225
+WINDOW_DAYS = 7
 
 
 class PortalError(RuntimeError):
     """The portal blocked us (403, captcha redirect, non-JSON) or answered with
     something that doesn't look like a searchInspections response."""
+
+
+class PortalPaginationLimit(PortalError):
+    """The portal refused to page any deeper into this date window -- it answers
+    `{"err": true, "msg": "bad request"}` with an HTTP 200 once `start` reaches
+    MAX_ROWS_PER_WINDOW (verified live 2026-09-08: Placer serves start=200 and
+    refuses start=225). That is a limit on the window, not a block on us, so it
+    ends the current window's paging and nothing more."""
 
 
 @dataclass(frozen=True)
@@ -149,37 +164,56 @@ async def search_page(
         data = resp.json()
     except ValueError as exc:
         raise PortalError(f"{config.key} portal returned a non-JSON response (captcha page?)") from exc
+    if isinstance(data, dict) and data.get("err"):
+        raise PortalPaginationLimit(f"{config.key} portal refused start={start}: {data.get('msg')}")
     if not isinstance(data, list):
         raise PortalError(f"{config.key} portal returned an unexpected shape: {type(data).__name__}")
     return data
 
 
+def _windows(date_from: date, date_to: date, days: int = WINDOW_DAYS) -> list[tuple[date, date]]:
+    """Non-overlapping slices of at most `days`, so each search stays under the
+    portal's MAX_ROWS_PER_WINDOW paging limit. Asking for a 180-day range in one
+    go silently loses everything past row 225."""
+    out: list[tuple[date, date]] = []
+    start = date_from
+    while start <= date_to:
+        end = min(start + timedelta(days=days - 1), date_to)
+        out.append((start, end))
+        start = end + timedelta(days=1)
+    return out
+
+
 async def search_county(
     client: httpx.AsyncClient, config: CountyConfig, circuit: PortalCircuit, *, date_from: date, date_to: date
 ) -> list[dict[str, Any]]:
-    """Pages the whole date window at the portal's 25-row cap with a politeness gap,
-    tripping `circuit` (rather than raising) the moment a page fails -- so a block on
-    Placer still lets a caller record the run and move on, and a block on either
-    county stops Yolo's PDF fetches too (both share `circuit`)."""
+    """Pages every slice of the date window at the portal's 25-row cap with a
+    politeness gap. A genuine block (403, captcha, garbage) trips `circuit` and
+    stops the run's portal traffic everywhere; the portal simply refusing to page
+    deeper into one slice does not -- that used to trip the circuit during Placer's
+    backfill and starve Yolo of even a single request."""
     if circuit.blocked:
         return []
     rows: list[dict[str, Any]] = []
-    start = 0
     last_fetch = 0.0
-    for _ in range(MAX_PAGES):
-        wait = MIN_INTERVAL_SECONDS - (time.monotonic() - last_fetch)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        last_fetch = time.monotonic()
-        try:
-            page = await search_page(client, config, date_from=date_from, date_to=date_to, start=start)
-        except PortalError as exc:
-            circuit.trip(str(exc))
-            break
-        rows.extend(page)
-        if len(page) < PAGE_SIZE:
-            break
-        start += PAGE_SIZE
+    for window_from, window_to in _windows(date_from, date_to):
+        start = 0
+        for _ in range(MAX_PAGES):
+            wait = MIN_INTERVAL_SECONDS - (time.monotonic() - last_fetch)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            last_fetch = time.monotonic()
+            try:
+                page = await search_page(client, config, date_from=window_from, date_to=window_to, start=start)
+            except PortalPaginationLimit:
+                break  # this slice is exhausted; the next one is still worth asking for
+            except PortalError as exc:
+                circuit.trip(str(exc))
+                return rows
+            rows.extend(page)
+            if len(page) < PAGE_SIZE:
+                break
+            start += PAGE_SIZE
     return rows
 
 

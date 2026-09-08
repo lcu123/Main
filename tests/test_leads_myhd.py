@@ -330,9 +330,46 @@ async def test_search_county_pages_until_a_short_page(monkeypatch):
     handler = _paged_handler([full_page, short_page])
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         circuit = myhd.PortalCircuit()
-        rows = await myhd.search_county(client, myhd.PLACER, circuit, date_from=date(2026, 8, 1), date_to=date(2026, 9, 8))
+        # One window's worth of days, so this exercises paging alone; slicing a
+        # longer range across windows is covered separately.
+        rows = await myhd.search_county(client, myhd.PLACER, circuit, date_from=date(2026, 9, 2), date_to=date(2026, 9, 8))
     assert len(rows) == myhd.PAGE_SIZE + 1
     assert circuit.blocked is False
+
+
+def test_windows_slices_a_long_range_and_never_overlaps():
+    wins = myhd._windows(date(2026, 1, 1), date(2026, 1, 20), days=7)
+    assert wins == [
+        (date(2026, 1, 1), date(2026, 1, 7)),
+        (date(2026, 1, 8), date(2026, 1, 14)),
+        (date(2026, 1, 15), date(2026, 1, 20)),  # trimmed to the requested end
+    ]
+    assert myhd._windows(date(2026, 1, 1), date(2026, 1, 1), days=7) == [(date(2026, 1, 1), date(2026, 1, 1))]
+
+
+@pytest.mark.asyncio
+async def test_the_portals_paging_limit_ends_a_slice_without_blocking_the_run(monkeypatch):
+    # Verified live 2026-09-08: past ~225 rows for one date range the portal answers
+    # HTTP 200 {"err": true, "msg": "bad request"}. Treating that as a block starved
+    # Yolo of every request during Placer's backfill.
+    monkeypatch.setattr(myhd, "MIN_INTERVAL_SECONDS", 0.0)
+    windows_seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        data = _json.loads(request.content)["data"]
+        windows_seen.append(data["filters"]["date"])
+        if data["start"] == 0:
+            return httpx.Response(200, json=[_placer_row(inspection_id=f"r{i}") for i in range(myhd.PAGE_SIZE)])
+        return httpx.Response(200, json={"err": True, "msg": "bad request"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        circuit = myhd.PortalCircuit()
+        rows = await myhd.search_county(client, myhd.PLACER, circuit, date_from=date(2026, 8, 25), date_to=date(2026, 9, 8))
+    assert circuit.blocked is False  # a paging limit is not a block
+    assert len(set(windows_seen)) == 3  # 15 days sliced into three 7-day windows
+    assert len(rows) == 3 * myhd.PAGE_SIZE  # every slice still contributed its first page
 
 
 @pytest.mark.asyncio
