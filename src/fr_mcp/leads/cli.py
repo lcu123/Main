@@ -140,7 +140,32 @@ async def _build_all(*, since_days: int, today: date, fetch_pdfs: bool, counties
     return pl.rank(candidates)
 
 
-async def _enrich_phones(candidates: list[pl.LeadCandidate], *, skip_keys: set[str] | None = None) -> dict:
+def _worth_enriching(
+    candidates: list[pl.LeadCandidate], *, existing_keys: set[str], skip_keys: set[str], new_row_cap: int
+) -> list[pl.LeadCandidate]:
+    """The candidates a lookup would actually pay off on: rows already in the
+    sheet (a backfill lands on them today) plus the new ones the row cap will
+    admit. Enriching past the cap buys nothing -- those candidates are dropped
+    before they are written, and the next run rebuilds and re-pays for them."""
+    out, new_budget = [], new_row_cap
+    for c in candidates:
+        if not c.pushable or c.customer_link in skip_keys:
+            continue
+        if c.customer_link in existing_keys:
+            out.append(c)
+        elif new_budget > 0:
+            out.append(c)
+            new_budget -= 1
+    return out
+
+
+async def _enrich_phones(
+    candidates: list[pl.LeadCandidate],
+    *,
+    skip_keys: set[str] | None = None,
+    existing_keys: set[str] | None = None,
+    new_row_cap: int = sheet.DEFAULT_NEW_ROW_CAP,
+) -> dict:
     """Look every pushable candidate up in Places for its listed business number,
     website and open/closed status, and fill `phone` too when the county gave us
     none (all of Placer, all of Yolo, ~10% of Sacramento).
@@ -151,8 +176,12 @@ async def _enrich_phones(candidates: list[pl.LeadCandidate], *, skip_keys: set[s
     the set already carrying one: this is the only billed step in the pipeline,
     so a row is looked up once, not every morning. Ranked order, so a spent
     budget costs the coldest leads rather than the hottest."""
-    skip = skip_keys or set()
-    needs = [c for c in candidates if c.pushable and c.customer_link not in skip]
+    needs = _worth_enriching(
+        candidates,
+        existing_keys=existing_keys or set(),
+        skip_keys=skip_keys or set(),
+        new_row_cap=new_row_cap,
+    )
     if not needs:
         return {"attempted": 0, "matched": 0}
     async with httpx.AsyncClient(timeout=30.0) as http_client:
@@ -212,8 +241,9 @@ async def cmd_run(args: argparse.Namespace) -> int:
     backend = sheet.open_backend() if args.destination == "sheet" else None
     enrichment = {"attempted": 0, "matched": 0}
     if not args.no_places:
+        existing = sheet.existing_keys(backend) if backend is not None else set()
         already = sheet.keys_with_business_phone(backend) if backend is not None else set()
-        enrichment = await _enrich_phones(candidates, skip_keys=already)
+        enrichment = await _enrich_phones(candidates, skip_keys=already, existing_keys=existing)
 
     if args.destination == "sheet":
         result = sheet.sync_leads(backend, candidates, today=today, dry_run=args.dry_run)

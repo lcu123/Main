@@ -396,6 +396,11 @@ def _run_row(result: "SyncResult", *, today: date) -> dict[str, Any]:
     }
 
 
+def existing_keys(backend: SheetBackend) -> set[str]:
+    """Every key already present as a Leads row."""
+    return {(r.get("key") or "").strip() for r in backend.read_rows(LEADS_TAB) if (r.get("key") or "").strip()}
+
+
 def keys_with_business_phone(backend: SheetBackend) -> set[str]:
     """Keys already carrying a Places-sourced business number. Enrichment is the
     only billed step in the pipeline, so a row that has one must not be looked up
