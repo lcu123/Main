@@ -30,6 +30,7 @@ LANE_CHAIN = "chain"  # parked: scored for visibility, never pushed
 @dataclass
 class LeadCandidate:
     facility_id: str
+    county: str  # "Sacramento" | "Placer" | "Yolo" -- which adapter produced this row
     customer_link: str
     name: str
     street: str
@@ -48,6 +49,10 @@ class LeadCandidate:
     region_name: str | None
     is_chain: bool
     days_since_signal: int | None
+    # Only Yolo's report PDF carries an email at signal time (plan 6.1); Sacramento and
+    # Placer leave this for phase C enrichment (Places/website/ZoomInfo/finder).
+    email: str | None = None
+    email_source: str | None = None
 
     @property
     def pushable(self) -> bool:
@@ -165,6 +170,7 @@ async def build_candidates(
         out.append(
             LeadCandidate(
                 facility_id=facility.facility_id,
+                county="Sacramento",
                 customer_link=f"{SOURCE_PREFIX}:{facility.facility_id}",
                 name=facility.name,
                 street=facility.street,

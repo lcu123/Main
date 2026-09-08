@@ -125,7 +125,7 @@ def build_customer_params(candidate: LeadCandidate) -> dict[str, Any]:
         "city": candidate.city,
         "state": "CA",
         "zip": candidate.zip5,
-        "county": "Sacramento",
+        "county": candidate.county,
         "countryID": "US",
         "status": 0,
         "commercialAccount": 1,
@@ -142,6 +142,8 @@ def build_customer_params(candidate: LeadCandidate) -> dict[str, Any]:
         params["lng"] = candidate.lng
     if header and header.phone:
         params["phone1"] = header.phone
+    if candidate.email:
+        params["email"] = candidate.email
     if spouse:
         params["spouse"] = spouse
     return params
@@ -150,9 +152,9 @@ def build_customer_params(candidate: LeadCandidate) -> dict[str, Any]:
 def build_note_text(candidate: LeadCandidate, *, retouch: bool = False) -> str:
     parts: list[str] = []
     parts.append(
-        "New inspection signal on an existing lead (Sacramento County EMD public record)."
+        f"New inspection signal on an existing lead ({candidate.county} County public record)."
         if retouch
-        else "COMMERCIAL PEST LEAD (auto-import, Sacramento County EMD public record)."
+        else f"COMMERCIAL PEST LEAD (auto-import, {candidate.county} County public record)."
     )
     parts.append(f"Score {candidate.score.total} {candidate.score.tier.upper()}.")
     parts.append(f"Type: {', '.join(candidate.permits) or 'unknown'}.")

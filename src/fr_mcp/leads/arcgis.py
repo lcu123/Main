@@ -150,6 +150,13 @@ def has_bakery_keyword(facility_name: str) -> bool:
     return bool(_BAKERY_RE.search(facility_name))
 
 
+def has_market_keyword(facility_name: str) -> bool:
+    """Used by myhd.py too, for Placer/Yolo's own mid-size-market keyword bump --
+    their permit-type vocabulary doesn't carry a `PermitClass.keyword_bump_to` of
+    its own, so they call this directly rather than going through `effective_icp_base`."""
+    return bool(_SMALL_MARKET_KEYWORD_RE.search(facility_name))
+
+
 def is_school_or_hospital(facility_name: str) -> bool:
     """Satellite/distribution permits at a school or hospital aren't owner-accessible
     even though the permit type itself (SATELLITE FOOD DISTRIBUTION FACILITY) is

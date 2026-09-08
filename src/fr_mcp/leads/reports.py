@@ -36,6 +36,17 @@ _PHONE_RE = re.compile(r"Phone\(?(\d{3})\)?[\s.\-]?(\d{3})[\s.\-]?(\d{4})")
 _FA_PERMIT_RE = re.compile(r"\bFA(FA\d+)\s*Permit ID(PR\d+)")
 _ENTITY_RE = re.compile(r"\b(LLC|L\.L\.C\.|INC\.?|INCORPORATED|CORP\.?|CORPORATION|LP|L\.P\.)\b", re.I)
 
+# Yolo County's report template is a different layout entirely (single page, no
+# per-violation blocks the way Sacramento's is): "Permit HolderX Email addressY
+# Phone(Z) Facility IDFA... PR IDPR...". Verified live 2026-09-08 (AM/PM MINI
+# MARKET #5731, West Sacramento): the facility ID here is NOT doubled the way
+# Sacramento's "FAFA..." is -- it's a single "FA" label plus an "FA0002270" value.
+_YOLO_PERMIT_HOLDER_RE = re.compile(r"Permit Holder(.*?)Email address", re.S)
+_YOLO_EMAIL_RE = re.compile(r"Email address(\S+@\S+?)\s+Phone", re.S)
+_YOLO_PIC_EMAIL_RE = re.compile(r"PIC Email(\S+@\S+?)\s+Accepted By", re.S)
+_YOLO_PHONE_RE = re.compile(r"Phone\(?(\d{3})\)?[\s.\-]?(\d{3})[\s.\-]?(\d{4})")
+_YOLO_FACILITY_ID_RE = re.compile(r"Facility ID(FA\d+)\s*PR ID(PR\d+)")
+
 
 @dataclass(frozen=True)
 class ReportHeader:
@@ -55,6 +66,13 @@ class ParsedReport:
 
 def _clean(value: str | None) -> str:
     return " ".join((value or "").split())
+
+
+def is_entity_name(owner: str) -> bool:
+    """Shared with myhd.py, which has its own YoloHeader (no is_entity field of
+    its own) and needs the same LLC/INC/CORP detection to normalise into a
+    ReportHeader."""
+    return bool(_ENTITY_RE.search(owner))
 
 
 def parse_header(text: str) -> ReportHeader | None:
@@ -79,6 +97,37 @@ def parse_header(text: str) -> ReportHeader | None:
         facility_id=fa_m.group(1),
         permit_id=fa_m.group(2),
         phone=phone,
+    )
+
+
+@dataclass(frozen=True)
+class YoloHeader:
+    """Yolo's report has no per-violation VERMIN block the way Sacramento's does --
+    the pest signal for a Yolo row comes from the portal search row's own `comments`
+    field (classify.classify_text applied directly, no heading-based extraction
+    needed). This header exists only to pull the facility ID, owner and contact
+    email/phone the search row doesn't carry."""
+
+    facility_id: str
+    permit_id: str
+    owner: str
+    email: str | None  # Permit Holder's email; falls back to the person-in-charge's
+    phone: str | None
+
+
+def parse_yolo_header(text: str) -> YoloHeader | None:
+    fa_m = _YOLO_FACILITY_ID_RE.search(text)
+    if not fa_m:
+        return None
+    owner_m = _YOLO_PERMIT_HOLDER_RE.search(text)
+    email_m = _YOLO_EMAIL_RE.search(text) or _YOLO_PIC_EMAIL_RE.search(text)
+    phone_m = _YOLO_PHONE_RE.search(text)
+    return YoloHeader(
+        facility_id=fa_m.group(1),
+        permit_id=fa_m.group(2),
+        owner=_clean(owner_m.group(1)) if owner_m else "",
+        email=email_m.group(1).strip() if email_m else None,
+        phone="".join(phone_m.groups()) if phone_m else None,
     )
 
 

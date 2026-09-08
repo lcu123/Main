@@ -62,8 +62,9 @@ def _event_candidate(
     classification = Classification((tier_kind,), tier_kind, False, False, False, "Observed rodent droppings.")
     score = score_candidate(IcpInputs(base=30), PestInputs(kind=tier_kind), days_since_signal=5, geo_multiplier=1.0)
     return LeadCandidate(
-        facility_id=facility_id, customer_link=f"SACEMD:{facility_id}", name=name, street="123 Test St",
-        city="Sacramento", zip5="95814", lat=38.6, lng=-121.5, permits=["RETAIL MARKET (15000+SQ.FT)"],
+        facility_id=facility_id, county="Sacramento", customer_link=f"SACEMD:{facility_id}", name=name,
+        street="123 Test St", city="Sacramento", zip5="95814", lat=38.6, lng=-121.5,
+        permits=["RETAIL MARKET (15000+SQ.FT)"],
         lane=LANE_EVENT, score=score, classification=classification, signal=signal, header=header,
         distance_miles=5.0, region_id=3, region_name="Downtown", is_chain=False, days_since_signal=5,
     )
@@ -72,7 +73,7 @@ def _event_candidate(
 def _territory_candidate(facility_id="FA9002") -> LeadCandidate:
     score = score_candidate(IcpInputs(base=30), PestInputs(kind="none"), days_since_signal=None, geo_multiplier=0.9)
     return LeadCandidate(
-        facility_id=facility_id, customer_link=f"SACEMD:{facility_id}", name="TERRITORY MARKET",
+        facility_id=facility_id, county="Sacramento", customer_link=f"SACEMD:{facility_id}", name="TERRITORY MARKET",
         street="456 Other Ave", city="Sacramento", zip5="95820", lat=38.5, lng=-121.4,
         permits=["RETAIL MARKET (6000-14999 SQ.FT.)"], lane=LANE_TERRITORY, score=score,
         classification=None, signal=None, header=None, distance_miles=12.0, region_id=4,

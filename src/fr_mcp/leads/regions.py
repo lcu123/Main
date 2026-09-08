@@ -54,6 +54,33 @@ _add(9, "Citrus Heights", "95610", "95621")
 _add(10, "Folsom", "95630")
 _add(6, "West Sacramento", "95691", "95605")
 
+# Placer County, owner-reviewed 2026-09-07 (docs/lead-scraper-plan.md 2.6, 12, 13):
+# Roseville splits across regions 1 (Roseville B) and 7 (Roseville A / Granite Bay) --
+# the owner hasn't drawn that line yet, so every Roseville zip defaults to 7 for now;
+# revisit once the owner splits it. Rocklin/Loomis/Lincoln -> 11.
+_add(7, "Roseville A / Granite Bay", "95661", "95678", "95747", "95746")
+_add(11, "Rocklin, Loomis & Lincoln", "95677", "95765", "95648", "95650")
+
+# Placer and Yolo portal rows carry no lat/lng (unlike the Sacramento ArcGIS feed) --
+# approximate zip centroids (api.zippopotam.us, queried 2026-09-08) stand in until
+# Google Places enrichment lands (plan section 6, phase C).
+ZIP_CENTROID: dict[str, tuple[float, float]] = {
+    "95661": (38.7346, -121.2340),  # Roseville
+    "95678": (38.7609, -121.2867),  # Roseville
+    "95747": (38.7703, -121.3372),  # Roseville
+    "95746": (38.7435, -121.1897),  # Granite Bay
+    "95677": (38.7877, -121.2366),  # Rocklin
+    "95765": (38.8136, -121.2677),  # Rocklin
+    "95648": (38.8942, -121.2908),  # Lincoln
+    "95650": (38.8071, -121.1698),  # Loomis
+    "95605": (38.5927, -121.5325),  # West Sacramento
+    "95691": (38.5673, -121.5516),  # West Sacramento
+}
+
+
+def centroid_for_zip(zip5: str) -> tuple[float, float] | None:
+    return ZIP_CENTROID.get(zip5.strip()[:5])
+
 
 def region_for_zip(zip5: str) -> tuple[int, str | None]:
     """(regionID, region name); regionID 0 and name None when the zip isn't mapped."""
