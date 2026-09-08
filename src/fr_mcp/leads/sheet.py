@@ -1,0 +1,397 @@
+"""Google Sheet destination: the system of record for prospects (plan section 5.1).
+
+Unlike `fr_push.py` (FieldRoutes, used only at the "inspection booked" handoff),
+this is where every scored candidate from every source (`arcgis.py`, `myhd.py`,
+eventually the processor list) actually lands day to day. Two BDRs work the
+Leads tab directly, so the contract that matters most here is column ownership:
+`TOOL_COLUMNS` is everything this module may write, `REP_COLUMNS` is everything
+it must never touch once a row exists (the one deliberate exception is `status`,
+set to "new" on a row's first append -- plan 5.1's own "Update rules").
+
+`SheetBackend` is a small interface (`ensure_tab`/`read_rows`/`append_rows`/
+`update_row`) so `sync_leads`'s actual logic -- dedupe by key, honour DNC, flag
+a known row's new signal without touching rep columns, batch every write until
+the end of a run -- is unit-testable against `FakeSheetBackend` with no live
+Google credentials, the same test-double pattern `tests/conftest.py`'s `FakeFR`
+uses for FieldRoutes. `GspreadBackend` is the real implementation, built once
+the owner's service-account key is wired up (see README).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Any
+
+from .fr_push import ConfigError
+from .pipeline import LeadCandidate
+
+LEADS_TAB = "Leads"
+SIGNALS_TAB = "Signals"
+RUNS_TAB = "Runs"
+DNC_TAB = "DNC"
+
+DEFAULT_NEW_ROW_CAP = 40  # plan 13, decision 8
+
+# Tool-owned columns (plan 5.1's table) -- sync_leads is the only writer of these.
+TOOL_COLUMNS = [
+    "key", "county", "lane", "tier", "score",
+    "facility", "permit types", "address", "city", "zip", "region", "distance (mi)",
+    "pest", "evidence quote", "signal date", "signal result", "report link",
+    "prior vermin flags (24 mo)", "new-signal flag", "signal count",
+    "owner name", "owner type",
+    "phone", "phone source",
+    "email", "email source", "email confidence",
+    "website", "business status", "first seen", "last updated",
+]
+
+# Rep-owned columns -- sync_leads never writes any of these on an update. `status`
+# is the one field it sets, but only at append time (plan 5.1: "a new facility
+# appends a row with status `new`"); every re-run of an existing row leaves it alone.
+REP_COLUMNS = [
+    "rep", "status", "last touch date", "next step date", "touch count", "notes",
+    "inspection date", "outcome", "FieldRoutes customer ID",
+]
+
+LEADS_COLUMNS = TOOL_COLUMNS + REP_COLUMNS
+SIGNALS_COLUMNS = ["key", "guid", "date", "result", "pest", "quote", "report url", "recorded at"]
+RUNS_COLUMNS = ["run at", "rows added", "rows flagged", "skipped dnc", "skipped cap", "errors"]
+DNC_COLUMNS = ["key", "phone", "email", "reason", "added at"]  # tool reads this tab, never writes it
+
+
+# --- backend interface -------------------------------------------------------
+
+
+class SheetBackend(ABC):
+    @abstractmethod
+    def ensure_tab(self, tab: str, columns: list[str]) -> None:
+        """Create `tab` with this header row if it doesn't exist yet. Never
+        rewrites an existing tab's header (a rep may have added a column)."""
+
+    @abstractmethod
+    def read_rows(self, tab: str) -> list[dict[str, str]]:
+        """Every data row (header excluded), as {column_name: value}, in sheet
+        order -- position `i` here is data-row-index `i` for `update_row`."""
+
+    @abstractmethod
+    def append_rows(self, tab: str, rows: list[dict[str, Any]]) -> None:
+        """Append rows at the end of `tab`. Each dict may be partial; any column
+        in the tab's header not present in a given row is written blank."""
+
+    @abstractmethod
+    def update_row(self, tab: str, row_index: int, values: dict[str, Any]) -> None:
+        """Overwrite only the named columns in the data row at 0-based
+        `row_index` (0 = the first row under the header)."""
+
+
+class FakeSheetBackend(SheetBackend):
+    """In-memory stand-in for a real spreadsheet -- mirrors gspread's shape
+    closely enough (header-keyed rows, append-only growth, partial-column
+    updates) that `sync_leads` doesn't need to know which one it's talking to."""
+
+    def __init__(self) -> None:
+        self.columns: dict[str, list[str]] = {}
+        self.rows: dict[str, list[dict[str, Any]]] = {}
+
+    def ensure_tab(self, tab: str, columns: list[str]) -> None:
+        if tab not in self.columns:
+            self.columns[tab] = list(columns)
+            self.rows[tab] = []
+
+    def read_rows(self, tab: str) -> list[dict[str, str]]:
+        return [dict(r) for r in self.rows.get(tab, [])]
+
+    def append_rows(self, tab: str, rows: list[dict[str, Any]]) -> None:
+        columns = self.columns[tab]
+        for r in rows:
+            self.rows[tab].append({c: r.get(c, "") for c in columns})
+
+    def update_row(self, tab: str, row_index: int, values: dict[str, Any]) -> None:
+        self.rows[tab][row_index].update(values)
+
+
+class GspreadBackend(SheetBackend):
+    """Wraps a `gspread.Spreadsheet`. Column position is looked up from each
+    tab's own header row (never assumed), so a rep manually reordering rep-
+    owned columns doesn't misalign a tool-owned write."""
+
+    def __init__(self, spreadsheet: Any) -> None:
+        self._ss = spreadsheet
+        self._ws_cache: dict[str, Any] = {}
+
+    def _worksheet(self, tab: str) -> Any:
+        import gspread
+
+        if tab not in self._ws_cache:
+            try:
+                self._ws_cache[tab] = self._ss.worksheet(tab)
+            except gspread.WorksheetNotFound:
+                self._ws_cache[tab] = None
+        return self._ws_cache[tab]
+
+    def ensure_tab(self, tab: str, columns: list[str]) -> None:
+        ws = self._worksheet(tab)
+        if ws is None:
+            ws = self._ss.add_worksheet(title=tab, rows=1000, cols=max(len(columns), 10))
+            ws.update([columns], "A1")
+            self._ws_cache[tab] = ws
+
+    def read_rows(self, tab: str) -> list[dict[str, str]]:
+        ws = self._worksheet(tab)
+        return ws.get_all_records() if ws is not None else []
+
+    def append_rows(self, tab: str, rows: list[dict[str, Any]]) -> None:
+        ws = self._worksheet(tab)
+        if ws is None or not rows:
+            return
+        header = ws.row_values(1)
+        values = [[r.get(c, "") for c in header] for r in rows]
+        ws.append_rows(values, value_input_option="USER_ENTERED")
+
+    def update_row(self, tab: str, row_index: int, values: dict[str, Any]) -> None:
+        ws = self._worksheet(tab)
+        if ws is None or not values:
+            return
+        header = ws.row_values(1)
+        sheet_row = row_index + 2  # +1 for the header row, +1 for 1-based indexing
+        for col_name, val in values.items():
+            if col_name not in header:
+                continue
+            ws.update_cell(sheet_row, header.index(col_name) + 1, val)
+
+
+def open_backend() -> GspreadBackend:
+    """LEADS_SHEET_ID plus a service-account credential, either the key file's
+    JSON pasted inline (GOOGLE_SERVICE_ACCOUNT_JSON -- Railway's variables UI has
+    no separate secret-file mechanism) or a path to it on disk
+    (GOOGLE_SERVICE_ACCOUNT_JSON_PATH, for local/dev use)."""
+    import gspread
+
+    sheet_id = os.environ.get("LEADS_SHEET_ID", "").strip()
+    if not sheet_id:
+        raise ConfigError("LEADS_SHEET_ID is not set.")
+    inline = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+    path = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_PATH", "").strip()
+    if inline:
+        try:
+            info = json.loads(inline)
+        except ValueError as exc:
+            raise ConfigError("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON.") from exc
+        client = gspread.service_account_from_dict(info)
+    elif path:
+        client = gspread.service_account(filename=path)
+    else:
+        raise ConfigError("Set GOOGLE_SERVICE_ACCOUNT_JSON (the key file's JSON, inline) or GOOGLE_SERVICE_ACCOUNT_JSON_PATH.")
+    spreadsheet = client.open_by_key(sheet_id)
+    return GspreadBackend(spreadsheet)
+
+
+# --- row shaping ---------------------------------------------------------
+
+
+def _owner_type(header: Any) -> str:
+    if not header or not header.owner:
+        return ""
+    return "entity" if header.is_entity else "person"
+
+
+def _leads_row(candidate: LeadCandidate, *, today: date) -> dict[str, Any]:
+    header = candidate.header
+    classification = candidate.classification
+    return {
+        "key": candidate.customer_link,
+        "county": candidate.county,
+        "lane": candidate.lane,
+        "tier": candidate.score.tier,
+        "score": candidate.score.total,
+        "facility": candidate.name,
+        "permit types": ", ".join(candidate.permits),
+        "address": candidate.street,
+        "city": candidate.city,
+        "zip": candidate.zip5,
+        "region": candidate.region_name or "",
+        "distance (mi)": round(candidate.distance_miles, 1) if candidate.distance_miles is not None else "",
+        "pest": classification.label if classification and classification.label != "unclassified" else "",
+        "evidence quote": classification.quote if classification else "",
+        "signal date": candidate.signal.date.isoformat() if candidate.signal else "",
+        "signal result": candidate.signal.result if candidate.signal else "",
+        "report link": candidate.signal.report_url if candidate.signal else "",
+        # Not yet plumbed through LeadCandidate (arcgis.Facility.vermin_count_24mo
+        # and myhd's per-row history both stop short of this) -- left blank rather
+        # than guessed; a rep can see the count in the Signals tab meanwhile.
+        "prior vermin flags (24 mo)": "",
+        "new-signal flag": "yes" if candidate.signal else "",
+        "signal count": 1 if candidate.signal else 0,
+        "owner name": header.owner if header and header.owner else "",
+        "owner type": _owner_type(header),
+        "phone": header.phone if header and header.phone else "",
+        "phone source": "report_pdf" if header and header.phone else "",
+        "email": candidate.email or "",
+        "email source": candidate.email_source or "",
+        "email confidence": "high" if candidate.email_source == "yolo_pdf" else "",
+        "website": "",
+        "business status": "",
+        "first seen": today.isoformat(),
+        "last updated": today.isoformat(),
+        "status": "new",
+    }
+
+
+def _evidence_update(candidate: LeadCandidate, *, existing_signal_count: str, today: date) -> dict[str, Any]:
+    assert candidate.signal is not None
+    try:
+        count = int(str(existing_signal_count).strip() or 0)
+    except ValueError:
+        count = 0
+    classification = candidate.classification
+    return {
+        "tier": candidate.score.tier,
+        "score": candidate.score.total,
+        "pest": classification.label if classification and classification.label != "unclassified" else "",
+        "evidence quote": classification.quote if classification else "",
+        "signal date": candidate.signal.date.isoformat(),
+        "signal result": candidate.signal.result,
+        "report link": candidate.signal.report_url,
+        "new-signal flag": "yes",
+        "signal count": count + 1,
+        "last updated": today.isoformat(),
+    }
+
+
+def _signal_row(candidate: LeadCandidate, *, today: date) -> dict[str, Any]:
+    s = candidate.signal
+    assert s is not None
+    classification = candidate.classification
+    return {
+        "key": candidate.customer_link,
+        "guid": s.pkey,
+        "date": s.date.isoformat(),
+        "result": s.result,
+        "pest": classification.label if classification else "",
+        "quote": classification.quote if classification else "",
+        "report url": s.report_url,
+        "recorded at": today.isoformat(),
+    }
+
+
+def _run_row(result: "SyncResult", *, today: date) -> dict[str, Any]:
+    return {
+        "run at": today.isoformat(),
+        "rows added": result.added,
+        "rows flagged": result.flagged,
+        "skipped dnc": result.skipped_dnc,
+        "skipped cap": result.skipped_cap,
+        "errors": "; ".join(result.errors),
+    }
+
+
+def _dnc_sets(rows: list[dict[str, str]]) -> tuple[set[str], set[str], set[str]]:
+    keys = {r.get("key", "").strip() for r in rows if r.get("key", "").strip()}
+    phones = {r.get("phone", "").strip() for r in rows if r.get("phone", "").strip()}
+    emails = {r.get("email", "").strip().lower() for r in rows if r.get("email", "").strip()}
+    return keys, phones, emails
+
+
+def _is_dnc(candidate: LeadCandidate, dnc_keys: set[str], dnc_phones: set[str], dnc_emails: set[str]) -> bool:
+    if candidate.customer_link in dnc_keys:
+        return True
+    if candidate.header and candidate.header.phone and candidate.header.phone in dnc_phones:
+        return True
+    if candidate.email and candidate.email.strip().lower() in dnc_emails:
+        return True
+    return False
+
+
+# --- sync ------------------------------------------------------------------
+
+
+@dataclass
+class SyncResult:
+    added: int = 0
+    flagged: int = 0
+    skipped_dnc: int = 0
+    skipped_cap: int = 0
+    skipped_duplicate: int = 0
+    skipped_no_change: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+def sync_leads(
+    backend: SheetBackend,
+    candidates: list[LeadCandidate],
+    *,
+    today: date,
+    new_row_cap: int = DEFAULT_NEW_ROW_CAP,
+    dry_run: bool = False,
+) -> SyncResult:
+    """Append new facilities, flag known ones with a genuinely new signal, skip
+    DNC and duplicates, and write nothing at all until the very end -- a crash
+    partway through this function leaves the sheet exactly as it was (plan 5.1).
+
+    Idempotency: a facility already in the Leads tab with no signal (a territory-
+    lane row, or an event-lane row whose signal was already recorded in the
+    Signals tab) is a no-op, the same "create once, then leave alone" contract
+    `fr_push.push_candidate`'s territory-lane branch uses for FieldRoutes.
+    """
+    backend.ensure_tab(LEADS_TAB, LEADS_COLUMNS)
+    backend.ensure_tab(SIGNALS_TAB, SIGNALS_COLUMNS)
+    backend.ensure_tab(RUNS_TAB, RUNS_COLUMNS)
+    backend.ensure_tab(DNC_TAB, DNC_COLUMNS)
+
+    leads_rows = backend.read_rows(LEADS_TAB)
+    signals_rows = backend.read_rows(SIGNALS_TAB)
+    dnc_rows = backend.read_rows(DNC_TAB)
+
+    key_to_index = {r.get("key", "").strip(): i for i, r in enumerate(leads_rows) if r.get("key", "").strip()}
+    seen_signals = {(r.get("key", ""), r.get("guid", "")) for r in signals_rows}
+    dnc_keys, dnc_phones, dnc_emails = _dnc_sets(dnc_rows)
+
+    result = SyncResult()
+    pending_appends: list[dict[str, Any]] = []
+    pending_updates: list[tuple[int, dict[str, Any]]] = []
+    pending_signals: list[dict[str, Any]] = []
+    new_rows_this_run = 0
+
+    for c in candidates:
+        if not c.pushable:
+            continue
+        if _is_dnc(c, dnc_keys, dnc_phones, dnc_emails):
+            result.skipped_dnc += 1
+            continue
+        existing_index = key_to_index.get(c.customer_link)
+        if existing_index is None:
+            if new_rows_this_run >= new_row_cap:
+                result.skipped_cap += 1
+                continue
+            pending_appends.append(_leads_row(c, today=today))
+            if c.signal:
+                pending_signals.append(_signal_row(c, today=today))
+            new_rows_this_run += 1
+            result.added += 1
+            continue
+        if not c.signal:
+            result.skipped_no_change += 1
+            continue
+        if (c.customer_link, c.signal.pkey) in seen_signals:
+            result.skipped_duplicate += 1
+            continue
+        existing_row = leads_rows[existing_index]
+        pending_updates.append(
+            (existing_index, _evidence_update(c, existing_signal_count=existing_row.get("signal count", "0"), today=today))
+        )
+        pending_signals.append(_signal_row(c, today=today))
+        result.flagged += 1
+
+    if not dry_run:
+        if pending_appends:
+            backend.append_rows(LEADS_TAB, pending_appends)
+        for idx, values in pending_updates:
+            backend.update_row(LEADS_TAB, idx, values)
+        if pending_signals:
+            backend.append_rows(SIGNALS_TAB, pending_signals)
+        backend.append_rows(RUNS_TAB, [_run_row(result, today=today)])
+
+    return result
