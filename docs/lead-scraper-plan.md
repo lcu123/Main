@@ -396,11 +396,11 @@ Phases B, C and D can overlap; C and D are where the BDRs' week-one and week-thr
 
 ## 13. Decisions needed from the owner (with defaults)
 
-1. **Google Sheet written directly by the tool** via a service account (default) versus Zapier add-row versus an `.xlsx` export. Default: direct.
-2. **Sheet name or link**, or I create one and share it.
+1. **Google Sheet written directly by the tool** via a service account. **Decided 2026-09-08: yes, direct.** Google Drive is already connected to the owner's Claude workspace, so Claude can read the sheet for questions; the scheduled tool still needs its own service-account key to write.
+2. **Sheet name or link**, or I create one and share it. Decided 2026-09-08: Claude creates it in the owner's Drive as "Zest Commercial Leads".
 3. **Cite the county finding in outreach?** Default: no; use it for timing and priority only.
 4. **Email-finder vendor and monthly credit budget** (Apollo, Hunter, or none for now). Default: none until step 9 shows the gap.
-5. **Rep mailboxes**: one Workspace mailbox per rep on the company domain (default), and confirm the main business email is a Workspace domain address rather than @gmail.com. No separate sending domain or sequencer while emails are written one-to-one.
+5. **Rep mailboxes**: **decided 2026-09-08: one Google Workspace mailbox per rep on the zestlawnpest.com domain.** No separate sending domain or sequencer while emails are written one-to-one; confirm SPF, DKIM and DMARC on the domain before the first send.
 6. **Woodland for processors only?** Default: yes.
 7. **ZoomInfo processor criteria**: industries and the employee-count floor. Default: food production and manufacturing, grocery wholesale, refrigerated warehousing; 20 employees and up.
 8. **New rows per run cap.** Default: 40 across lanes so the first week isn't a wall of rows.
