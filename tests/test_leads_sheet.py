@@ -248,8 +248,8 @@ def test_a_local_number_is_not_flagged():
 
 def test_plan_reorder_puts_the_dialer_columns_first_and_keeps_everything_else():
     header = ["key", "notes", "facility", "phone", "county", "rep"]
-    new = sheet.plan_reorder(header, ["facility", "phone", "notes", "followup"])
-    assert new[:4] == ["facility", "phone", "notes", "followup"]
+    new = sheet.plan_reorder(header, ["facility", "phone", "notes", "followup date"])
+    assert new[:4] == ["facility", "phone", "notes", "followup date"]
     assert set(header) <= set(new)  # nothing dropped
 
 
@@ -259,6 +259,13 @@ def test_plan_reorder_collapses_a_duplicated_column():
     assert new.count("report link") == 1
 
 
+def test_plan_reorder_removes_a_column_we_retired():
+    # A column the tool introduced and then thought better of is removed; one a
+    # rep added is not ours to delete (see the test below).
+    header = ["facility", "phone", "followup", "notes"]
+    assert "followup" not in sheet.plan_reorder(header, sheet.DIALER_COLUMNS)
+
+
 def test_plan_reorder_keeps_a_column_the_reps_added_themselves():
     header = ["facility", "phone", "notes", "my own column"]
     assert "my own column" in sheet.plan_reorder(header, sheet.DIALER_COLUMNS)
@@ -266,11 +273,11 @@ def test_plan_reorder_keeps_a_column_the_reps_added_themselves():
 
 def test_reorder_moves_the_values_with_their_columns():
     backend = sheet.FakeSheetBackend()
-    backend.ensure_tab(sheet.LEADS_TAB, ["key", "facility", "phone", "notes", "followup"])
+    backend.ensure_tab(sheet.LEADS_TAB, ["key", "facility", "phone", "notes", "followup date"])
     backend.append_rows(sheet.LEADS_TAB, [{"key": "K1", "facility": "JOE'S", "phone": "9165551234", "notes": "left vm"}])
-    result = sheet.reorder_leads_tab(backend, ["facility", "phone", "notes", "followup"])
+    result = sheet.reorder_leads_tab(backend, ["facility", "phone", "notes", "followup date"])
     assert result["reordered"] is True
-    assert backend.header(sheet.LEADS_TAB)[:4] == ["facility", "phone", "notes", "followup"]
+    assert backend.header(sheet.LEADS_TAB)[:4] == ["facility", "phone", "notes", "followup date"]
     row = backend.read_rows(sheet.LEADS_TAB)[0]
     assert row["facility"] == "JOE'S" and row["phone"] == "9165551234"
     assert row["notes"] == "left vm"  # the rep's own writing survives the move

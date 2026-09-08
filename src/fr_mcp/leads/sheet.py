@@ -57,22 +57,31 @@ TOOL_COLUMNS = [
 # any column the reps add that isn't listed here is simply never written.
 REP_COLUMNS = [
     "rep", "status", "last touch date", "followup date", "touch count", "notes",
-    "followup", "inspection date", "outcome", "FieldRoutes customer ID",
+    "inspection date", "outcome", "FieldRoutes customer ID",
 ]
 
 # Columns renamed after rows already existed. `reorder_leads_tab` carries the old
 # column's values across, so a rep's entries survive the rename.
 COLUMN_RENAMES = {"next step date": "followup date"}
 
+# Columns retired after they existed in a live sheet. `reorder_leads_tab` removes
+# these, unlike an unrecognised column, which it preserves on the assumption a rep
+# added it. Only ever list a column we introduced ourselves and then thought
+# better of -- never one of theirs.
+RETIRED_COLUMNS = frozenset({"followup"})
+
 # Display order, which is a different question from ownership above. A rep on the
 # phone reads left to right and should never scroll to dial: who am I calling,
 # what do I dial, what did I say last time, when am I calling back. Everything
 # they need only once the call connects (the pest evidence, the address, the
 # score) sits to the right of that. Ownership still governs what may be written:
-# `notes` and `followup` are the rep's, and the tool never touches them.
+# `notes` and `followup date` are the rep's, and the tool never touches them.
 # `followup date` leads deliberately: sorting or filtering on column A turns the
 # tab into today's call queue, which is the first thing a rep does each morning.
-DIALER_COLUMNS = ["followup date", "facility", "phone", "notes", "followup"]
+# When to call back, then who, what to dial, and what was said last time -- there
+# is deliberately no separate "next action" column: it would overlap `notes` and
+# two reps would fill the pair inconsistently.
+DIALER_COLUMNS = ["followup date", "facility", "phone", "notes"]
 _REMAINING = [c for c in TOOL_COLUMNS + REP_COLUMNS if c not in DIALER_COLUMNS]
 LEADS_COLUMNS = DIALER_COLUMNS + [
     # Kept adjacent to the primary number: the fallback line and the warning that
@@ -460,7 +469,7 @@ def _run_row(result: "SyncResult", *, today: date) -> dict[str, Any]:
     }
 
 
-def plan_reorder(header: list[str], wanted: list[str]) -> list[str]:
+def plan_reorder(header: list[str], wanted: list[str], retired: frozenset[str] | None = None) -> list[str]:
     """The header `reorder_leads_tab` should write: `wanted`'s order first (only
     the columns that exist or are ours to add), then every other existing column
     in its current order, with duplicates collapsed to their first occurrence.
@@ -469,10 +478,11 @@ def plan_reorder(header: list[str], wanted: list[str]) -> list[str]:
     added their own and it is not ours to delete. Duplicates are dropped because
     only the leftmost copy of a tool column is ever kept current, so a second one
     is a stale decoy."""
+    retired = RETIRED_COLUMNS if retired is None else retired
     seen: set[str] = set()
     out: list[str] = []
     for name in list(wanted) + list(header):
-        if name and name not in seen:
+        if name and name not in seen and name not in retired:
             seen.add(name)
             out.append(name)
     return [c for c in out if c in set(header) | set(wanted)]
