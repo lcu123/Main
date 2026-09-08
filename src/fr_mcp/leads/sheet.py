@@ -60,7 +60,19 @@ REP_COLUMNS = [
     "followup", "inspection date", "outcome", "FieldRoutes customer ID",
 ]
 
-LEADS_COLUMNS = TOOL_COLUMNS + REP_COLUMNS
+# Display order, which is a different question from ownership above. A rep on the
+# phone reads left to right and should never scroll to dial: who am I calling,
+# what do I dial, what did I say last time, when am I calling back. Everything
+# they need only once the call connects (the pest evidence, the address, the
+# score) sits to the right of that. Ownership still governs what may be written:
+# `notes` and `followup` are the rep's, and the tool never touches them.
+DIALER_COLUMNS = ["facility", "phone", "notes", "followup"]
+_REMAINING = [c for c in TOOL_COLUMNS + REP_COLUMNS if c not in DIALER_COLUMNS]
+LEADS_COLUMNS = DIALER_COLUMNS + [
+    # Kept adjacent to the primary number: the fallback line and the warning that
+    # the primary is not the business's.
+    "business phone", "phone flag",
+] + [c for c in _REMAINING if c not in ("business phone", "phone flag")]
 SIGNALS_COLUMNS = ["key", "guid", "date", "result", "pest", "quote", "report url", "recorded at"]
 RUNS_COLUMNS = ["run at", "rows added", "rows flagged", "skipped dnc", "skipped cap", "errors"]
 DNC_COLUMNS = ["key", "phone", "email", "reason", "added at"]  # tool reads this tab, never writes it
@@ -97,6 +109,16 @@ class SheetBackend(ABC):
         for row_index, values in updates:
             self.update_row(tab, row_index, values)
 
+    def header(self, tab: str) -> list[str]:
+        """The tab's header row as stored, duplicates and all."""
+        raise NotImplementedError
+
+    def rewrite_tab(self, tab: str, header: list[str], rows: list[dict[str, Any]]) -> None:
+        """Replace the tab wholesale with `header` and `rows`. Only for
+        maintenance like a reorder -- the run loop must never use this, since a
+        crash midway would leave the sheet truncated rather than untouched."""
+        raise NotImplementedError
+
     def ensure_columns(self, tab: str, columns: list[str]) -> list[str]:
         """Append any of `columns` the tab's header doesn't have yet, at the far
         right, and return the ones added. Writes are addressed by column *name*,
@@ -131,6 +153,13 @@ class FakeSheetBackend(SheetBackend):
 
     def update_row(self, tab: str, row_index: int, values: dict[str, Any]) -> None:
         self.rows[tab][row_index].update(values)
+
+    def header(self, tab: str) -> list[str]:
+        return list(self.columns.get(tab, []))
+
+    def rewrite_tab(self, tab: str, header: list[str], rows: list[dict[str, Any]]) -> None:
+        self.columns[tab] = list(header)
+        self.rows[tab] = [{c: r.get(c, "") for c in header} for r in rows]
 
     def ensure_columns(self, tab: str, columns: list[str]) -> list[str]:
         header = self.columns.setdefault(tab, [])
@@ -171,6 +200,18 @@ class GspreadBackend(SheetBackend):
             ws = self._ss.add_worksheet(title=tab, rows=1000, cols=max(len(columns), 10))
             ws.update([columns], "A1")
             self._ws_cache[tab] = ws
+
+    def rewrite_tab(self, tab: str, header: list[str], rows: list[dict[str, Any]]) -> None:
+        ws = self._worksheet(tab)
+        if ws is None:
+            return
+        values = [header] + [[str(r.get(c, "")) for c in header] for r in rows]
+        if ws.col_count < len(header):
+            ws.add_cols(len(header) - ws.col_count)
+        # Clear first: the new grid can be narrower than the old one (duplicates
+        # dropped), and a plain update would leave the old trailing columns behind.
+        ws.clear()
+        ws.update(values, "A1")
 
     def ensure_columns(self, tab: str, columns: list[str]) -> list[str]:
         ws = self._worksheet(tab)
@@ -404,6 +445,43 @@ def _run_row(result: "SyncResult", *, today: date) -> dict[str, Any]:
         "skipped dnc": result.skipped_dnc,
         "skipped cap": result.skipped_cap,
         "errors": "; ".join(result.errors),
+    }
+
+
+def plan_reorder(header: list[str], wanted: list[str]) -> list[str]:
+    """The header `reorder_leads_tab` should write: `wanted`'s order first (only
+    the columns that exist or are ours to add), then every other existing column
+    in its current order, with duplicates collapsed to their first occurrence.
+
+    Columns the sheet has that we've never heard of are kept -- a rep may have
+    added their own and it is not ours to delete. Duplicates are dropped because
+    only the leftmost copy of a tool column is ever kept current, so a second one
+    is a stale decoy."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in list(wanted) + list(header):
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return [c for c in out if c in set(header) | set(wanted)]
+
+
+def reorder_leads_tab(backend: SheetBackend, wanted: list[str] | None = None) -> dict[str, Any]:
+    """Rewrite the Leads tab with its columns in `wanted` order, carrying every
+    row's values with them. Returns what changed, for the caller to report."""
+    wanted = wanted or LEADS_COLUMNS
+    header = backend.header(LEADS_TAB)
+    if not header:
+        return {"reordered": False, "reason": "no header"}
+    new_header = plan_reorder(header, wanted)
+    rows = backend.read_rows(LEADS_TAB)
+    backend.rewrite_tab(LEADS_TAB, new_header, rows)
+    return {
+        "reordered": new_header != header,
+        "rows": len(rows),
+        "duplicatesDropped": len(header) - len(set(header)),
+        "added": [c for c in new_header if c not in header],
+        "first": new_header[:4],
     }
 
 

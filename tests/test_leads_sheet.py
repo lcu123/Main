@@ -238,6 +238,45 @@ def test_a_local_number_is_not_flagged():
     assert backend.read_rows(sheet.LEADS_TAB)[0]["phone flag"] == ""
 
 
+def test_plan_reorder_puts_the_dialer_columns_first_and_keeps_everything_else():
+    header = ["key", "notes", "facility", "phone", "county", "rep"]
+    new = sheet.plan_reorder(header, ["facility", "phone", "notes", "followup"])
+    assert new[:4] == ["facility", "phone", "notes", "followup"]
+    assert set(header) <= set(new)  # nothing dropped
+
+
+def test_plan_reorder_collapses_a_duplicated_column():
+    header = ["facility", "report link", "phone", "report link", "notes"]
+    new = sheet.plan_reorder(header, sheet.DIALER_COLUMNS)
+    assert new.count("report link") == 1
+
+
+def test_plan_reorder_keeps_a_column_the_reps_added_themselves():
+    header = ["facility", "phone", "notes", "my own column"]
+    assert "my own column" in sheet.plan_reorder(header, sheet.DIALER_COLUMNS)
+
+
+def test_reorder_moves_the_values_with_their_columns():
+    backend = sheet.FakeSheetBackend()
+    backend.ensure_tab(sheet.LEADS_TAB, ["key", "facility", "phone", "notes", "followup"])
+    backend.append_rows(sheet.LEADS_TAB, [{"key": "K1", "facility": "JOE'S", "phone": "9165551234", "notes": "left vm"}])
+    result = sheet.reorder_leads_tab(backend, ["facility", "phone", "notes", "followup"])
+    assert result["reordered"] is True
+    assert backend.header(sheet.LEADS_TAB)[:4] == ["facility", "phone", "notes", "followup"]
+    row = backend.read_rows(sheet.LEADS_TAB)[0]
+    assert row["facility"] == "JOE'S" and row["phone"] == "9165551234"
+    assert row["notes"] == "left vm"  # the rep's own writing survives the move
+    assert row["key"] == "K1"
+
+
+def test_reorder_is_idempotent():
+    backend = sheet.FakeSheetBackend()
+    backend.ensure_tab(sheet.LEADS_TAB, sheet.LEADS_COLUMNS)
+    backend.append_rows(sheet.LEADS_TAB, [{"key": "K1", "facility": "JOE'S"}])
+    sheet.reorder_leads_tab(backend)
+    assert sheet.reorder_leads_tab(backend)["reordered"] is False
+
+
 def test_keys_with_business_phone_reports_only_rows_already_enriched():
     backend = sheet.FakeSheetBackend()
     c1, c2 = _event_candidate(facility_id="FA1", pkey="P1"), _event_candidate(facility_id="FA2", pkey="P2")
