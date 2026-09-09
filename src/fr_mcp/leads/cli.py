@@ -37,6 +37,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from fr_mcp import server
 from fr_mcp.client import FieldRoutesError
 
+from . import apartments as apt
 from . import arcgis as ag
 from . import calepa
 from . import cdfa
@@ -612,6 +613,84 @@ def _food_row_preview(f: food.FoodFacility) -> dict:
     }
 
 
+DEFAULT_APARTMENT_SWEEP_CALLS = 600
+
+
+def apartment_sweep_ceiling() -> int:
+    raw = os.environ.get("LEADS_APARTMENT_SWEEP_CALLS", "").strip()
+    try:
+        value = int(raw) if raw else DEFAULT_APARTMENT_SWEEP_CALLS
+    except ValueError:
+        return DEFAULT_APARTMENT_SWEEP_CALLS
+    return value if value >= 0 else DEFAULT_APARTMENT_SWEEP_CALLS
+
+
+async def cmd_apartments(args: argparse.Namespace) -> int:
+    """Sweep Google for apartment properties, then group the ones that share a
+    website or a phone line into their managing companies.
+
+    One pull, two tabs: `Apartments` (walk-in targets, biggest and staffed first)
+    and `Property Managers` (companies holding two or more). Billed, like every
+    Places call -- see LEADS_APARTMENT_SWEEP_CALLS."""
+    today = date.today()
+    async with httpx.AsyncClient(timeout=60.0) as http_client:
+        client: places.PlacesClient | None = None
+        try:
+            client = places.PlacesClient(
+                http_client, places.service_account_token_provider(),
+                call_ceiling=apartment_sweep_ceiling(),
+            )
+            found = await client.sweep(
+                list(apt.SWEEP_QUERIES), FOOD_RECT,
+                typed_queries=list(apt.SWEEP_TYPED_QUERIES),
+                field_mask=places.SWEEP_FIELD_MASK_HOURS,
+            )
+        except places.PlacesError as exc:
+            _print({"error": str(exc)})
+            return 2
+
+    complexes = [c for c in (apt.from_place(r) for r in found.values()) if c and c.in_range]
+    managers = apt.group_managers(complexes, min_properties=args.min_properties)
+
+    summary: dict = {
+        "summary": True,
+        "swept": len(found),
+        "properties": len(complexes),
+        "withPhone": sum(1 for c in complexes if c.phone),
+        "withLeasingOffice": sum(1 for c in complexes if c.open_days),
+        "large": sum(1 for c in complexes if c.size_hint == "large"),
+        "managers": len(managers),
+        "managedProperties": sum(m.property_count for m in managers),
+        "places": {"attempted": client.calls, "budgetLeft": client.budget_left,
+                   "blocked": client.block_reason},
+    }
+
+    if args.destination == "preview":
+        for c in sorted(complexes, key=lambda c: -c.review_count)[: args.top]:
+            _print({"name": c.name, "phone": c.phone or None, "city": c.city,
+                    "onSite": c.onsite_tier, "hours": c.hours or None,
+                    "size": c.size_hint, "reviews": c.review_count,
+                    "managedBy": c.manager or None,
+                    "distanceMi": round(c.distance_miles, 1) if c.distance_miles is not None else None})
+        for m in managers[: args.top]:
+            _print({"manager": m.name, "properties": m.property_count, "phone": m.phone or None,
+                    "withLeasingOffice": m.with_office, "cities": m.cities,
+                    "groupedBy": m.basis, "national": m.is_national or None})
+        _print({**summary, "destination": "preview"})
+        return 0
+
+    backend = sheet.open_backend()
+    apts = sheet.sync_apartments(backend, complexes, today=today, dry_run=args.dry_run)
+    mgrs = sheet.sync_managers(backend, managers, today=today, dry_run=args.dry_run)
+    _print({**summary, "destination": "sheet", "dryRun": args.dry_run,
+            "apartmentsTab": {"added": apts.added, "enriched": apts.enriched,
+                              "skippedNoChange": apts.skipped_no_change,
+                              "skippedDnc": apts.skipped_dnc, "skippedCap": apts.skipped_cap},
+            "managersTab": {"added": mgrs.added, "enriched": mgrs.enriched,
+                            "skippedNoChange": mgrs.skipped_no_change}})
+    return 0
+
+
 async def cmd_mark(args: argparse.Namespace) -> int:
     """Shade the institutional, medical and residential rows red on both tabs.
 
@@ -687,6 +766,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_food.add_argument("--limit", type=int, default=None, help="only consider the top N ranked facilities")
     p_food.add_argument("--top", type=int, default=25, help="rows to print in preview mode")
     p_food.set_defaults(func=cmd_food)
+
+    p_apt = sub.add_parser(
+        "apartments",
+        help="sweep apartment complexes and group them into the companies managing two or more",
+    )
+    p_apt.add_argument("--destination", choices=("sheet", "preview"), default="sheet")
+    p_apt.add_argument("--dry-run", action="store_true", help="do every read, write nothing")
+    p_apt.add_argument(
+        "--min-properties", type=int, default=2,
+        help="how many properties a company needs before it counts as a manager (default 2)",
+    )
+    p_apt.add_argument("--top", type=int, default=25, help="rows to print in preview mode")
+    p_apt.set_defaults(func=cmd_apartments)
 
     p_mark = sub.add_parser(
         "mark-institutions",

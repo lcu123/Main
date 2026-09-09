@@ -24,9 +24,10 @@ import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any
+from typing import Any, Sequence
 
 from . import institutions, regions
+from .apartments import Complex, Manager
 from .food import FoodFacility
 from .fr_push import ConfigError
 from .pipeline import LeadCandidate
@@ -146,6 +147,36 @@ _FOOD_REMAINING = [
     if c not in DIALER_COLUMNS and c not in ("type of business", "city")
 ]
 FOOD_COLUMNS = DIALER_COLUMNS + ["type of business", "city"] + _FOOD_REMAINING
+
+# --- Apartments and Property Managers ----------------------------------------
+#
+# Two tabs from one pull: the properties a rep can walk into, and the companies
+# holding more than one of them. They share the spreadsheet's DNC tab and the
+# same dialer-first column order as everything else.
+
+APARTMENTS_TAB = "Apartments"
+MANAGERS_TAB = "Property Managers"
+DEFAULT_APARTMENT_ROW_CAP = 1200
+
+APARTMENT_TOOL_COLUMNS = [
+    "key", "facility", "phone", "on-site", "office hours", "size", "reviews",
+    "managed by", "manager properties", "address", "city", "zip", "region",
+    "distance (mi)", "website", "business status", "national operator",
+    "first seen", "last updated",
+]
+MANAGER_TOOL_COLUMNS = [
+    "key", "facility", "phone", "properties", "with leasing office", "cities",
+    "website", "grouped by", "property names", "national operator",
+    "first seen", "last updated",
+]
+# Same names the other tabs use for the rep's own columns -- the reps work all of
+# them and two vocabularies for one field is how a status drifts in meaning.
+APARTMENT_REP_COLUMNS = list(REP_COLUMNS)
+
+_APT_REMAINING = [c for c in APARTMENT_TOOL_COLUMNS + APARTMENT_REP_COLUMNS if c not in DIALER_COLUMNS]
+APARTMENT_COLUMNS = DIALER_COLUMNS + _APT_REMAINING
+_MGR_REMAINING = [c for c in MANAGER_TOOL_COLUMNS + APARTMENT_REP_COLUMNS if c not in DIALER_COLUMNS]
+MANAGER_COLUMNS = DIALER_COLUMNS + _MGR_REMAINING
 
 
 # --- backend interface -------------------------------------------------------
@@ -1061,3 +1092,163 @@ def mark_institutions(
         "byClass": by_class,
         "dryRun": dry_run,
     }
+
+
+# --- Apartments / Property Managers sync -------------------------------------
+
+
+APARTMENT_CONTACT_COLUMNS = (
+    "phone", "website", "office hours", "on-site", "size", "reviews",
+    "managed by", "manager properties", "business status",
+)
+
+
+def _apartment_row(c: Complex, *, today: date) -> dict[str, Any]:
+    return {
+        "key": c.key,
+        "facility": c.name,
+        "phone": c.phone,
+        # What a rep finds if they turn up. Posted hours are a direct observation;
+        # no public source carries the unit count this used to be inferred from.
+        "on-site": c.onsite_tier,
+        "office hours": c.hours,
+        # A proxy for size, labelled as one -- review volume, not units.
+        "size": c.size_hint,
+        "reviews": c.review_count,
+        "managed by": c.manager,
+        "manager properties": c.manager_properties or "",
+        "address": c.address,
+        "city": c.city,
+        "zip": c.zip5,
+        "region": c.region_name or "",
+        "distance (mi)": round(c.distance_miles, 1) if c.distance_miles is not None else "",
+        "website": c.website,
+        "business status": c.business_status,
+        "national operator": "yes" if c.is_national else "",
+        "first seen": today.isoformat(),
+        "last updated": today.isoformat(),
+        "status": "new",
+    }
+
+
+def _manager_row(m: Manager, *, today: date) -> dict[str, Any]:
+    return {
+        "key": m.key,
+        "facility": m.name,
+        "phone": m.phone,
+        "properties": m.property_count,
+        "with leasing office": m.with_office,
+        "cities": ", ".join(m.cities),
+        "website": m.website,
+        # How the group was formed, so a rep can weigh it: a shared website is
+        # strong, a shared phone line could be a shared answering service.
+        "grouped by": m.basis,
+        "property names": ", ".join(m.properties),
+        "national operator": "yes" if m.is_national else "",
+        "first seen": today.isoformat(),
+        "last updated": today.isoformat(),
+        "status": "new",
+    }
+
+
+def _sync_generic(
+    backend: SheetBackend,
+    tab: str,
+    columns: list[str],
+    tool_columns: list[str],
+    rows_out: list[dict[str, Any]],
+    refresh: Sequence[str],
+    *,
+    today: date,
+    new_row_cap: int,
+    dry_run: bool,
+) -> SyncResult:
+    """Append-new / refresh-known, the same contract `sync_leads` follows: batch
+    every write to the end, never touch a rep column, dedupe by key."""
+    backend.ensure_tab(tab, columns)
+    backend.ensure_columns(tab, tool_columns)
+    backend.ensure_tab(DNC_TAB, DNC_COLUMNS)
+    backend.ensure_tab(RUNS_TAB, RUNS_COLUMNS)
+
+    existing = backend.read_rows(tab)
+    dnc_keys, dnc_phones, _ = _dnc_sets(backend.read_rows(DNC_TAB))
+    by_key = {r.get("key", "").strip(): i for i, r in enumerate(existing) if r.get("key", "").strip()}
+
+    result = SyncResult()
+    appends: list[dict[str, Any]] = []
+    updates: list[tuple[int, dict[str, Any]]] = []
+    new_rows = 0
+
+    for row in rows_out:
+        key = row["key"]
+        phone = str(row.get("phone") or "")
+        if key in dnc_keys or (phone and phone in dnc_phones):
+            result.skipped_dnc += 1
+            continue
+        index = by_key.get(key)
+        if index is None:
+            if new_rows >= new_row_cap:
+                result.skipped_cap += 1
+                continue
+            appends.append(row)
+            new_rows += 1
+            result.added += 1
+            continue
+        current = existing[index]
+        update = {
+            c: row[c] for c in refresh
+            if c in row and str(current.get(c) or "") != str(row[c]) and not _blank(row[c])
+        }
+        if update:
+            update["last updated"] = today.isoformat()
+            updates.append((index, update))
+            result.enriched += 1
+        else:
+            result.skipped_no_change += 1
+
+    if not dry_run:
+        if appends:
+            backend.append_rows(tab, appends)
+        if updates:
+            backend.update_rows(tab, updates)
+        backend.append_rows(RUNS_TAB, [_run_row(result, today=today)])
+    return result
+
+
+def sync_apartments(
+    backend: SheetBackend,
+    complexes: list[Complex],
+    *,
+    today: date,
+    new_row_cap: int = DEFAULT_APARTMENT_ROW_CAP,
+    dry_run: bool = False,
+) -> SyncResult:
+    """The properties. Ordered biggest first, since the ask was for the large ones
+    -- a rep working top-down reaches the staffed leasing offices first."""
+    ordered = sorted(
+        complexes,
+        key=lambda c: (0 if c.onsite_tier == "Leasing office (posted hours)" else 1, -c.review_count, c.name),
+    )
+    return _sync_generic(
+        backend, APARTMENTS_TAB, APARTMENT_COLUMNS, APARTMENT_TOOL_COLUMNS,
+        [_apartment_row(c, today=today) for c in ordered],
+        APARTMENT_CONTACT_COLUMNS, today=today, new_row_cap=new_row_cap, dry_run=dry_run,
+    )
+
+
+def sync_managers(
+    backend: SheetBackend,
+    managers: list[Manager],
+    *,
+    today: date,
+    new_row_cap: int = DEFAULT_APARTMENT_ROW_CAP,
+    dry_run: bool = False,
+) -> SyncResult:
+    """The companies, biggest portfolio first."""
+    return _sync_generic(
+        backend, MANAGERS_TAB, MANAGER_COLUMNS, MANAGER_TOOL_COLUMNS,
+        [_manager_row(m, today=today) for m in managers],
+        ("phone", "properties", "with leasing office", "cities", "website",
+         "grouped by", "property names"),
+        today=today, new_row_cap=new_row_cap, dry_run=dry_run,
+    )

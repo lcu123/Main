@@ -154,6 +154,14 @@ SWEEP_FIELD_MASK = (
     "places.location,nextPageToken"
 )
 
+# The apartment sweep needs two fields the food sweep does not: posted opening
+# hours (the on-site-manager signal, since no public source carries unit counts)
+# and the review count (the only available proxy for how big a property is).
+SWEEP_FIELD_MASK_HOURS = (
+    SWEEP_FIELD_MASK[: -len("nextPageToken")]
+    + "places.regularOpeningHours,places.userRatingCount,nextPageToken"
+)
+
 _DIGITS_RE = re.compile(r"\D+")
 _HOUSE_NUMBER_RE = re.compile(r"^\s*(\d+)")
 
@@ -176,6 +184,10 @@ class PlaceRow:
     business_status: str | None
     lat: float | None
     lng: float | None
+    # Only populated by a sweep asking for them (SWEEP_FIELD_MASK_HOURS); the food
+    # sweep leaves both at their defaults rather than paying for fields it ignores.
+    opening_hours: tuple[str, ...] = ()
+    review_count: int = 0
 
     @property
     def key(self) -> str:
@@ -411,7 +423,8 @@ class PlacesClient:
         )
 
     async def search_text(
-        self, query: str, rect: "Rect", *, included_type: str | None = None
+        self, query: str, rect: "Rect", *, included_type: str | None = None,
+        field_mask: str = SWEEP_FIELD_MASK,
     ) -> tuple[list[PlaceRow], bool]:
         """(rows, saturated) for one keyword over one rectangle.
 
@@ -439,7 +452,7 @@ class PlacesClient:
                 body["strictTypeFiltering"] = True
             if token:
                 body["pageToken"] = token
-            payload = await self._post(body, SWEEP_FIELD_MASK)
+            payload = await self._post(body, field_mask)
             if payload is None:
                 break
             for raw in payload.get("places") or []:
@@ -458,6 +471,7 @@ class PlacesClient:
         *,
         typed_queries: Sequence[tuple[str, str]] = (),
         max_depth: int = 2,
+        field_mask: str = SWEEP_FIELD_MASK,
     ) -> dict[str, PlaceRow]:
         """Every keyword over the rectangle, splitting into quadrants wherever a
         keyword saturates, de-duplicated by place ID.
@@ -471,7 +485,9 @@ class PlacesClient:
         async def run(query: str, box: "Rect", depth: int, included_type: str | None) -> None:
             if self.blocked or self.budget_left <= 0:
                 return
-            rows, saturated = await self.search_text(query, box, included_type=included_type)
+            rows, saturated = await self.search_text(
+                query, box, included_type=included_type, field_mask=field_mask
+            )
             for row in rows:
                 found.setdefault(row.place_id, row)
             if saturated and depth < max_depth:
@@ -491,6 +507,7 @@ def _row_from(raw: dict[str, Any]) -> PlaceRow | None:
     if not place_id or not name:
         return None
     location = raw.get("location") or {}
+    hours = (raw.get("regularOpeningHours") or {}).get("weekdayDescriptions") or []
     return PlaceRow(
         place_id=place_id,
         name=name,
@@ -501,4 +518,6 @@ def _row_from(raw: dict[str, Any]) -> PlaceRow | None:
         business_status=raw.get("businessStatus") or None,
         lat=location.get("latitude"),
         lng=location.get("longitude"),
+        opening_hours=tuple(hours),
+        review_count=int(raw.get("userRatingCount") or 0),
     )
