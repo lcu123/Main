@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import math
 
-# 6948 West 2nd St, Rio Linda, CA -- Zest's office (regions.py docstring in the plan).
-OFFICE_LAT = 38.691
-OFFICE_LNG = -121.448
+# 6948 W 2nd St, Rio Linda, CA 95673 -- Zest's office. Geocoded 2026-09-09 against
+# the US Census geocoder (Public_AR_Current), which returned this address exactly and
+# agrees with docs/food-facilities-plan.md's appendix. The rounder pair that shipped
+# here first (38.691, -121.448) was off by 0.99 miles, almost all of it in longitude
+# -- enough to move a facility across one of geo_multiplier's band edges.
+OFFICE_LAT = 38.6941
+OFFICE_LNG = -121.4660
 
 # Zip -> (regionID, region name), owner-reviewed 2026-09-07. Elk Grove and Galt are
 # folded into South Sacramento (4) per the plan; Natomas into North Highlands (8);

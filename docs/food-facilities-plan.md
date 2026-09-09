@@ -286,11 +286,12 @@ account exists and the sheet is shared with it as Editor. No `GOOGLE_MAPS_API_KE
 Places API (New) accepts the service account's OAuth `cloud-platform` token, verified live, so there
 is no second credential to store or restrict.
 
-## 13b. Recon findings (2026-09-08/09) — three sources verified against live endpoints
+## 13b. Recon findings (2026-09-08/09) — every source verified against its live endpoint
 
-Before writing any adapter, one investigator per source actually hit its endpoint. Three reported
-before a spend limit interrupted the rest; **two of the three overturn assumptions in section 3
-above, which should be read as superseded where they conflict.**
+Before writing any adapter, one investigator per source actually hit its endpoint. All eight have
+now reported. **Several findings overturn assumptions in sections 3 and 12 above, which should be
+read as superseded where they conflict** — most consequentially, the two sources this section
+recommends building first are not the two section 3 leads with.
 
 ### City of Sacramento BOT — demoted from "permit-grade core" to enrichment only
 
@@ -316,9 +317,11 @@ lat/lng, and `returnGeometry=true` returns nothing. Stored values carry trailing
 comparison forgives but Python `==` does not: `.strip()` after parsing, the same trailing-space bug
 class CLAUDE.md already documents for `FOOD PREP ESTAB `.
 
-### USDA FSIS — confirmed as the first adapter to build
+### USDA FSIS — the cleanest data in the effort, but small (and third in the corrected order)
 
 The best-shaped source in the effort: a single static CSV, no auth, no pagination, no PDF parsing.
+(It led the order when only three sources had reported; CDFA and CalEPA later came back with five
+times the rows and the same phone coverage, so it settles at third — see the corrected order below.)
 **28 establishments inside the 28-mile circle, with a phone on every one and real lat/lng on 100%**
 — which makes the radius filter exact rather than zip-centroid-approximated as `regions.py` must do
 for Placer and Yolo. Carries an activity vocabulary separating slaughter from processing, and an
@@ -344,15 +347,103 @@ with `Message: "Success"` and no warning. Any adapter must call `get_facility_in
 `get_qid`/`get_download` back-to-back in one function, never cache a qid, and assert the returned
 rows are actually in California near the office before writing anything downstream.
 
+### CDFA Market Enforcement — the single best source found, and it was not in section 3's shortlist
+
+Not a section 3 candidate at all, and it should be the **first adapter built**: the California
+Department of Food and Agriculture's Market Enforcement licence registry returns **157 rows inside
+the 28-mile circle and every single one carries a phone number** — the only source in this whole
+effort with 100% phone fill. It is licensing data for processors, packers and dealers of farm
+products, which is close to a definition of this division's ICP. The names that come back are the
+right ones: Blue Diamond Growers, Farmers' Rice Cooperative, BCFoods, Sunwest Foods, Elk Grove
+Milling — including the two accounts the BOT registry could not surface by category.
+
+Three caveats, all workable:
+
+- **No lat/lng.** Distance has to come from the zip centroid, the same approximation `regions.py`
+  already applies to every Placer and Yolo row, so no new machinery is needed.
+- **The addresses are mailing addresses**, and 27 of the 157 are PO Boxes. A PO Box row still has a
+  phone (which is what the rep needs), but it cannot be distance-filtered or address-matched
+  against Places, and it should not be presented as a site address.
+- **It is an ASP.NET WebForms search**, so the POST needs a `__VIEWSTATE`/`__EVENTVALIDATION` pair
+  scraped from the form immediately beforehand; a stale one is rejected. Fetch-then-post in one
+  function, never cache the token.
+
+**Skip the CDFA/IMS dairy half.** It was checked in the same pass and is a separate, thinner
+listing that adds little beyond what Market Enforcement already returns.
+
+### CalEPA Regulated Site Portal — undocumented JSON API, and it has both phone and coordinates
+
+The portal ships a public search UI with no documented API, but reading its SPA bundle turned up
+the JSON and CSV endpoints behind it, and they are open — no key, no auth. **190 sites in area,
+carrying phone *and* true lat/lng, filterable by NAICS/SIC prefix.** The names lean distribution
+rather than manufacturing — Sysco, US Foods, Shamrock Foods, US Cold Storage — which is exactly the
+"storage and distribution" half of section 1's target that CDFA's grower-facing registry misses.
+Best used as a second discovery source and as an enrichment/targeting layer over the others.
+
+Two failure modes to code against, one of them silent:
+
+- **A missing bounding box returns HTTP 500**, which at least fails loudly.
+- **A bounding box in the wrong projection returns HTTP 200 with zero rows** — no error, no
+  warning, just an empty result that looks like "nothing in this area". Assert a non-zero row count
+  for a known-populated bbox in the adapter's own smoke test.
+- It is a private API discovered by reading minified JavaScript. It can change shape without any
+  notice or changelog. Treat a schema change as expected maintenance, not an incident.
+
+### Google Places — usable as a discovery source, with a review queue, and a hard result cap
+
+The open question from the previous round was whether a processor can be told apart from a
+restaurant using only the fields Places returns. **It can, well enough to automate**: `primaryType`
+separates the categories cleanly enough that the uncertain remainder is a review queue rather than
+a majority. Roughly **350 findable businesses** across the tiled search terms.
+
+The constraint that shapes the tiling in section 4.2: **Text Search caps at 50 results per query,
+hard, and relevance collapses well before that** — page 2 of a query was already thin and page 3
+returned 0 useful rows out of 10. So the answer to "more coverage" is more, narrower queries, never
+deeper paging on a broad one. Budget accordingly: this remains the only billed step in the
+pipeline.
+
+### Codebase reuse — the existing modules carry more than expected
+
+Reusable **unchanged**, because they are already tab-generic rather than Leads-specific:
+`SheetBackend`/`GspreadBackend`/`FakeSheetBackend` (every method takes a tab name), `plan_reorder`,
+the DNC helpers, `regions.py`, `PoliteFetcher`, `PortalCircuit`, and the `LeadCandidate` dataclass.
+That is the whole sheet-writing and polite-fetching substrate, and it carries fixes only real runs
+surfaced — the Sheets 60-writes-per-minute batching, the `%PDF` body sniff, the address-agreement
+check.
+
+Written fresh: the source adapters, a classifier for this ICP, the `Food Facilities` column set,
+and a `sync_food_facilities()` modelled on `sync_leads` (same ownership split, same idempotency
+shape).
+
 ### What this changes about the build order
 
-Section 12's phase 1 assumed BOT + FSIS + ECHO + CalEPA merge into a "permit-grade core". On the
-evidence so far that core is thinner than hoped: FSIS is excellent but small (28 rows), ECHO has no
-phone, and BOT cannot identify food businesses by category. **Google Places therefore carries more
-of the discovery load than section 3's ordering implies**, which raises the stakes on the
-outstanding `places-strategy` recon question — whether a processor can be told apart from a
-restaurant using only the fields Places returns. Remaining recon (CalEPA, CDFA/CDPH, Places,
-codebase reuse) is still in flight.
+Section 12's phase 1 assumed BOT + FSIS + ECHO + CalEPA merge into a "permit-grade core". Three of
+those four are weaker than the plan assumed, and the strongest source in the whole effort was not
+on the list. Corrected order:
+
+1. **CDFA Market Enforcement** — 157 rows, 100% phone, the right names. Highest value per line of
+   code, despite the VIEWSTATE handling.
+2. **CalEPA site portal** — 190 rows with phone *and* coordinates; covers distribution and cold
+   storage, which CDFA does not.
+3. **USDA FSIS** — small (28 rows) but perfect data and ~60 lines. **Blocked on one check:** run a
+   live fetch from Railway first, since `fsis.usda.gov` 403s this sandbox at the Akamai edge.
+4. **Google Places sweep** — many narrow queries, never deep paging; fills the gaps the registries
+   miss and enriches rows that lack a phone.
+5. **City of Sacramento BOT** — enrichment only, and only behind a name-based classifier.
+6. **EPA ECHO** — optional. No phone, and the qid-recycling trap makes it the most dangerous source
+   here for the least return.
+
+CDPH and Data Axle stay deferred at the owner's direction (a PRA request and a library card
+respectively), and nothing above depends on them.
+
+### One correction to shipped code that came out of this
+
+The appendix's office coordinates (38.6941, -121.4660) and `regions.py`'s (38.691, -121.448)
+disagreed by 0.99 miles. The US Census geocoder (Public_AR_Current, queried 2026-09-09) returns
+`6948 W 2ND ST, RIO LINDA, CA, 95673` at **38.694109, -121.466030** — the plan was right and the
+shipped constant was wrong. `regions.py` is corrected, which slightly changes every distance the
+existing lead scraper reports and can move a facility across one of `geo_multiplier`'s band edges.
+Worth knowing before the 28-mile cut is applied to a second tab.
 
 ## 14. Known limits
 
@@ -370,5 +461,11 @@ codebase reuse) is still in flight.
 - USDA FSIS MPI Directory: `https://www.fsis.usda.gov/inspection/establishments/meat-poultry-and-egg-product-inspection-directory` (CSV).
 - EPA ECHO facility search: `https://echo.epa.gov/facilities/facility-search` (NAICS filter, CSV export).
 - CalEPA Regulated Site Portal: `https://siteportal.calepa.ca.gov/nsite/`; CalEPA Open Data for bulk downloads.
+- CDFA Market Enforcement licence search: an ASP.NET WebForms page under cdfa.ca.gov; the recon
+  agent's exact endpoint was not carried forward, so re-derive it (and the `__VIEWSTATE` pair) from
+  the live form when the adapter is written rather than trusting a URL written down from memory.
+- CalEPA: the documented portal is `https://siteportal.calepa.ca.gov/nsite/`; the JSON/CSV
+  endpoints the adapter should use are undocumented and were found by reading that SPA's bundle —
+  re-derive them the same way, and assert a non-zero row count for a known bbox.
 - CDPH Food and Drug Branch (PRA request): FDBfood@cdph.ca.gov, (916) 650-6500.
 - Google: Places API (New) Text Search + Place Details; Sheets API v4 with a service account.
