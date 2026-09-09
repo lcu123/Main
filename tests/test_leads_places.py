@@ -190,3 +190,44 @@ def test_max_calls_reads_the_env_with_a_safe_default(monkeypatch):
     assert places.max_calls() == 7
     monkeypatch.setenv("LEADS_PLACES_MAX_CALLS", "not-a-number")
     assert places.max_calls() == places.DEFAULT_MAX_CALLS
+
+
+def test_the_token_provider_reads_the_inline_credential_railway_actually_sets(monkeypatch):
+    # Railway's variables UI has no secret-file mechanism, so the live deployment
+    # sets GOOGLE_SERVICE_ACCOUNT_JSON inline and never the _PATH form. Reading
+    # only _PATH here raised PlacesError on every scheduled run.
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH", raising=False)
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON", '{"type": "service_account"}')
+    seen = {}
+
+    class _Creds:
+        valid = True
+        token = "tok"
+
+        @classmethod
+        def from_service_account_info(cls, info, scopes):
+            seen["info"], seen["scopes"] = info, scopes
+            return cls()
+
+    monkeypatch.setattr(
+        "google.oauth2.service_account.Credentials", _Creds, raising=False
+    )
+    assert places.service_account_token_provider()() == "tok"
+    assert seen["info"] == {"type": "service_account"}
+    assert seen["scopes"] == list(places.SCOPES)
+
+
+def test_a_malformed_inline_credential_is_a_places_error_not_a_json_error(monkeypatch):
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH", raising=False)
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON", "{not json")
+    with pytest.raises(places.PlacesError):
+        places.service_account_token_provider()
+
+
+def test_no_credential_at_all_names_both_variables(monkeypatch):
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH", raising=False)
+    with pytest.raises(places.PlacesError) as exc:
+        places.service_account_token_provider()
+    assert "GOOGLE_SERVICE_ACCOUNT_JSON" in str(exc.value)
+    assert "GOOGLE_SERVICE_ACCOUNT_JSON_PATH" in str(exc.value)

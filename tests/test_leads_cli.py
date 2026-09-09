@@ -87,3 +87,34 @@ def test_run_and_preview_accept_a_counties_override():
     parser = cli.build_parser()
     args = parser.parse_args(["run", "--counties", "placer,yolo"])
     assert cli._parse_counties(args.counties) == ("placer", "yolo")
+
+
+@pytest.mark.asyncio
+async def test_a_missing_places_credential_does_not_take_the_run_down(monkeypatch):
+    """Enrichment is optional; writing the sheet is the point of the run. Before
+    this, a PlacesError propagated out of main()'s except tuple and the 7am
+    scheduled run produced nothing at all."""
+    from fr_mcp.leads import places
+
+    def _no_credential():
+        raise places.PlacesError("No service-account credential for Places")
+
+    monkeypatch.setattr(cli.places, "service_account_token_provider", _no_credential)
+    out = await cli._enrich_phones([_candidate("K1")], new_row_cap=5)
+    assert out["attempted"] == 0
+    assert "No service-account credential" in out["blocked"]
+
+
+@pytest.mark.asyncio
+async def test_a_credential_that_fails_at_lookup_time_still_lets_the_run_finish(monkeypatch):
+    from fr_mcp.leads import places
+
+    def _expired_token():
+        raise places.PlacesError("Places token refresh failed: invalid_grant")
+
+    monkeypatch.setattr(cli.places, "service_account_token_provider", lambda: _expired_token)
+    cand = _candidate("K1")
+    cand.name, cand.street, cand.city, cand.zip5 = "ZEBRA DELI", "1 Main St", "Lincoln", "95648"
+    out = await cli._enrich_phones([cand], new_row_cap=5)
+    assert "invalid_grant" in out["blocked"]
+    assert out["attempted"] == 0  # the token is fetched before the billed call, so none was made

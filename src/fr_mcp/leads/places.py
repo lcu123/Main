@@ -22,6 +22,7 @@ against a misconfiguration.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -83,22 +84,46 @@ def normalize_phone(raw: str | None) -> str | None:
 def service_account_token_provider(key_path: str | None = None, key_json: dict[str, Any] | None = None) -> Callable[[], str]:
     """A `token_provider` backed by the deployment's existing service account --
     the same credential `sheet.open_backend()` uses. Refreshes on demand;
-    google-auth caches until the token is close to expiry."""
+    google-auth caches until the token is close to expiry.
+
+    Resolution order mirrors `sheet.open_backend()` exactly -- inline JSON
+    first, then a path on disk -- and it has to: Railway's variables UI has no
+    secret-file mechanism, so the live deployment sets only the inline
+    GOOGLE_SERVICE_ACCOUNT_JSON. Reading only the _PATH form here (as this did
+    until 2026-09-09) meant every scheduled run raised on the same credential
+    the sheet writer was about to authenticate with perfectly well."""
     from google.oauth2 import service_account
+
+    if key_json is None and key_path is None:
+        inline = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+        if inline:
+            try:
+                key_json = json.loads(inline)
+            except ValueError as exc:
+                raise PlacesError("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON.") from exc
 
     if key_json is not None:
         creds = service_account.Credentials.from_service_account_info(key_json, scopes=list(SCOPES))
     else:
         path = key_path or os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_PATH", "").strip()
         if not path:
-            raise PlacesError("No service-account credential for Places (GOOGLE_SERVICE_ACCOUNT_JSON_PATH).")
+            raise PlacesError(
+                "No service-account credential for Places "
+                "(set GOOGLE_SERVICE_ACCOUNT_JSON inline or GOOGLE_SERVICE_ACCOUNT_JSON_PATH)."
+            )
         creds = service_account.Credentials.from_service_account_file(path, scopes=list(SCOPES))
 
     def token() -> str:
         if not creds.valid:
+            import google.auth.exceptions
             import google.auth.transport.requests
 
-            creds.refresh(google.auth.transport.requests.Request())
+            try:
+                creds.refresh(google.auth.transport.requests.Request())
+            except google.auth.exceptions.GoogleAuthError as exc:
+                # Surfaced as PlacesError so the caller has one exception type to
+                # degrade on: enrichment is optional, the sheet write is not.
+                raise PlacesError(f"Places token refresh failed: {exc}") from exc
         return creds.token
 
     return token

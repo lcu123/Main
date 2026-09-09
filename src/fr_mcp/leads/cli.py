@@ -185,18 +185,28 @@ async def _enrich_phones(
     if not needs:
         return {"attempted": 0, "matched": 0}
     async with httpx.AsyncClient(timeout=30.0) as http_client:
-        client = places.PlacesClient(http_client, places.service_account_token_provider())
-        for c in needs:
-            if client.blocked or client.budget_left <= 0:
-                break
-            hit = await client.lookup(name=c.name, street=c.street, city=c.city, zip5=c.zip5)
-            if hit is None:
-                continue
-            c.business_phone = hit.phone
-            if hit.phone and not c.best_phone:
-                c.phone, c.phone_source = hit.phone, "google_places"
-            c.website = hit.website
-            c.business_status = hit.business_status
+        # Enrichment is an optional extra on top of the run; the sheet write is
+        # the point of it. A credential or quota problem here must degrade to
+        # "no business phones this run", never take the whole run down with it
+        # -- which is exactly what it did on 2026-09-09 until this was caught.
+        client: places.PlacesClient | None = None
+        try:
+            client = places.PlacesClient(http_client, places.service_account_token_provider())
+            for c in needs:
+                if client.blocked or client.budget_left <= 0:
+                    break
+                hit = await client.lookup(name=c.name, street=c.street, city=c.city, zip5=c.zip5)
+                if hit is None:
+                    continue
+                c.business_phone = hit.phone
+                if hit.phone and not c.best_phone:
+                    c.phone, c.phone_source = hit.phone, "google_places"
+                c.website = hit.website
+                c.business_status = hit.business_status
+        except places.PlacesError as exc:
+            if client is None:  # the credential itself never resolved
+                return {"attempted": 0, "matched": 0, "blocked": str(exc)}
+            client.blocked, client.block_reason = True, str(exc)
     return {
         "attempted": client.calls,
         "matched": client.matched,
@@ -363,7 +373,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         code = asyncio.run(args.func(args))
-    except (ag.FeedError, push.ConfigError, FieldRoutesError, ToolError) as exc:
+    except (ag.FeedError, push.ConfigError, places.PlacesError, FieldRoutesError, ToolError) as exc:
         _print({"error": str(exc)})
         code = 2
     sys.exit(code)
