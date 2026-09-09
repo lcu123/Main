@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from . import regions
+from . import institutions, regions
 from .food import FoodFacility
 from .fr_push import ConfigError
 from .pipeline import LeadCandidate
@@ -63,7 +63,8 @@ TOOL_COLUMNS = [
     "owner name", "owner type",
     "phone", "phone source", "business phone", "phone flag",
     "email", "email source", "email confidence",
-    "website", "business status", "places checked", "first seen", "last updated",
+    "website", "business status", "places checked", "facility class",
+    "first seen", "last updated",
 ]
 
 # Rep-owned columns -- sync_leads never writes any of these on an update. `status`
@@ -124,7 +125,7 @@ FOOD_TOOL_COLUMNS = [
     "address", "city", "zip", "region", "distance (mi)", "distance basis",
     "sources", "found via", "needs review", "review reason",
     "website", "business status", "contact name", "in leads tab",
-    "places checked", "first seen", "last updated",
+    "places checked", "facility class", "first seen", "last updated",
 ]
 
 # Deliberately the same names the Leads tab uses for the rep's own columns. The
@@ -197,6 +198,16 @@ class SheetBackend(ABC):
         owner's own column arrangement untouched."""
         return []
 
+    def shade_rows(self, tab: str, row_indices: list[int], rgb: tuple[float, float, float] | None) -> int:
+        """Give whole data rows a background colour, or clear it with `rgb=None`.
+
+        Colour is the one thing in this sheet a rep reads without reading -- it
+        scans before it is parsed -- so it is worth having, but it is also the one
+        thing that carries no meaning a later run can recover. Every shading here
+        is therefore paired with a real column holding the same fact; the colour is
+        the signal, the column is the record. Returns the number of rows shaded."""
+        return 0
+
 
 class FakeSheetBackend(SheetBackend):
     """In-memory stand-in for a real spreadsheet -- mirrors gspread's shape
@@ -206,6 +217,7 @@ class FakeSheetBackend(SheetBackend):
     def __init__(self) -> None:
         self.columns: dict[str, list[str]] = {}
         self.rows: dict[str, list[dict[str, Any]]] = {}
+        self.shading: dict[str, dict[int, tuple[float, float, float]]] = {}
 
     def ensure_tab(self, tab: str, columns: list[str]) -> None:
         if tab not in self.columns:
@@ -239,6 +251,15 @@ class FakeSheetBackend(SheetBackend):
                 row.setdefault(c, "")
         return added
 
+    def shade_rows(self, tab: str, row_indices: list[int], rgb: tuple[float, float, float] | None) -> int:
+        shaded = self.shading.setdefault(tab, {})
+        for i in row_indices:
+            if rgb is None:
+                shaded.pop(i, None)
+            else:
+                shaded[i] = rgb
+        return len(row_indices)
+
 
 class GspreadBackend(SheetBackend):
     """Wraps a `gspread.Spreadsheet`. Column position is looked up from each
@@ -269,6 +290,17 @@ class GspreadBackend(SheetBackend):
             ws = self._ss.add_worksheet(title=tab, rows=1000, cols=max(len(columns), 10))
             ws.update([columns], "A1")
             self._ws_cache[tab] = ws
+
+    def shade_rows(self, tab: str, row_indices: list[int], rgb: tuple[float, float, float] | None) -> int:
+        ws = self._worksheet(tab)
+        if ws is None or not row_indices:
+            return 0
+        requests = _shade_requests(ws.id, list(row_indices), len(self.header(tab)), rgb)
+        if requests:
+            # One batch, for the same reason every other write here is batched:
+            # Sheets allows 60 write requests per minute per user.
+            self._ss.batch_update({"requests": requests})
+        return len(set(row_indices))
 
     def rewrite_tab(self, tab: str, header: list[str], rows: list[dict[str, Any]]) -> None:
         ws = self._worksheet(tab)
@@ -353,6 +385,36 @@ class GspreadBackend(SheetBackend):
                 body.append({"range": cell, "values": [[val]]})
         if body:
             ws.batch_update(body, value_input_option="USER_ENTERED")
+
+
+def _shade_requests(sheet_id: int, row_indices: list[int], width: int, rgb) -> list[dict]:
+    """One `repeatCell` request per contiguous run of rows, so shading 40 scattered
+    rows is a handful of requests rather than 40. Row indices are 0-based *data*
+    rows; the grid is 0-based including the header, hence the +1."""
+    fmt = {"backgroundColor": {"red": rgb[0], "green": rgb[1], "blue": rgb[2]}} if rgb else {}
+    requests, runs = [], []
+    for i in sorted(set(row_indices)):
+        if runs and i == runs[-1][1]:
+            runs[-1][1] = i + 1
+        else:
+            runs.append([i, i + 1])
+    for start, end in runs:
+        requests.append(
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start + 1,
+                        "endRowIndex": end + 1,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": max(width, 1),
+                    },
+                    "cell": {"userEnteredFormat": fmt},
+                    "fields": "userEnteredFormat.backgroundColor",
+                }
+            }
+        )
+    return requests
 
 
 def open_backend() -> GspreadBackend:
@@ -937,3 +999,65 @@ def _duplicate_food_columns(backend: SheetBackend) -> set[str]:
         return set()
     names = header(FOOD_TAB)
     return {n for n in FOOD_TOOL_COLUMNS if names.count(n) > 1}
+
+
+# --- institutional / medical / residential marking ---------------------------
+
+# A muted red: legible behind black text, and distinct from the greens and yellows
+# a rep may already be using for their own status colours.
+INSTITUTION_RGB = (0.96, 0.80, 0.80)
+
+
+def mark_institutions(
+    backend: SheetBackend, tab: str, *, dry_run: bool = False
+) -> dict[str, Any]:
+    """Shade every nursing home, care facility, hospital, clinic, apartment complex
+    and campus dining row red, and record what each one is in `facility class`.
+
+    The colour and the column are deliberately paired. Colour is what a rep
+    actually reads -- it registers before the row is parsed -- but it survives no
+    round trip: nothing later can ask the sheet "which rows are care homes", and a
+    rep who copies a row loses it. The column is the durable half.
+
+    Re-runnable: a row that stops matching has its shading cleared and its class
+    blanked, so a corrected facility name takes effect rather than leaving a stale
+    red stripe behind."""
+    rows = backend.read_rows(tab)
+    tool_columns = FOOD_TOOL_COLUMNS if tab == FOOD_TAB else TOOL_COLUMNS
+    if "facility class" in tool_columns:
+        backend.ensure_columns(tab, ["facility class"])
+
+    matched: dict[int, str] = {}
+    cleared: list[int] = []
+    for index, row in enumerate(rows):
+        permits = [p.strip() for p in str(row.get("permit types") or "").split(",") if p.strip()]
+        label = institutions.classify(row.get("facility", ""), permits)
+        current = str(row.get("facility class") or "").strip()
+        if label:
+            matched[index] = label
+        elif current:
+            cleared.append(index)
+
+    updates = [(i, {"facility class": label}) for i, label in matched.items()
+               if str(rows[i].get("facility class") or "").strip() != label]
+    updates += [(i, {"facility class": ""}) for i in cleared]
+
+    if not dry_run:
+        if updates:
+            backend.update_rows(tab, updates)
+        if matched:
+            backend.shade_rows(tab, sorted(matched), INSTITUTION_RGB)
+        if cleared:
+            backend.shade_rows(tab, cleared, None)
+
+    by_class: dict[str, int] = {}
+    for label in matched.values():
+        by_class[label] = by_class.get(label, 0) + 1
+    return {
+        "tab": tab,
+        "rows": len(rows),
+        "marked": len(matched),
+        "unmarked": len(cleared),
+        "byClass": by_class,
+        "dryRun": dry_run,
+    }

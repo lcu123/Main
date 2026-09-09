@@ -612,6 +612,19 @@ def _food_row_preview(f: food.FoodFacility) -> dict:
     }
 
 
+async def cmd_mark(args: argparse.Namespace) -> int:
+    """Shade the institutional, medical and residential rows red on both tabs.
+
+    Separate from `run` and `food` on purpose: it is a pass over what is already
+    in the sheet, makes no network calls to any county or Google, and is safe to
+    re-run at any time."""
+    backend = sheet.open_backend()
+    tabs = [sheet.LEADS_TAB, sheet.FOOD_TAB] if args.tab == "both" else [args.tab]
+    for tab in tabs:
+        _print(sheet.mark_institutions(backend, tab, dry_run=args.dry_run))
+    return 0
+
+
 def _add_common_pull_args(p: argparse.ArgumentParser, default_days: int) -> None:
     p.add_argument("--since-days", type=int, default=default_days, help="how far back to pull the county feed(s)")
     p.add_argument(
@@ -674,6 +687,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_food.add_argument("--limit", type=int, default=None, help="only consider the top N ranked facilities")
     p_food.add_argument("--top", type=int, default=25, help="rows to print in preview mode")
     p_food.set_defaults(func=cmd_food)
+
+    p_mark = sub.add_parser(
+        "mark-institutions",
+        help="shade nursing/care, hospital, apartment and campus rows red and record their class",
+    )
+    p_mark.add_argument(
+        "--tab", default="both", choices=("both", sheet.LEADS_TAB, sheet.FOOD_TAB),
+        help="which call list to mark (default: both)",
+    )
+    p_mark.add_argument("--dry-run", action="store_true", help="report what would be marked, write nothing")
+    p_mark.set_defaults(func=cmd_mark)
 
     p_push = sub.add_parser("push", help="push one or more named facilities")
     p_push.add_argument("--facility", action="append", required=True, help="Facility_ID, e.g. FA0044262 (repeatable)")

@@ -237,3 +237,10 @@ def test_the_sweep_ceiling_is_settable_and_falls_back_on_nonsense(monkeypatch):
 def test_the_search_rectangle_matches_the_bounding_box_the_registries_use():
     assert (cli.FOOD_RECT.west, cli.FOOD_RECT.south) == (cli.FOOD_BBOX[0], cli.FOOD_BBOX[1])
     assert (cli.FOOD_RECT.east, cli.FOOD_RECT.north) == (cli.FOOD_BBOX[2], cli.FOOD_BBOX[3])
+
+
+def test_marking_defaults_to_both_call_lists():
+    args = cli.build_parser().parse_args(["mark-institutions"])
+    assert args.tab == "both"
+    assert args.dry_run is False
+    assert cli.build_parser().parse_args(["mark-institutions", "--tab", "Leads"]).tab == "Leads"
