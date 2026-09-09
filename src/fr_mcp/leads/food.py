@@ -35,7 +35,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 
-from . import calepa, cdfa, regions
+from . import calepa, cdfa, fsis, regions
 from .reports import is_entity_name
 
 # --- categories ----------------------------------------------------------
@@ -135,6 +135,7 @@ _WS_RE = re.compile(r"\s+")
 
 SOURCE_CDFA = "CDFA"
 SOURCE_CALEPA = "CalEPA"
+SOURCE_FSIS = "USDA FSIS"
 
 
 @dataclass
@@ -387,3 +388,39 @@ _BASIS_ORDER = {"coords": 0, "zip": 1, "city": 2, "none": 3, "": 3}
 
 def _basis_rank(basis: str) -> int:
     return _BASIS_ORDER.get(basis, 3)
+
+
+def from_fsis(est: fsis.Establishment) -> FoodFacility | None:
+    """FSIS rows never need a category guess: every establishment in the directory
+    is a meat, poultry or egg operation by definition, and `activities` says which.
+    That makes this the one source that contributes no review flags."""
+    if excluded_reason(est.name):
+        return None
+    # The name still gets first say, so "Pacific Seafood" is not filed as poultry
+    # and a jerky plant is not filed as "other". Everything unrecognised falls to
+    # meat and poultry, which is what the directory is.
+    named, _, _ = category_for(est.name)
+    category = named if named is not CAT_OTHER else CAT_MEAT
+    if "egg product" in est.activities.lower():
+        category = CAT_OTHER
+    detail = est.activities or "federally inspected"
+    if est.size:
+        detail = f"{detail} ({est.size})"
+    return _with_region(
+        FoodFacility(
+            key=est.key,
+            name=_clean(est.name),
+            phone=est.phone,
+            phone_source="fsis" if est.phone else "",
+            category=category,
+            address=_clean(est.street),
+            city=_clean(est.city),
+            zip5=est.zip5,
+            lat=est.lat,
+            lng=est.lng,
+            distance_miles=fsis.distance_miles(est),
+            distance_basis="coords" if est.lat is not None and est.lng is not None else "zip",
+            sources=[SOURCE_FSIS],
+            found_via=f"USDA FSIS establishment {est.number} -- {detail}",
+        )
+    )

@@ -42,6 +42,7 @@ from . import calepa
 from . import cdfa
 from . import food
 from . import fr_push as push
+from . import fsis
 from . import myhd
 from . import pipeline as pl
 from . import places
@@ -336,6 +337,12 @@ async def cmd_push(args: argparse.Namespace) -> int:
 # near the edge that the distance rule would have kept.
 FOOD_BBOX = (-121.95, 38.25, -121.00, 39.15)
 
+# Pull order is merge order, and merge order decides which source owns a shared
+# address: the ones with real coordinates and a site address come before the one
+# with a mailing address. FSIS sits between them -- perfect data, but only meat and
+# poultry, so it should not claim a row CalEPA already describes more fully.
+FOOD_SOURCES = ("calepa", "fsis", "cdfa")
+
 
 async def _build_food_facilities(*, sources: tuple[str, ...]) -> tuple[list[food.FoodFacility], dict]:
     """Pull every enabled registry, classify, merge, and trim to the radius.
@@ -350,6 +357,12 @@ async def _build_food_facilities(*, sources: tuple[str, ...]) -> tuple[list[food
             sites = await calepa.fetch_sites(http_client, bbox=FOOD_BBOX)
             kept = [f for f in (food.from_calepa(s) for s in sites) if f]
             stats["calepa"] = {"found": len(sites), "kept": len(kept)}
+            groups.append(kept)
+        if "fsis" in sources:
+            ests, origin = await fsis.fetch_establishments(http_client)
+            near = fsis.within(ests, food.MAX_MILES)
+            kept = [f for f in (food.from_fsis(e) for e in near) if f]
+            stats["fsis"] = {"national": len(ests), "inRange": len(near), "kept": len(kept), "source": origin}
             groups.append(kept)
         if "cdfa" in sources:
             licensees = cdfa.within(await cdfa.fetch_licensees(http_client), food.MAX_MILES)
@@ -401,7 +414,7 @@ async def _enrich_food_phones(facilities: list[food.FoodFacility]) -> dict:
 async def cmd_food(args: argparse.Namespace) -> int:
     today = date.today()
     sources = tuple(s.strip().lower() for s in args.sources.split(",") if s.strip())
-    unknown = [s for s in sources if s not in ("calepa", "cdfa")]
+    unknown = [s for s in sources if s not in FOOD_SOURCES]
     if unknown:
         raise SystemExit(f"unknown food source(s): {', '.join(unknown)}")
 
@@ -505,7 +518,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--destination", choices=("sheet", "preview"), default="sheet",
         help="sheet (default): write the Food Facilities tab. preview: print and write nothing.",
     )
-    p_food.add_argument("--sources", default="calepa,cdfa", help="comma-separated subset of calepa,cdfa")
+    p_food.add_argument(
+        "--sources", default=",".join(FOOD_SOURCES),
+        help="comma-separated subset of " + ",".join(FOOD_SOURCES),
+    )
     p_food.add_argument("--dry-run", action="store_true", help="do every read but make zero writes")
     p_food.add_argument(
         "--no-places", action="store_true",
@@ -535,6 +551,7 @@ def main(argv: list[str] | None = None) -> None:
         places.PlacesError,
         cdfa.CdfaError,
         calepa.CalEpaError,
+        fsis.FsisError,
         FieldRoutesError,
         ToolError,
     ) as exc:

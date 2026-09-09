@@ -123,10 +123,10 @@ async def test_a_credential_that_fails_at_lookup_time_still_lets_the_run_finish(
 # --- the food subcommand -------------------------------------------------
 
 
-def test_food_defaults_to_writing_the_sheet_from_both_registries():
+def test_food_defaults_to_writing_the_sheet_from_every_registry():
     args = cli.build_parser().parse_args(["food"])
     assert args.destination == "sheet"
-    assert args.sources == "calepa,cdfa"
+    assert args.sources == "calepa,fsis,cdfa"
 
 
 def test_food_preview_writes_nothing():
