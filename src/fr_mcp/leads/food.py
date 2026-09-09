@@ -161,6 +161,7 @@ class FoodFacility:
     needs_review: bool = False
     review_reason: str = ""
     address_is_mailbox: bool = False
+    places_checked: bool = False  # asked, whatever the answer -- see LeadCandidate.places_checked
     is_facility: bool = True  # False for a licence held by a person, with no plant behind it
     website: str = ""
     business_status: str = ""

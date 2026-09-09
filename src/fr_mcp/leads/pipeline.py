@@ -63,6 +63,12 @@ class LeadCandidate:
     business_phone: str | None = None
     website: str | None = None
     business_status: str | None = None
+    # Set when Places was actually asked about this row, whatever the answer.
+    # "Asked and found nothing" has to be recorded, not just "found something":
+    # otherwise the rows Places cannot resolve -- a bad address, a business with
+    # no listing, a name too generic to match -- are re-bought every single
+    # morning, and they are exactly the rows that never stop being unresolved.
+    places_checked: bool = False
 
     @property
     def best_phone(self) -> str | None:

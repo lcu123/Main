@@ -172,3 +172,20 @@ def test_keys_needing_phone_lists_only_the_rows_a_billed_lookup_could_help():
     )
     assert sheet.food_keys_needing_phone(backend) == {"A"}
     assert sheet.food_existing_keys(backend) == {"A", "B"}
+
+
+def test_a_facility_places_could_not_resolve_is_not_re_bought_every_run():
+    """Same standing-bill trap as the Leads tab: a row Places declined to resolve
+    once is not more resolvable tomorrow."""
+    backend = _backend()
+    sheet.sync_food_facilities(backend, [_facility(phone="", places_checked=True)], today=TODAY)
+    row = backend.read_rows(sheet.FOOD_TAB)[0]
+    assert row["phone"] == ""
+    assert row["places checked"] == TODAY.isoformat()
+    assert sheet.food_keys_needing_phone(backend) == set()
+
+
+def test_a_facility_never_looked_up_is_still_worth_paying_for():
+    backend = _backend()
+    sheet.sync_food_facilities(backend, [_facility(key="A", phone="")], today=TODAY)
+    assert sheet.food_keys_needing_phone(backend) == {"A"}

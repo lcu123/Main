@@ -422,3 +422,45 @@ def test_the_row_caps_are_settable_because_the_readme_says_they_are(monkeypatch)
     assert sheet._cap("LEADS_SHEET_NEW_ROW_CAP", 40) == 40
     monkeypatch.delenv("LEADS_SHEET_NEW_ROW_CAP")
     assert sheet._cap("LEADS_SHEET_NEW_ROW_CAP", 40) == 40
+
+
+def test_a_row_places_could_not_resolve_is_not_re_bought_every_morning():
+    """The expensive half of the skip set. On 2026-09-09 the live sheet held 45
+    rows with no business phone -- every one already looked up, every one being
+    looked up again, spending the whole 50-call budget on answers Places had
+    already declined to give."""
+    backend = sheet.FakeSheetBackend()
+    c = _event_candidate()
+    c.places_checked = True  # asked; Places returned nothing usable
+    sheet.sync_leads(backend, [c], today=TODAY)
+    row = backend.read_rows(sheet.LEADS_TAB)[0]
+    assert row["business phone"] == ""
+    assert row["places checked"] == TODAY.isoformat()
+    assert sheet.keys_with_business_phone(backend) == {c.customer_link}
+
+
+def test_a_row_never_looked_up_is_still_worth_paying_for():
+    backend = sheet.FakeSheetBackend()
+    sheet.sync_leads(backend, [_event_candidate()], today=TODAY)
+    assert backend.read_rows(sheet.LEADS_TAB)[0]["places checked"] == ""
+    assert sheet.keys_with_business_phone(backend) == set()
+
+
+def test_a_row_that_did_get_a_number_is_skipped_as_before():
+    backend = sheet.FakeSheetBackend()
+    c = _event_candidate()
+    c.business_phone, c.places_checked = "9165551234", True
+    sheet.sync_leads(backend, [c], today=TODAY)
+    assert sheet.keys_with_business_phone(backend) == {c.customer_link}
+
+
+def test_the_checked_mark_backfills_onto_a_row_that_predates_the_column():
+    """Rows written before `places checked` shipped have it blank, so they would
+    be re-bought once more; the backfill on that run records it and stops there."""
+    backend = sheet.FakeSheetBackend()
+    sheet.sync_leads(backend, [_event_candidate()], today=TODAY)
+    c = _event_candidate()
+    c.places_checked = True
+    result = sheet.sync_leads(backend, [c], today=TODAY)
+    assert result.enriched == 1
+    assert backend.read_rows(sheet.LEADS_TAB)[0]["places checked"] == TODAY.isoformat()

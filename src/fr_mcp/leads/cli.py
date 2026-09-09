@@ -104,17 +104,22 @@ async def _pull_facilities(*, since_days: int, today: date) -> dict[str, ag.Faci
 
 
 async def _build(
-    facilities: dict[str, ag.Facility], *, today: date, fetch_pdfs: bool
+    facilities: dict[str, ag.Facility], *, today: date, fetch_pdfs: bool, stats: dict | None = None
 ) -> list[pl.LeadCandidate]:
     if not fetch_pdfs:
         return await pl.build_candidates(facilities, today=today, fetcher=None)
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         fetcher = PoliteFetcher(_cache_dir(), http_client)
-        return await pl.build_candidates(facilities, today=today, fetcher=fetcher)
+        out = await pl.build_candidates(facilities, today=today, fetcher=fetcher)
+    if stats is not None:
+        stats["reportsFetched"] = fetcher.fetched
+        stats["reportCacheHits"] = fetcher.cache_hits
+        stats["reportsBlocked"] = fetcher.blocked
+    return out
 
 
 async def _pull_placer_yolo(
-    *, since_days: int, today: date, fetch_pdfs: bool, counties: tuple[str, ...]
+    *, since_days: int, today: date, fetch_pdfs: bool, counties: tuple[str, ...], stats: dict | None = None
 ) -> list[pl.LeadCandidate]:
     """Placer and Yolo share one PortalCircuit (and, for Yolo, one PoliteFetcher)
     so a block on either county's search stops the other's search and Yolo's PDF
@@ -127,20 +132,43 @@ async def _pull_placer_yolo(
     async with httpx.AsyncClient(timeout=30.0) as client:
         fetcher = PoliteFetcher(_cache_dir(), client) if fetch_pdfs else None
         for name in wanted:
-            out.extend(
-                await myhd.pull_and_build(
-                    client, _MYHD_CONFIGS[name], circuit, lookback_days=since_days, today=today, fetcher=fetcher
-                )
+            found = await myhd.pull_and_build(
+                client, _MYHD_CONFIGS[name], circuit, lookback_days=since_days, today=today, fetcher=fetcher
             )
+            if stats is not None:
+                stats[name] = len(found)
+            out.extend(found)
+    if stats is not None and circuit.blocked:
+        stats["portalBlocked"] = circuit.block_reason or "portal refused a request"
     return out
 
 
-async def _build_all(*, since_days: int, today: date, fetch_pdfs: bool, counties: tuple[str, ...]) -> list[pl.LeadCandidate]:
+async def _build_all(
+    *, since_days: int, today: date, fetch_pdfs: bool, counties: tuple[str, ...], stats: dict | None = None
+) -> list[pl.LeadCandidate]:
+    """Placer and Yolo go FIRST, and the order is not cosmetic.
+
+    Both counties and Sacramento's report PDFs come off the same
+    myhealthdepartment.com host, and it rate-limits by IP. Sacramento's PDF pass
+    is by far the heaviest thing this pipeline does -- the first Railway run
+    fetched about 150 reports at one every two seconds, ran for five minutes, and
+    was 403'd; Placer's very first search then hit the same 403 and tripped its
+    circuit, so on 2026-09-09 both counties contributed **zero rows and the run
+    still reported `errors: []`**. Their searches are a handful of requests, so
+    running them before the PDF pass costs nothing and means a block earned by
+    report volume can no longer starve them."""
     candidates: list[pl.LeadCandidate] = []
+    candidates.extend(
+        await _pull_placer_yolo(
+            since_days=since_days, today=today, fetch_pdfs=fetch_pdfs, counties=counties, stats=stats
+        )
+    )
     if "sacramento" in counties:
         facilities = await _pull_facilities(since_days=since_days, today=today)
-        candidates.extend(await _build(facilities, today=today, fetch_pdfs=fetch_pdfs))
-    candidates.extend(await _pull_placer_yolo(since_days=since_days, today=today, fetch_pdfs=fetch_pdfs, counties=counties))
+        sac = await _build(facilities, today=today, fetch_pdfs=fetch_pdfs, stats=stats)
+        if stats is not None:
+            stats["sacramento"] = len(sac)
+        candidates.extend(sac)
     return pl.rank(candidates)
 
 
@@ -220,10 +248,34 @@ async def _enrich_phones(
     }
 
 
+def _pull_warnings(pull: dict, counties: tuple[str, ...]) -> list[str]:
+    """Turn a silent pull failure into something that reads as a problem.
+
+    A blocked portal is not an exception -- every layer soft-fails by design, so
+    the run completes, writes what it has, and reports `errors: []`. That is
+    right for the write path and wrong for the summary: on 2026-09-09 Placer and
+    Yolo contributed nothing at all and nothing said so."""
+    out: list[str] = []
+    if pull.get("portalBlocked"):
+        out.append(f"county portal blocked this run ({pull['portalBlocked']}) -- Placer/Yolo may be incomplete")
+    if pull.get("reportsBlocked"):
+        out.append(
+            "the report-PDF endpoint blocked us partway, so some Sacramento rows "
+            "have no owner or phone this run"
+        )
+    for name in ("placer", "yolo"):
+        if name in counties and pull.get(name) == 0:
+            out.append(f"{name} returned no candidates at all -- expected on a quiet day, suspicious two days running")
+    return out
+
+
 async def cmd_preview(args: argparse.Namespace) -> int:
     today = date.today()
     counties = _parse_counties(args.counties)
-    candidates = await _build_all(since_days=args.since_days, today=today, fetch_pdfs=not args.no_fetch, counties=counties)
+    pull: dict = {}
+    candidates = await _build_all(
+        since_days=args.since_days, today=today, fetch_pdfs=not args.no_fetch, counties=counties, stats=pull
+    )
     shown = [c for c in candidates if c.lane != pl.LANE_CHAIN][: args.top]
     for c in shown:
         _print(_candidate_row(c))
@@ -240,6 +292,7 @@ async def cmd_preview(args: argparse.Namespace) -> int:
                 for county in sorted({c.county for c in candidates})
             },
             "shown": len(shown),
+            "pull": pull,
         }
     )
     return 0
@@ -248,7 +301,10 @@ async def cmd_preview(args: argparse.Namespace) -> int:
 async def cmd_run(args: argparse.Namespace) -> int:
     today = date.today()
     counties = _parse_counties(args.counties)
-    candidates = await _build_all(since_days=args.since_days, today=today, fetch_pdfs=True, counties=counties)
+    pull: dict = {}
+    candidates = await _build_all(
+        since_days=args.since_days, today=today, fetch_pdfs=True, counties=counties, stats=pull
+    )
     if args.limit:
         candidates = candidates[: args.limit]
 
@@ -266,6 +322,10 @@ async def cmd_run(args: argparse.Namespace) -> int:
                 "summary": True,
                 "destination": "sheet",
                 "dryRun": args.dry_run,
+                # Per-county counts and the portal's state: a run where the portal
+                # blocked us contributes zero rows for a county while `errors` stays
+                # empty, which is how 2026-09-09's run looked fine and was not.
+                "pull": pull,
                 "added": result.added,
                 "flagged": result.flagged,
                 "enriched": result.enriched,
@@ -274,7 +334,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
                 "skippedCap": result.skipped_cap,
                 "skippedDuplicate": result.skipped_duplicate,
                 "skippedNoChange": result.skipped_no_change,
-                "errors": result.errors,
+                "errors": result.errors + _pull_warnings(pull, counties),
             }
         )
         return 1 if result.errors and result.added == 0 and result.flagged == 0 else 0
@@ -392,6 +452,7 @@ async def _enrich_food_phones(facilities: list[food.FoodFacility]) -> dict:
                 if client.blocked or client.budget_left <= 0:
                     break
                 hit = await client.lookup(name=f.name, street=f.address, city=f.city, zip5=f.zip5)
+                f.places_checked = True  # asked; a blank answer is still an answer
                 if hit is None:
                     continue
                 if hit.phone:

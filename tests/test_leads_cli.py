@@ -186,3 +186,31 @@ async def test_a_places_failure_does_not_stop_the_food_run_either(monkeypatch):
     out = await cli._enrich_food_phones([food.FoodFacility(key="A", name="No Phone Foods")])
     assert out["attempted"] == 0
     assert "credential" in out["blocked"]
+
+
+# --- pull warnings -------------------------------------------------------
+
+
+def test_a_blocked_portal_becomes_a_reported_error_not_silence():
+    """On 2026-09-09 the live run was 403'd partway, Placer and Yolo contributed
+    zero rows, and the summary said `errors: []`. Every layer soft-fails by
+    design, which is right for the write path and wrong for the summary."""
+    warnings = cli._pull_warnings(
+        {"portalBlocked": "HTTP 403", "placer": 0, "yolo": 0}, ("sacramento", "placer", "yolo")
+    )
+    assert any("portal blocked" in w for w in warnings)
+    assert sum("returned no candidates" in w for w in warnings) == 2
+
+
+def test_a_blocked_report_endpoint_is_reported_separately():
+    warnings = cli._pull_warnings({"reportsBlocked": True, "placer": 3, "yolo": 1}, ("sacramento", "placer", "yolo"))
+    assert len(warnings) == 1
+    assert "no owner or phone" in warnings[0]
+
+
+def test_a_clean_pull_reports_nothing():
+    assert cli._pull_warnings({"placer": 2, "yolo": 1, "sacramento": 40}, ("sacramento", "placer", "yolo")) == []
+
+
+def test_a_county_that_was_not_asked_for_is_not_reported_as_empty():
+    assert cli._pull_warnings({"sacramento": 40}, ("sacramento",)) == []

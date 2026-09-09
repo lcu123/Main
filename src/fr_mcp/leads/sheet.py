@@ -63,7 +63,7 @@ TOOL_COLUMNS = [
     "owner name", "owner type",
     "phone", "phone source", "business phone", "phone flag",
     "email", "email source", "email confidence",
-    "website", "business status", "first seen", "last updated",
+    "website", "business status", "places checked", "first seen", "last updated",
 ]
 
 # Rep-owned columns -- sync_leads never writes any of these on an update. `status`
@@ -124,7 +124,7 @@ FOOD_TOOL_COLUMNS = [
     "address", "city", "zip", "region", "distance (mi)", "distance basis",
     "sources", "found via", "needs review", "review reason",
     "website", "business status", "contact name", "in leads tab",
-    "first seen", "last updated",
+    "places checked", "first seen", "last updated",
 ]
 
 # Deliberately the same names the Leads tab uses for the rep's own columns. The
@@ -443,6 +443,7 @@ def _leads_row(candidate: LeadCandidate, *, today: date) -> dict[str, Any]:
         "email confidence": "high" if candidate.email_source == "yolo_pdf" else "",
         "website": candidate.website or "",
         "business status": candidate.business_status or "",
+        "places checked": today.isoformat() if candidate.places_checked else "",
         "first seen": today.isoformat(),
         "last updated": today.isoformat(),
         "status": "new",
@@ -473,6 +474,7 @@ def _evidence_update(candidate: LeadCandidate, *, existing_signal_count: str, to
 CONTACT_COLUMNS = (
     "owner name", "owner type", "phone", "phone source", "business phone", "phone flag",
     "email", "email source", "email confidence", "website", "business status",
+    "places checked",
 )
 
 
@@ -574,14 +576,25 @@ def existing_keys(backend: SheetBackend) -> set[str]:
 
 
 def keys_with_business_phone(backend: SheetBackend) -> set[str]:
-    """Keys already carrying a Places-sourced business number. Enrichment is the
-    only billed step in the pipeline, so a row that has one must not be looked up
-    again on tomorrow's run."""
-    return {
-        (r.get("key") or "").strip()
-        for r in backend.read_rows(LEADS_TAB)
-        if (r.get("key") or "").strip() and str(r.get("business phone") or "").strip()
-    }
+    """Keys Places has already been paid for -- either it found a number, or it
+    was asked and came back with nothing usable.
+
+    Enrichment is the only billed step in the pipeline, and the second half of
+    that condition is what stops it recurring: on 2026-09-09 the live sheet held
+    45 rows with no business phone, every one of which had already been looked up
+    and had spent the run's whole 50-call budget being looked up again. A row
+    Places cannot resolve today is not more resolvable tomorrow -- the address is
+    wrong, or the business has no listing -- so asking again every weekday buys
+    nothing and costs real money. `places checked` is cleared by hand if a row is
+    ever worth a second look."""
+    keys = set()
+    for r in backend.read_rows(LEADS_TAB):
+        key = (r.get("key") or "").strip()
+        if not key:
+            continue
+        if str(r.get("business phone") or "").strip() or str(r.get("places checked") or "").strip():
+            keys.add(key)
+    return keys
 
 
 def _duplicate_tool_columns(backend: SheetBackend, tab: str) -> set[str]:
@@ -737,7 +750,9 @@ def sync_leads(
 # --- Food Facilities ----------------------------------------------------------
 
 
-FOOD_CONTACT_COLUMNS = ("phone", "phone source", "website", "business status", "contact name")
+FOOD_CONTACT_COLUMNS = (
+    "phone", "phone source", "website", "business status", "contact name", "places checked",
+)
 
 
 def _food_row(facility: FoodFacility, *, today: date, in_leads: bool) -> dict[str, Any]:
@@ -763,6 +778,7 @@ def _food_row(facility: FoodFacility, *, today: date, in_leads: bool) -> dict[st
         "business status": facility.business_status,
         "contact name": facility.contact_name,
         "in leads tab": "yes" if in_leads else "",
+        "places checked": today.isoformat() if facility.places_checked else "",
         "first seen": today.isoformat(),
         "last updated": today.isoformat(),
         "status": "new",
@@ -816,12 +832,17 @@ def food_existing_keys(backend: SheetBackend) -> set[str]:
 
 
 def food_keys_needing_phone(backend: SheetBackend) -> set[str]:
-    """Keys already on the tab with no phone yet -- the only rows a billed Places
-    lookup can improve. A row that has a number is never re-priced."""
+    """Keys on the tab that a billed Places lookup could still improve: no phone,
+    and not already asked about. The second half matters as much as the first --
+    a row Places declined to resolve once is not more resolvable tomorrow, and
+    re-asking every run is how an optional enrichment becomes a standing bill
+    (see `keys_with_business_phone` for the Leads tab's version of this)."""
     return {
         (r.get("key") or "").strip()
         for r in backend.read_rows(FOOD_TAB)
-        if (r.get("key") or "").strip() and not str(r.get("phone") or "").strip()
+        if (r.get("key") or "").strip()
+        and not str(r.get("phone") or "").strip()
+        and not str(r.get("places checked") or "").strip()
     }
 
 
