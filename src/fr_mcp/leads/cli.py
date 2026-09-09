@@ -403,8 +403,72 @@ FOOD_BBOX = (-121.95, 38.25, -121.00, 39.15)
 # poultry, so it should not claim a row CalEPA already describes more fully.
 FOOD_SOURCES = ("calepa", "fsis", "cdfa")
 
+# The rectangle Places searches, as a Rect. Same box as FOOD_BBOX; `food.merge`
+# trims to the 28-mile circle afterwards, since Text Search takes a rectangle and
+# nothing else.
+FOOD_RECT = places.Rect(south=FOOD_BBOX[1], west=FOOD_BBOX[0], north=FOOD_BBOX[3], east=FOOD_BBOX[2])
 
-async def _build_food_facilities(*, sources: tuple[str, ...]) -> tuple[list[food.FoodFacility], dict]:
+# The sweep is many requests where enrichment is one per row, so it gets its own
+# ceiling rather than sharing the enrichment budget. ~60 keywords plus four typed
+# passes, most resolving in one or two pages, is roughly 100-150 requests; 400
+# leaves room for the quadrant splits without letting a recursion run away.
+DEFAULT_SWEEP_CALLS = 400
+
+
+def sweep_call_ceiling() -> int:
+    raw = os.environ.get("LEADS_PLACES_SWEEP_CALLS", "").strip()
+    try:
+        value = int(raw) if raw else DEFAULT_SWEEP_CALLS
+    except ValueError:
+        return DEFAULT_SWEEP_CALLS
+    return value if value >= 0 else DEFAULT_SWEEP_CALLS
+
+
+async def _sweep_places(*, include_uncertain: bool = False) -> tuple[list[food.FoodFacility], dict]:
+    """Google's keyword sweep: the businesses no registry lists.
+
+    Kept separate from `_enrich_food_phones` because the two spend money very
+    differently -- enrichment is one request per known row, this is a hundred-plus
+    requests that discover rows. It is opt-in (`--sweep`) for that reason.
+
+    By default only the rows Google's own `primaryType` confirms as a processor,
+    producer or wholesaler are kept. Measured live 2026-09-09 over the full
+    28-mile rectangle: the sweep finds ~2,500 businesses, of which ~1,340 survive
+    the retail and closed-listing filters -- but **796 of those are unconfirmed
+    guesses**, and adding them would bury the 281 registry rows under a majority
+    of maybes. A call list a rep cannot work top-to-bottom is not an improvement.
+    The confident half is genuinely new business (Kikkoman, HP Hood, The Better
+    Meat Co., Pacific International Rice Mills -- none of them in any registry);
+    `--sweep-include-uncertain` adds the rest for anyone willing to triage."""
+    async with httpx.AsyncClient(timeout=60.0) as http_client:
+        client: places.PlacesClient | None = None
+        try:
+            client = places.PlacesClient(
+                http_client,
+                places.service_account_token_provider(),
+                call_ceiling=sweep_call_ceiling(),
+            )
+            rows = await client.sweep(
+                list(places.SWEEP_QUERIES), FOOD_RECT, typed_queries=list(places.SWEEP_TYPED_QUERIES)
+            )
+        except places.PlacesError as exc:
+            return [], {"attempted": 0, "found": 0, "blocked": str(exc)}
+    classified = [f for f in (food.from_places(r) for r in rows.values()) if f]
+    kept = classified if include_uncertain else [f for f in classified if not f.needs_review]
+    return kept, {
+        "attempted": client.calls,
+        "found": len(rows),
+        "classified": len(classified),
+        "kept": len(kept),
+        "heldBackAsUncertain": len(classified) - len(kept),
+        "budgetLeft": client.budget_left,
+        "blocked": client.block_reason,
+    }
+
+
+async def _build_food_facilities(
+    *, sources: tuple[str, ...], sweep: bool = False, include_uncertain: bool = False
+) -> tuple[list[food.FoodFacility], dict]:
     """Pull every enabled registry, classify, merge, and trim to the radius.
 
     CalEPA goes in first and CDFA second, and the order is the point: `food.merge`
@@ -429,6 +493,13 @@ async def _build_food_facilities(*, sources: tuple[str, ...]) -> tuple[list[food
             kept = [f for f in (food.from_cdfa(x) for x in licensees) if f]
             stats["cdfa"] = {"inRange": len(licensees), "kept": len(kept)}
             groups.append(kept)
+    if sweep:
+        swept, sweep_stats = await _sweep_places(include_uncertain=include_uncertain)
+        stats["sweep"] = sweep_stats
+        # Last, so a registry that already describes an address keeps the row: a
+        # licence number is better provenance than a place ID, and the registry
+        # row carries a category somebody filed rather than one Google inferred.
+        groups.append(swept)
     merged = food.merge(*groups)
     stats["merged"] = len(merged)
     return merged, stats
@@ -479,7 +550,9 @@ async def cmd_food(args: argparse.Namespace) -> int:
     if unknown:
         raise SystemExit(f"unknown food source(s): {', '.join(unknown)}")
 
-    facilities, stats = await _build_food_facilities(sources=sources)
+    facilities, stats = await _build_food_facilities(
+        sources=sources, sweep=args.sweep, include_uncertain=args.sweep_include_uncertain
+    )
     if args.limit:
         facilities = facilities[: args.limit]
 
@@ -587,6 +660,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_food.add_argument(
         "--no-places", action="store_true",
         help="skip Google Places lookups for the rows no registry gave a phone (the only billed step)",
+    )
+    p_food.add_argument(
+        "--sweep", action="store_true",
+        help="also run Google's keyword sweep to discover facilities no registry lists "
+        "(plan section 4). Many billed requests -- see LEADS_PLACES_SWEEP_CALLS.",
+    )
+    p_food.add_argument(
+        "--sweep-include-uncertain", action="store_true",
+        help="keep the sweep's unconfirmed rows too (~800 of them, needing triage) "
+        "rather than only the ones Google's own type confirms as a processor",
     )
     p_food.add_argument("--limit", type=int, default=None, help="only consider the top N ranked facilities")
     p_food.add_argument("--top", type=int, default=25, help="rows to print in preview mode")

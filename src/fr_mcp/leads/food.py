@@ -35,7 +35,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 
-from . import calepa, cdfa, fsis, regions
+from . import calepa, cdfa, fsis, places, regions
 from .reports import is_entity_name
 
 # --- categories ----------------------------------------------------------
@@ -130,12 +130,41 @@ NOT_FOOD_RE = re.compile(
     re.I,
 )
 
+# A bakery counter inside a supermarket is not an account of its own -- it is one
+# department of a store the Leads tab already covers.
+STORE_DEPARTMENT_RE = re.compile(
+    r"\b(SAFEWAY|COSTCO|RALEY|BEL AIR|NUGGET|SAVE MART|WALMART|TARGET|SPROUTS|"
+    r"WHOLE FOODS|TRADER JOE|WINCO|FOOD ?4 ?LESS|FOODSCO|GROCERY OUTLET|SAM'?S CLUB)\b",
+    re.I,
+)
+
+# A bakery is in scope by the owner's decision, but Google types a wholesale plant
+# and a cupcake counter identically. Only a name that claims production counts as
+# confirmed; everything else goes to the review queue rather than being dropped.
+BAKERY_PRODUCTION_RE = re.compile(
+    r"\b(WHOLESALE|COMMERCIAL|FACTORY|PLANT|MANUFACTUR\w*|PRODUCTION|TORTILLA|"
+    r"BAKING (CO|COMPANY)|BAKERIES|CO-?PACK\w*|DISTRIBUT\w*)\b",
+    re.I,
+)
+
+_ACCENTS = str.maketrans("ÁÀÂÄÃÅáàâäãåÉÈÊËéèêëÍÌÎÏíìîïÓÒÔÖÕóòôöõÚÙÛÜúùûüÑñÇç",
+                         "AAAAAAaaaaaaEEEEeeeeIIIIiiiiOOOOOoooooUUUUuuuuNnCc")
+
+
+def fold_accents(name: str) -> str:
+    """"Carnicería Atoyac Meat Market & Taquería" reached the confident list
+    because `\bTAQUERIA\b` does not match "Taquería". Every name-based filter
+    folds accents first."""
+    return (name or "").translate(_ACCENTS)
+
+
 _HOUSE_RE = re.compile(r"^\s*(\d+)")
 _WS_RE = re.compile(r"\s+")
 
 SOURCE_CDFA = "CDFA"
 SOURCE_CALEPA = "CalEPA"
 SOURCE_FSIS = "USDA FSIS"
+SOURCE_PLACES = "Google"
 
 
 @dataclass
@@ -229,9 +258,12 @@ def category_for(name: str, naics_prefix: str = "") -> tuple[str, bool, str]:
 
 def excluded_reason(name: str) -> str | None:
     """Why this row does not belong on the Food Facilities tab, or None to keep it."""
-    if NOT_FOOD_RE.search(name or ""):
+    folded = fold_accents(name)
+    if NOT_FOOD_RE.search(folded):
         return "not a food business despite the registry's category"
-    if RETAIL_RE.search(name or "") and not KEEP_ANYWAY_RE.search(name or ""):
+    if STORE_DEPARTMENT_RE.search(folded):
+        return "a department inside a supermarket, not an account of its own"
+    if RETAIL_RE.search(folded) and not KEEP_ANYWAY_RE.search(folded):
         return "reads as a restaurant or retail storefront -- the Leads tab's territory"
     return None
 
@@ -425,3 +457,91 @@ def from_fsis(est: fsis.Establishment) -> FoodFacility | None:
             found_via=f"USDA FSIS establishment {est.number} -- {detail}",
         )
     )
+
+
+def from_places(row: places.PlaceRow) -> FoodFacility | None:
+    """A business the discovery sweep found and no registry lists.
+
+    Two filters before the name is even read. A permanently closed listing is
+    dropped outright -- Google keeps those for years and a rep calling one has
+    wasted the call. A `primaryType` in `places.RETAIL_TYPES` is dropped because
+    this tab is not the Leads tab: the sweep's keywords pull in grocers and
+    restaurants no matter how they are worded.
+
+    What survives is graded by how much the type actually told us.
+    `PROCESSOR_TYPES` is a real answer -- "manufacturer", "brewery",
+    "butcher_shop" -- and needs no review. Anything else ("food", "store", "farm",
+    or no type at all) is a guess: kept, because Blue Diamond Growers itself reads
+    as plain "food", and flagged, because so does a farm stand."""
+    if row.permanently_closed:
+        return None
+    if row.primary_type in places.RETAIL_TYPES:
+        return None
+    if excluded_reason(row.name):
+        return None
+
+    address = row.address or ""
+    street = places.street_from_address(address)
+    zip5 = places.zip_from_address(address)
+    city = places.city_from_address(address)
+
+    typed = row.primary_type in places.PROCESSOR_TYPES
+    if row.primary_type in places.BAKERY_TYPES:
+        # In scope, but only confirmed when the name claims production -- Google
+        # types a wholesale plant and a cupcake counter the same way.
+        typed = bool(BAKERY_PRODUCTION_RE.search(fold_accents(row.name)))
+    category, name_review, why = category_for(row.name)
+    if category is CAT_OTHER:
+        category = _TYPE_CATEGORIES.get(row.primary_type, CAT_OTHER)
+
+    needs_review = not typed or (name_review and category is CAT_OTHER)
+    reason = ""
+    if needs_review:
+        reason = (
+            f"found by keyword search; Google calls it {row.primary_type or 'nothing in particular'} "
+            "-- confirm it is a production site, not a storefront"
+        )
+    elif name_review:
+        reason = why
+
+    return _with_region(
+        FoodFacility(
+            key=row.key,
+            name=_clean(row.name),
+            phone=row.phone or "",
+            phone_source="google_places" if row.phone else "",
+            category=category,
+            address=_clean(street),
+            city=_clean(city),
+            zip5=zip5,
+            lat=row.lat,
+            lng=row.lng,
+            distance_miles=(
+                regions.haversine_miles(row.lat, row.lng) if row.lat is not None and row.lng is not None else None
+            ),
+            distance_basis="coords" if row.lat is not None else "none",
+            sources=[SOURCE_PLACES],
+            found_via=f"Google keyword search ({row.primary_type or 'untyped'})",
+            needs_review=needs_review,
+            review_reason=reason,
+            website=row.website or "",
+            business_status=row.business_status or "",
+            places_checked=True,  # it came from Places; there is nothing more to ask
+        )
+    )
+
+
+# When the name says nothing, Google's own type is the next best answer.
+_TYPE_CATEGORIES: dict[str, str] = {
+    "manufacturer": CAT_OTHER,
+    "wholesaler": CAT_DISTRIBUTION,
+    "supplier": CAT_DISTRIBUTION,
+    "butcher_shop": CAT_MEAT,
+    "winery": CAT_ALCOHOL,
+    "brewery": CAT_ALCOHOL,
+    "distillery": CAT_ALCOHOL,
+    "bakery": CAT_BAKERY,
+    "cake_shop": CAT_BAKERY,
+    "coffee_roastery": CAT_BEVERAGE,
+    "dairy": CAT_DAIRY,
+}

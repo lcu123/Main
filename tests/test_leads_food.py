@@ -7,7 +7,7 @@ Every awkward case below was seen in a live 2026-09-09 pull.
 
 from __future__ import annotations
 
-from fr_mcp.leads import calepa, cdfa, food
+from fr_mcp.leads import calepa, cdfa, food, places
 
 
 def _site(**kw) -> calepa.Site:
@@ -194,3 +194,120 @@ def test_a_second_source_that_knows_the_address_as_a_site_promotes_the_row():
     site = food.from_calepa(_site(name="Rivas Packing Co", address="500 DOCK ST", zip5="95691"))
     assert broker.is_facility is False
     assert food.merge([broker], [site])[0].is_facility is True
+
+
+# --- Google sweep rows ---------------------------------------------------
+
+
+def _row(**kw) -> places.PlaceRow:
+    base = dict(
+        place_id="abc", name="Mary Ann's Baking Co",
+        address="4010 Seaport Blvd, West Sacramento, CA 95691, USA",
+        primary_type="bakery", phone="9166817444", website="https://example.test",
+        business_status="OPERATIONAL", lat=38.58, lng=-121.49,
+    )
+    base.update(kw)
+    return places.PlaceRow(**base)
+
+
+def test_a_permanently_closed_listing_never_reaches_a_rep():
+    """Google keeps closed listings for years; a rep calling one wastes the call."""
+    assert food.from_places(_row(business_status="CLOSED_PERMANENTLY")) is None
+
+
+def test_a_retail_primary_type_is_dropped_however_the_keyword_found_it():
+    for t in ("grocery_store", "restaurant", "market", "gas_station"):
+        assert food.from_places(_row(primary_type=t)) is None
+
+
+def test_a_processor_type_needs_no_review():
+    row = food.from_places(_row(primary_type="manufacturer", name="Berber Food Manufacturing"))
+    assert row.needs_review is False
+    assert row.sources == [food.SOURCE_PLACES]
+    assert row.key == "PLACES:abc"
+
+
+def test_a_vague_type_is_kept_but_flagged_because_a_farm_stand_looks_the_same():
+    """Blue Diamond Growers itself comes back as plain "food", so these cannot be
+    dropped -- but neither can they be presented as confirmed plants."""
+    row = food.from_places(_row(primary_type="food", name="Some Foods"))
+    assert row.needs_review is True
+    assert "confirm it is a production site" in row.review_reason
+
+
+def test_an_untyped_result_is_also_flagged():
+    assert food.from_places(_row(primary_type="", name="Wavesure")).needs_review is True
+
+
+def test_googles_type_supplies_the_category_when_the_name_says_nothing():
+    assert food.from_places(_row(primary_type="brewery", name="Sudwerk")).category == food.CAT_ALCOHOL
+    assert food.from_places(_row(primary_type="butcher_shop", name="Corfini")).category == food.CAT_MEAT
+    assert food.from_places(_row(primary_type="wholesaler", name="Calvada Co")).category == food.CAT_DISTRIBUTION
+
+
+def test_the_name_still_wins_over_googles_type():
+    row = food.from_places(_row(primary_type="manufacturer", name="Sacramento Cold Storage"))
+    assert row.category == food.CAT_COLD
+
+
+def test_the_address_is_split_out_of_the_one_formatted_string():
+    row = food.from_places(_row())
+    assert (row.address, row.city, row.zip5) == ("4010 Seaport Blvd", "West Sacramento", "95691")
+    assert row.distance_basis == "coords"
+
+
+def test_a_sweep_row_is_never_re_bought_from_places():
+    """It came from Places; there is nothing further to ask about it."""
+    assert food.from_places(_row()).places_checked is True
+
+
+def test_a_sweep_row_merges_with_the_registry_row_for_the_same_address():
+    registry = food.from_calepa(_site(name="MARY ANN'S BAKING CO", address="4010 SEAPORT BLVD", zip5="95691"))
+    swept = food.from_places(_row())
+    merged = food.merge([registry], [swept])
+    assert len(merged) == 1
+    assert merged[0].sources == [food.SOURCE_CALEPA, food.SOURCE_PLACES]
+
+
+def test_a_farm_is_not_a_processing_site():
+    """"Ruhstaller Farm", "Sunrise Orchards" and "Soil Born Farms" all came back
+    under the produce keywords. The plan's scope is processing, manufacturing and
+    storage -- a grower without a packing operation is out. One that does pack is
+    typed `manufacturer` or named for it and survives on that instead."""
+    assert food.from_places(_row(primary_type="farm", name="Sunrise Orchards")) is None
+    assert food.from_places(_row(primary_type="manufacturer", name="Sunrise Packing")) is not None
+
+
+def test_the_regulator_itself_is_not_a_lead():
+    """CDPH-Food & Drug Branch came back under a food keyword, typed as a
+    government office."""
+    assert food.from_places(_row(primary_type="local_government_office", name="CDPH-Food & Drug Branch")) is None
+
+
+def test_the_retail_types_that_leaked_through_the_first_live_sweep_are_closed_off():
+    for t in ("department_store", "donut_shop", "fast_food_restaurant", "tea_store"):
+        assert food.from_places(_row(primary_type=t)) is None
+
+
+def test_a_retail_bakery_counter_is_not_a_commercial_bakery():
+    """Google types a wholesale plant and a cupcake counter identically. The first
+    live sweep returned 232 "confident" bakeries whose nearest members were Crumbl
+    Cookies, Nothing Bundt Cakes and Paris Baguette."""
+    counter = food.from_places(_row(primary_type="bakery", name="Nothing Bundt Cakes"))
+    assert counter is not None and counter.needs_review is True  # kept for triage, not confirmed
+    plant = food.from_places(_row(primary_type="bakery", name="Old Country Baking Co"))
+    assert plant.needs_review is False
+    assert plant.category == food.CAT_BAKERY
+
+
+def test_a_bakery_counter_inside_a_supermarket_is_not_an_account_of_its_own():
+    for name in ("Safeway Bakery", "Costco Bakery", "Raley's Bakery"):
+        assert food.excluded_reason(name) is not None
+        assert food.from_places(_row(primary_type="bakery", name=name)) is None
+
+
+def test_the_retail_filters_are_accent_insensitive():
+    """"Carnicería Atoyac Meat Market & Taquería" reached the confident list
+    because \\bTAQUERIA\\b does not match "Taquería"."""
+    assert food.excluded_reason("Carnicería Atoyac Meat Market & Taquería") is not None
+    assert food.fold_accents("Taquería Jalisco") == "Taqueria Jalisco"

@@ -214,3 +214,26 @@ def test_a_clean_pull_reports_nothing():
 
 def test_a_county_that_was_not_asked_for_is_not_reported_as_empty():
     assert cli._pull_warnings({"sacramento": 40}, ("sacramento",)) == []
+
+
+def test_the_sweep_is_opt_in_and_conservative_by_default():
+    """It is the expensive step and the noisy one; both cost the owner something
+    different (money, and a call list a rep cannot work top-to-bottom)."""
+    args = cli.build_parser().parse_args(["food"])
+    assert args.sweep is False
+    assert args.sweep_include_uncertain is False
+    assert cli.build_parser().parse_args(["food", "--sweep"]).sweep is True
+
+
+def test_the_sweep_ceiling_is_settable_and_falls_back_on_nonsense(monkeypatch):
+    monkeypatch.setenv("LEADS_PLACES_SWEEP_CALLS", "120")
+    assert cli.sweep_call_ceiling() == 120
+    monkeypatch.setenv("LEADS_PLACES_SWEEP_CALLS", "lots")
+    assert cli.sweep_call_ceiling() == cli.DEFAULT_SWEEP_CALLS
+    monkeypatch.delenv("LEADS_PLACES_SWEEP_CALLS")
+    assert cli.sweep_call_ceiling() == cli.DEFAULT_SWEEP_CALLS
+
+
+def test_the_search_rectangle_matches_the_bounding_box_the_registries_use():
+    assert (cli.FOOD_RECT.west, cli.FOOD_RECT.south) == (cli.FOOD_BBOX[0], cli.FOOD_BBOX[1])
+    assert (cli.FOOD_RECT.east, cli.FOOD_RECT.north) == (cli.FOOD_BBOX[2], cli.FOOD_BBOX[3])

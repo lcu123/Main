@@ -4,6 +4,8 @@ circuit breaker on the responses that mean "every later call fails too"."""
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -231,3 +233,144 @@ def test_no_credential_at_all_names_both_variables(monkeypatch):
         places.service_account_token_provider()
     assert "GOOGLE_SERVICE_ACCOUNT_JSON" in str(exc.value)
     assert "GOOGLE_SERVICE_ACCOUNT_JSON_PATH" in str(exc.value)
+
+
+# --- discovery sweep -----------------------------------------------------
+
+RECT = places.Rect(south=38.25, west=-121.95, north=39.15, east=-121.00)
+
+
+def _place(i: int, *, primary_type="manufacturer", status="OPERATIONAL") -> dict:
+    return {
+        "id": f"P{i}",
+        "displayName": {"text": f"Plant {i}"},
+        "formattedAddress": f"{100 + i} Mill Rd, Sacramento, CA 95814, USA",
+        "primaryType": primary_type,
+        "nationalPhoneNumber": "(916) 555-0100",
+        "websiteUri": "https://example.test",
+        "businessStatus": status,
+        "location": {"latitude": 38.58, "longitude": -121.49},
+    }
+
+
+def _pager(pages: list[list[dict]]):
+    """A handler serving `pages` in order, handing out a nextPageToken until the
+    last one -- the shape the real API uses."""
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        index = int(body.get("pageToken", "0"))
+        page = pages[index] if index < len(pages) else []
+        out: dict = {"places": page}
+        if index + 1 < len(pages):
+            out["nextPageToken"] = str(index + 1)
+        return httpx.Response(200, json=out)
+
+    return handler, calls
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_pages_until_google_stops_offering_a_token():
+    handler, calls = _pager([[_place(i) for i in range(20)], [_place(i) for i in range(20, 33)]])
+    client, http = _client(handler)
+    async with http:
+        rows, saturated = await client.search_text("food processing plant", RECT)
+    assert len(rows) == 33
+    assert saturated is False  # 33 < the 60-result ceiling
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_sixty_results_counts_as_saturated_because_that_is_the_hard_ceiling():
+    """Measured live: three pages of 20 and no token after, whether or not the
+    area is exhausted. A query that reaches it has more to give."""
+    handler, _ = _pager([[_place(i + p * 20) for i in range(20)] for p in range(3)])
+    client, http = _client(handler)
+    async with http:
+        rows, saturated = await client.search_text("bakery", RECT)
+    assert len(rows) == places.SWEEP_CAP == 60
+    assert saturated is True
+
+
+@pytest.mark.asyncio
+async def test_never_asks_for_a_fourth_page_even_if_a_token_is_offered():
+    handler, calls = _pager([[_place(i + p * 20) for i in range(20)] for p in range(6)])
+    client, http = _client(handler)
+    async with http:
+        await client.search_text("bakery", RECT)
+    assert len(calls) == places.SWEEP_MAX_PAGES == 3
+
+
+def test_a_rectangle_splits_into_four_quadrants_that_tile_it():
+    quads = RECT.quadrants()
+    assert len(quads) == 4
+    assert min(q.south for q in quads) == RECT.south
+    assert max(q.north for q in quads) == RECT.north
+    assert min(q.west for q in quads) == RECT.west
+    assert max(q.east for q in quads) == RECT.east
+
+
+@pytest.mark.asyncio
+async def test_a_saturated_query_is_re_run_over_the_quadrants():
+    saturating = [[_place(i + p * 20) for i in range(20)] for p in range(3)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        index = int(body.get("pageToken", "0"))
+        out: dict = {"places": saturating[index]}
+        if index + 1 < 3:
+            out["nextPageToken"] = str(index + 1)
+        return httpx.Response(200, json=out)
+
+    client, http = _client(handler)
+    client.call_ceiling = 500
+    async with http:
+        found = await client.sweep(["bakery"], RECT, max_depth=1)
+    # 3 pages for the whole rectangle, then 3 for each of four quadrants.
+    assert client.calls == 3 + 4 * 3
+    assert len(found) == 60  # same fixture everywhere, deduplicated by place id
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_stops_dead_when_the_budget_runs_out():
+    """It is the only billed step in the pipeline; a runaway recursion here is
+    the one that costs real money."""
+    handler, _ = _pager([[_place(i) for i in range(20)]])
+    client, http = _client(handler)
+    client.call_ceiling = 5
+    async with http:
+        await client.sweep(list(places.SWEEP_QUERIES), RECT)
+    assert client.calls <= 5
+
+
+@pytest.mark.asyncio
+async def test_a_typed_pass_asks_google_to_filter_rather_than_merely_rank():
+    handler, calls = _pager([[_place(1)]])
+    client, http = _client(handler)
+    async with http:
+        await client.sweep([], RECT, typed_queries=[("manufacturer", "food")])
+    assert calls[0]["includedType"] == "manufacturer"
+    assert calls[0]["strictTypeFiltering"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_rectangle_is_sent_as_low_south_west_and_high_north_east():
+    handler, calls = _pager([[_place(1)]])
+    client, http = _client(handler)
+    async with http:
+        await client.search_text("bakery", RECT)
+    rect = calls[0]["locationRestriction"]["rectangle"]
+    assert rect["low"] == {"latitude": 38.25, "longitude": -121.95}
+    assert rect["high"] == {"latitude": 39.15, "longitude": -121.0}
+
+
+def test_the_address_is_split_without_paying_for_a_components_field():
+    addr = "1802 C St, Sacramento, CA 95811, USA"
+    assert places.street_from_address(addr) == "1802 C St"
+    assert places.city_from_address(addr) == "Sacramento"
+    assert places.zip_from_address(addr) == "95811"
+    assert places.zip_from_address("no address here") == ""
+    # A zip+4 and a street number that looks like a zip must not confuse it.
+    assert places.zip_from_address("95814 Main St, Elk Grove, CA 95624-1234, USA") == "95624"
