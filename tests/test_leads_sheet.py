@@ -396,3 +396,15 @@ def test_open_backend_requires_credentials(monkeypatch):
         assert False, "expected ConfigError"
     except Exception as exc:
         assert "GOOGLE_SERVICE_ACCOUNT_JSON" in str(exc)
+
+
+def test_a_dnc_phone_typed_with_punctuation_still_blocks_the_lead():
+    """The DNC tab is filled in by hand, so the number arrives however the rep
+    wrote it. Comparing that against this pipeline's bare digits as-typed blocks
+    nothing at all -- the entry looks present and does nothing."""
+    backend = sheet.FakeSheetBackend()
+    backend.ensure_tab(sheet.DNC_TAB, sheet.DNC_COLUMNS)
+    backend.append_rows(sheet.DNC_TAB, [{"phone": "(916) 416-1664"}])
+    header = ReportHeader(owner="J DOE", is_entity=False, facility_id="FA9001", permit_id="PR1", phone="9164161664")
+    result = sheet.sync_leads(backend, [_event_candidate(header=header)], today=TODAY)
+    assert result.skipped_dnc == 1

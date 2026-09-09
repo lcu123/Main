@@ -27,6 +27,7 @@ from datetime import date
 from typing import Any
 
 from . import regions
+from .food import FoodFacility
 from .fr_push import ConfigError
 from .pipeline import LeadCandidate
 
@@ -91,6 +92,43 @@ LEADS_COLUMNS = DIALER_COLUMNS + [
 SIGNALS_COLUMNS = ["key", "guid", "date", "result", "pest", "quote", "report url", "recorded at"]
 RUNS_COLUMNS = ["run at", "rows added", "rows flagged", "skipped dnc", "skipped cap", "errors"]
 DNC_COLUMNS = ["key", "phone", "email", "reason", "added at"]  # tool reads this tab, never writes it
+
+# --- Food Facilities tab ------------------------------------------------------
+#
+# A second call list on the same spreadsheet: processors, bakeries, breweries,
+# wineries, cold storage and food distribution, from the registry sources rather
+# than the county inspection feeds. The `Leads` tab's DNC tab is shared -- a number
+# a rep has been told not to call is not to be called from either list.
+
+FOOD_TAB = "Food Facilities"
+DEFAULT_FOOD_ROW_CAP = 300  # the whole in-range universe is ~255 rows, so one pull covers it
+
+FOOD_TOOL_COLUMNS = [
+    "key", "facility", "type of business", "phone", "phone source",
+    "address", "city", "zip", "region", "distance (mi)", "distance basis",
+    "sources", "found via", "needs review", "review reason",
+    "website", "business status", "contact name", "in leads tab",
+    "first seen", "last updated",
+]
+
+# Deliberately the same names the Leads tab uses for the rep's own columns. The
+# reps work both tabs; two vocabularies for the same field is how a status ends up
+# meaning different things in different places.
+FOOD_REP_COLUMNS = [
+    "rep", "status", "last touch date", "followup date", "touch count", "notes",
+    "inspection date", "outcome", "FieldRoutes customer ID",
+]
+
+# Same dialer-first order as the Leads tab, by the owner's decision (plan 13,
+# answer 1): the reps get one muscle memory rather than two. `type of business` and
+# `city` follow immediately, because on this tab they are what tells a rep which
+# pitch to open with -- a cold-storage warehouse and a micro-bakery are not the
+# same call.
+_FOOD_REMAINING = [
+    c for c in FOOD_TOOL_COLUMNS + FOOD_REP_COLUMNS
+    if c not in DIALER_COLUMNS and c not in ("type of business", "city")
+]
+FOOD_COLUMNS = DIALER_COLUMNS + ["type of business", "city"] + _FOOD_REMAINING
 
 
 # --- backend interface -------------------------------------------------------
@@ -542,9 +580,20 @@ def _duplicate_tool_columns(backend: SheetBackend, tab: str) -> set[str]:
     return {n for n in TOOL_COLUMNS if names.count(n) > 1}
 
 
+def _dnc_digits(raw: Any) -> str:
+    """A DNC phone is typed by a rep, not produced by this tool, so it arrives
+    however they wrote it -- "(916) 442-0771", "916-442-0771", "1 916 442 0771".
+    Every phone this pipeline holds is bare digits, so comparing the two as typed
+    silently blocks nothing at all. Reduce both sides to the same 10 digits."""
+    digits = "".join(ch for ch in str(raw or "") if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    return digits if len(digits) == 10 else ""
+
+
 def _dnc_sets(rows: list[dict[str, str]]) -> tuple[set[str], set[str], set[str]]:
     keys = {r.get("key", "").strip() for r in rows if r.get("key", "").strip()}
-    phones = {r.get("phone", "").strip() for r in rows if r.get("phone", "").strip()}
+    phones = {d for d in (_dnc_digits(r.get("phone")) for r in rows) if d}
     emails = {r.get("email", "").strip().lower() for r in rows if r.get("email", "").strip()}
     return keys, phones, emails
 
@@ -667,3 +716,177 @@ def sync_leads(
         backend.append_rows(RUNS_TAB, [_run_row(result, today=today)])
 
     return result
+
+
+# --- Food Facilities ----------------------------------------------------------
+
+
+FOOD_CONTACT_COLUMNS = ("phone", "phone source", "website", "business status", "contact name")
+
+
+def _food_row(facility: FoodFacility, *, today: date, in_leads: bool) -> dict[str, Any]:
+    return {
+        "key": facility.key,
+        "facility": facility.name,
+        "type of business": facility.category,
+        "phone": facility.phone,
+        "phone source": facility.phone_source,
+        "address": facility.address,
+        "city": facility.city,
+        "zip": facility.zip5,
+        "region": facility.region_name or "",
+        "distance (mi)": round(facility.distance_miles, 1) if facility.distance_miles is not None else "",
+        # Says how much to trust the number beside it: "coords" is the facility's
+        # own location, "zip"/"city" are a centroid standing in for one.
+        "distance basis": facility.distance_basis,
+        "sources": "; ".join(facility.sources),
+        "found via": facility.found_via,
+        "needs review": "yes" if facility.needs_review else "",
+        "review reason": facility.review_reason,
+        "website": facility.website,
+        "business status": facility.business_status,
+        "contact name": facility.contact_name,
+        "in leads tab": "yes" if in_leads else "",
+        "first seen": today.isoformat(),
+        "last updated": today.isoformat(),
+        "status": "new",
+    }
+
+
+def _food_contact_update(facility: FoodFacility, existing: dict[str, Any], *, today: date) -> dict[str, Any]:
+    """Backfill only what is still blank on a known row, exactly as the Leads tab
+    does: a rep may have typed a better number by hand, and losing that is worse
+    than never filling it."""
+    fresh = _food_row(facility, today=today, in_leads=False)
+    update = {c: fresh[c] for c in FOOD_CONTACT_COLUMNS if _blank(existing.get(c)) and not _blank(fresh[c])}
+    if update:
+        update["last updated"] = today.isoformat()
+    return update
+
+
+def _leads_fingerprints(backend: SheetBackend) -> tuple[set[str], set[str]]:
+    """(normalised name+zip, 10-digit phone) already present in the Leads tab.
+
+    A facility in both tabs is kept and flagged rather than dropped (plan 13,
+    answer 5) -- a processor that also holds a retail permit is still a processor
+    lead -- but the rep has to be able to see it before opening with the wrong
+    pitch."""
+    names: set[str] = set()
+    phones: set[str] = set()
+    for row in backend.read_rows(LEADS_TAB):
+        name = _food_name_key(row.get("facility", ""), row.get("zip", ""))
+        if name:
+            names.add(name)
+        for column in ("phone", "business phone"):
+            digits = "".join(ch for ch in str(row.get(column) or "") if ch.isdigit())
+            if len(digits) == 10:
+                phones.add(digits)
+    return names, phones
+
+
+def _food_name_key(name: str, zip5: str) -> str:
+    from .food import normalize_name
+
+    normalized = normalize_name(name)
+    return f"{normalized}|{str(zip5).strip()[:5]}" if normalized else ""
+
+
+def food_existing_keys(backend: SheetBackend) -> set[str]:
+    return {
+        (r.get("key") or "").strip()
+        for r in backend.read_rows(FOOD_TAB)
+        if (r.get("key") or "").strip()
+    }
+
+
+def food_keys_needing_phone(backend: SheetBackend) -> set[str]:
+    """Keys already on the tab with no phone yet -- the only rows a billed Places
+    lookup can improve. A row that has a number is never re-priced."""
+    return {
+        (r.get("key") or "").strip()
+        for r in backend.read_rows(FOOD_TAB)
+        if (r.get("key") or "").strip() and not str(r.get("phone") or "").strip()
+    }
+
+
+def sync_food_facilities(
+    backend: SheetBackend,
+    facilities: list[FoodFacility],
+    *,
+    today: date,
+    new_row_cap: int = DEFAULT_FOOD_ROW_CAP,
+    dry_run: bool = False,
+) -> SyncResult:
+    """Append new facilities, backfill blank contact columns on known ones, and
+    write nothing until the end -- the same contract `sync_leads` follows, for the
+    same reason (a crash partway leaves the sheet exactly as it was).
+
+    Idempotency here is simpler than the Leads tab's: there are no per-inspection
+    signals to record, so a facility already present with nothing new to add is a
+    no-op. The key is the discovering registry's own record ID, which is stable
+    across a licence renewal, so a rerun recognises the row rather than duplicating
+    it.
+
+    The `DNC` tab is shared with the Leads tab on purpose: a number a rep has been
+    told not to call must not reappear on a second list."""
+    backend.ensure_tab(FOOD_TAB, FOOD_COLUMNS)
+    backend.ensure_columns(FOOD_TAB, FOOD_TOOL_COLUMNS)
+    backend.ensure_tab(DNC_TAB, DNC_COLUMNS)
+    backend.ensure_tab(RUNS_TAB, RUNS_COLUMNS)
+
+    food_rows = backend.read_rows(FOOD_TAB)
+    dnc_keys, dnc_phones, _ = _dnc_sets(backend.read_rows(DNC_TAB))
+    leads_names, leads_phones = _leads_fingerprints(backend)
+
+    result = SyncResult()
+    for name in sorted(_duplicate_food_columns(backend)):
+        result.errors.append(
+            f'the {FOOD_TAB} tab has more than one "{name}" column -- only the leftmost is kept '
+            "up to date; delete the extras"
+        )
+
+    key_to_index = {r.get("key", "").strip(): i for i, r in enumerate(food_rows) if r.get("key", "").strip()}
+    pending_appends: list[dict[str, Any]] = []
+    pending_updates: list[tuple[int, dict[str, Any]]] = []
+    new_rows_this_run = 0
+
+    for facility in facilities:
+        if facility.key in dnc_keys or (facility.phone and facility.phone in dnc_phones):
+            result.skipped_dnc += 1
+            continue
+        existing_index = key_to_index.get(facility.key)
+        if existing_index is None:
+            if new_rows_this_run >= new_row_cap:
+                result.skipped_cap += 1
+                continue
+            in_leads = (
+                _food_name_key(facility.name, facility.zip5) in leads_names
+                or (facility.phone in leads_phones if facility.phone else False)
+            )
+            pending_appends.append(_food_row(facility, today=today, in_leads=in_leads))
+            new_rows_this_run += 1
+            result.added += 1
+            continue
+        update = _food_contact_update(facility, food_rows[existing_index], today=today)
+        if update:
+            pending_updates.append((existing_index, update))
+            result.enriched += 1
+        else:
+            result.skipped_no_change += 1
+
+    if not dry_run:
+        if pending_appends:
+            backend.append_rows(FOOD_TAB, pending_appends)
+        if pending_updates:
+            backend.update_rows(FOOD_TAB, pending_updates)
+        backend.append_rows(RUNS_TAB, [_run_row(result, today=today)])
+
+    return result
+
+
+def _duplicate_food_columns(backend: SheetBackend) -> set[str]:
+    header = getattr(backend, "header", None)
+    if not callable(header):
+        return set()
+    names = header(FOOD_TAB)
+    return {n for n in FOOD_TOOL_COLUMNS if names.count(n) > 1}
