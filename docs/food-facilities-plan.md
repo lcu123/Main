@@ -479,9 +479,25 @@ Where the build departed from this plan, and why:
    no pest evidence here by construction -- a licence is not a violation -- so a score would be a
    restatement of distance. `needs review` and `type of business` carry the judgement instead.
 
-Still not built, in the corrected order: the Google Places keyword sweep (section 4 -- the only step with
-a real bill attached, and the one that would take the tab from ~281 to an estimated ~500), City of
-Sacramento BOT as a name-classified enrichment source, and EPA ECHO.
+**The Google Places keyword sweep (section 4) is now built too**, and section 4's own numbers held up better
+than the recon that followed them: Text Search really does return 20 per page and 60 per query, not the
+hard 50 recon reported. What section 4 could not anticipate is how much of the tail is unusable -- a full
+sweep finds ~2,600 businesses and classifies ~1,300, of which ~890 are unconfirmed. Shipping those would
+bury the registry rows, so the sweep contributes only what Google's `primaryType` confirms.
+
+Section 4.2's "split until no quadrant saturates" is bounded by depth instead: each level costs four times
+the requests, and the budget binds before the recursion does.
+
+Section 7's "every `bakery` hit is kept unless its primary type is restaurant-family" did not survive
+contact with the data. Google gives a wholesale plant and a cupcake counter the same type, and it made
+bakeries 232 of 588 confident rows, led by Crumbl Cookies, Nothing Bundt Cakes, Paris Baguette, Safeway
+Bakery and Costco Bakery. A bakery is now confirmed only when its name claims production; the rest go to
+the review queue rather than the call list.
+
+**Live result: 567 facilities, 528 with a phone (93%), 62 corroborated by two or more sources, 150 in the
+review queue.** That is within section 9's "roughly 400-800 facilities inside 28 miles" estimate.
+
+Still not built: City of Sacramento BOT as a name-classified enrichment source, and EPA ECHO.
 
 ## 14. Known limits
 

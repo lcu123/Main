@@ -169,6 +169,7 @@ fr-leads food --destination preview --no-places                  # food processo
 fr-leads food --dry-run                                          # every read (Places included) and zero sheet writes
 fr-leads food                                                     # write the Food Facilities tab
 fr-leads food --sources fsis                                     # one registry only
+fr-leads food --sweep                                            # also run Google's keyword sweep (~400 billed requests)
 ```
 
 ### The `Food Facilities` tab
@@ -180,9 +181,10 @@ A second call list on the same spreadsheet, for a different sale: food processin
 | CalEPA site portal | 108 sites with real coordinates; the distribution and cold-storage half (Sysco, US Foods, US Cold Storage) | Undocumented private API. Its phone column also carries the *regulator's* switchboard -- only operator/owner roles are read |
 | CDFA Market Enforcement | 181 licensees, essentially all with a phone; growers, packers, rice and nut processors | Mailing addresses only (some PO Boxes), and about half are licences held by individuals rather than plants -- ranked below the facilities and flagged |
 | USDA FSIS | 27 federally inspected meat and poultry plants, phone and coordinates on every one | `fsis.usda.gov` blocks some networks with a 403; falls back to the Internet Archive and says so |
-| Google Places | Fills the phone on rows no registry had one for | The only billed step. One lookup per row ever, and the returned address must agree with the registry's |
+| Google Places (enrichment) | Fills the phone on rows no registry had one for | Billed. One lookup per row ever, and the returned address must agree with the registry's |
+| Google Places (`--sweep`) | ~290 facilities no registry lists -- Kikkoman, HP Hood, Sterling Caviar, The Better Meat Co. | ~400 billed requests, so opt-in. Only rows Google's own type confirms as a processor are kept; the rest need `--sweep-include-uncertain` |
 
-Live since 2026-09-09: **281 facilities, 264 with a phone**. Reruns are idempotent -- a facility already on the tab is recognised by its registry record ID, and only blank tool-owned columns are backfilled. The tab shares the `DNC` tab with `Leads`, uses the same dialer-first column order, and flags any facility that also appears in `Leads` rather than dropping it.
+Live since 2026-09-09: **567 facilities, 528 with a phone (93%)**, 62 of them corroborated by two or more sources. Reruns are idempotent -- a facility already on the tab is recognised by its registry record ID, and only blank tool-owned columns are backfilled. The tab shares the `DNC` tab with `Leads`, uses the same dialer-first column order, and flags any facility that also appears in `Leads` rather than dropping it.
 
 Every subcommand prints one JSON line per candidate/decision, then a summary line -- pipe through `jq` or grep for `"summary": true`.
 
@@ -200,6 +202,7 @@ Every subcommand prints one JSON line per candidate/decision, then a summary lin
 | `LEADS_ASSIGN_TO` | Employee ID FieldRoutes-destination tasks are assigned to. Falls back to `FR_DEFAULT_EMPLOYEE_ID`. |
 | `LEADS_DAILY_CAP`, `LEADS_TERRITORY_CAP` | `--destination fieldroutes` only: new leads per run, event lane and territory lane (default 15 and 5). |
 | `LEADS_MAX_RUN_WRITES` | `--destination fieldroutes` only: hard ceiling on FieldRoutes writes in one run (default 100). |
+| `LEADS_PLACES_SWEEP_CALLS` | Hard ceiling on the `--sweep` keyword sweep's requests (default 400). Separate from `LEADS_PLACES_MAX_CALLS`, which bounds per-row enrichment. |
 | `LEADS_FOOD_ROW_CAP` | New `Food Facilities` rows per run (default 300 -- the whole in-range universe is under that, so one pull covers it). |
 | `LEADS_PDF_CACHE_DIR` | Where fetched inspection report PDFs are cached (default `./leads_cache/pdf`; point this at a persistent volume in production). |
 
