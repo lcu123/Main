@@ -38,6 +38,9 @@ from fr_mcp import server
 from fr_mcp.client import FieldRoutesError
 
 from . import arcgis as ag
+from . import calepa
+from . import cdfa
+from . import food
 from . import fr_push as push
 from . import myhd
 from . import pipeline as pl
@@ -327,6 +330,141 @@ async def cmd_push(args: argparse.Namespace) -> int:
     return 0
 
 
+# The 28-mile circle's bounding box, in the EPSG:4326 degrees CalEPA's portal wants.
+# Padded to a whole degree-ish box because the portal filters by rectangle and
+# `food.merge` trims to the circle afterwards -- a tight box would clip a facility
+# near the edge that the distance rule would have kept.
+FOOD_BBOX = (-121.95, 38.25, -121.00, 39.15)
+
+
+async def _build_food_facilities(*, sources: tuple[str, ...]) -> tuple[list[food.FoodFacility], dict]:
+    """Pull every enabled registry, classify, merge, and trim to the radius.
+
+    CalEPA goes in first and CDFA second, and the order is the point: `food.merge`
+    lets the first source to claim an address own the row, and CalEPA is the one
+    with real coordinates and a site address rather than a mailing one."""
+    stats: dict = {}
+    groups: list[list[food.FoodFacility]] = []
+    async with httpx.AsyncClient(timeout=180.0) as http_client:
+        if "calepa" in sources:
+            sites = await calepa.fetch_sites(http_client, bbox=FOOD_BBOX)
+            kept = [f for f in (food.from_calepa(s) for s in sites) if f]
+            stats["calepa"] = {"found": len(sites), "kept": len(kept)}
+            groups.append(kept)
+        if "cdfa" in sources:
+            licensees = cdfa.within(await cdfa.fetch_licensees(http_client), food.MAX_MILES)
+            kept = [f for f in (food.from_cdfa(x) for x in licensees) if f]
+            stats["cdfa"] = {"inRange": len(licensees), "kept": len(kept)}
+            groups.append(kept)
+    merged = food.merge(*groups)
+    stats["merged"] = len(merged)
+    return merged, stats
+
+
+async def _enrich_food_phones(facilities: list[food.FoodFacility]) -> dict:
+    """Look up the rows with no phone in Places -- and only those.
+
+    This is the same billed step the Leads tab uses, under the same rules: a hard
+    per-run ceiling, one lookup per row ever, and an address check before the
+    number is trusted. Rows that already have a registry phone are not looked up at
+    all, which is most of them: 85% of the merged set arrives with one."""
+    needs = [f for f in facilities if not f.phone and f.name]
+    if not needs:
+        return {"attempted": 0, "matched": 0}
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        client: places.PlacesClient | None = None
+        try:
+            client = places.PlacesClient(http_client, places.service_account_token_provider())
+            for f in needs:
+                if client.blocked or client.budget_left <= 0:
+                    break
+                hit = await client.lookup(name=f.name, street=f.address, city=f.city, zip5=f.zip5)
+                if hit is None:
+                    continue
+                if hit.phone:
+                    f.phone, f.phone_source = hit.phone, "google_places"
+                f.website = hit.website or f.website
+                f.business_status = hit.business_status or f.business_status
+        except places.PlacesError as exc:
+            if client is None:
+                return {"attempted": 0, "matched": 0, "blocked": str(exc)}
+            client.blocked, client.block_reason = True, str(exc)
+    return {
+        "attempted": client.calls,
+        "matched": client.matched,
+        "addressMismatch": client.rejected,
+        "budgetLeft": client.budget_left,
+        "blocked": client.block_reason,
+    }
+
+
+async def cmd_food(args: argparse.Namespace) -> int:
+    today = date.today()
+    sources = tuple(s.strip().lower() for s in args.sources.split(",") if s.strip())
+    unknown = [s for s in sources if s not in ("calepa", "cdfa")]
+    if unknown:
+        raise SystemExit(f"unknown food source(s): {', '.join(unknown)}")
+
+    facilities, stats = await _build_food_facilities(sources=sources)
+    if args.limit:
+        facilities = facilities[: args.limit]
+
+    backend = sheet.open_backend() if args.destination == "sheet" else None
+    enrichment = {"attempted": 0, "matched": 0}
+    if not args.no_places:
+        known = sheet.food_existing_keys(backend) if backend is not None else set()
+        blank = sheet.food_keys_needing_phone(backend) if backend is not None else set()
+        # A key already on the tab is only worth paying for if the sheet still shows
+        # it with no phone; a brand-new key is always worth it.
+        candidates = [f for f in facilities if f.key not in known or f.key in blank]
+        enrichment = await _enrich_food_phones(candidates)
+
+    if args.destination == "preview":
+        for f in facilities[: args.top]:
+            _print(_food_row_preview(f))
+        _print({"summary": True, "destination": "preview", **stats, "places": enrichment,
+                "withPhone": sum(1 for f in facilities if f.phone),
+                "needsReview": sum(1 for f in facilities if f.needs_review)})
+        return 0
+
+    result = sheet.sync_food_facilities(backend, facilities, today=today, dry_run=args.dry_run)
+    _print(
+        {
+            "summary": True,
+            "destination": "sheet",
+            "tab": sheet.FOOD_TAB,
+            "dryRun": args.dry_run,
+            **stats,
+            "withPhone": sum(1 for f in facilities if f.phone),
+            "needsReview": sum(1 for f in facilities if f.needs_review),
+            "places": enrichment,
+            "added": result.added,
+            "enriched": result.enriched,
+            "skippedDnc": result.skipped_dnc,
+            "skippedCap": result.skipped_cap,
+            "skippedNoChange": result.skipped_no_change,
+            "errors": result.errors,
+        }
+    )
+    return 1 if result.errors and result.added == 0 else 0
+
+
+def _food_row_preview(f: food.FoodFacility) -> dict:
+    return {
+        "key": f.key,
+        "name": f.name,
+        "category": f.category,
+        "phone": f.phone or None,
+        "phoneSource": f.phone_source or None,
+        "city": f.city,
+        "distanceMi": round(f.distance_miles, 1) if f.distance_miles is not None else None,
+        "distanceBasis": f.distance_basis,
+        "sources": f.sources,
+        "needsReview": f.needs_review or None,
+        "reviewReason": f.review_reason or None,
+    }
+
+
 def _add_common_pull_args(p: argparse.ArgumentParser, default_days: int) -> None:
     p.add_argument("--since-days", type=int, default=default_days, help="how far back to pull the county feed(s)")
     p.add_argument(
@@ -359,6 +497,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_preview.add_argument("--no-fetch", action="store_true", help="skip PDF fetches; score vermin hits as unclassified")
     p_preview.set_defaults(func=cmd_preview)
 
+    p_food = sub.add_parser(
+        "food",
+        help="pull the food-processing registries into the Food Facilities tab",
+    )
+    p_food.add_argument(
+        "--destination", choices=("sheet", "preview"), default="sheet",
+        help="sheet (default): write the Food Facilities tab. preview: print and write nothing.",
+    )
+    p_food.add_argument("--sources", default="calepa,cdfa", help="comma-separated subset of calepa,cdfa")
+    p_food.add_argument("--dry-run", action="store_true", help="do every read but make zero writes")
+    p_food.add_argument(
+        "--no-places", action="store_true",
+        help="skip Google Places lookups for the rows no registry gave a phone (the only billed step)",
+    )
+    p_food.add_argument("--limit", type=int, default=None, help="only consider the top N ranked facilities")
+    p_food.add_argument("--top", type=int, default=25, help="rows to print in preview mode")
+    p_food.set_defaults(func=cmd_food)
+
     p_push = sub.add_parser("push", help="push one or more named facilities")
     p_push.add_argument("--facility", action="append", required=True, help="Facility_ID, e.g. FA0044262 (repeatable)")
     p_push.add_argument("--as-customer", type=int, default=None, help="validation mode: attach note+task to this existing customer instead of creating one")
@@ -373,7 +529,15 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         code = asyncio.run(args.func(args))
-    except (ag.FeedError, push.ConfigError, places.PlacesError, FieldRoutesError, ToolError) as exc:
+    except (
+        ag.FeedError,
+        push.ConfigError,
+        places.PlacesError,
+        cdfa.CdfaError,
+        calepa.CalEpaError,
+        FieldRoutesError,
+        ToolError,
+    ) as exc:
         _print({"error": str(exc)})
         code = 2
     sys.exit(code)

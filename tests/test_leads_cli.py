@@ -118,3 +118,71 @@ async def test_a_credential_that_fails_at_lookup_time_still_lets_the_run_finish(
     out = await cli._enrich_phones([cand], new_row_cap=5)
     assert "invalid_grant" in out["blocked"]
     assert out["attempted"] == 0  # the token is fetched before the billed call, so none was made
+
+
+# --- the food subcommand -------------------------------------------------
+
+
+def test_food_defaults_to_writing_the_sheet_from_both_registries():
+    args = cli.build_parser().parse_args(["food"])
+    assert args.destination == "sheet"
+    assert args.sources == "calepa,cdfa"
+
+
+def test_food_preview_writes_nothing():
+    assert cli.build_parser().parse_args(["food", "--destination", "preview"]).destination == "preview"
+
+
+def test_food_rejects_an_unknown_destination():
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["food", "--destination", "fieldroutes"])
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_food_source_is_refused_before_any_request():
+    args = cli.build_parser().parse_args(["food", "--sources", "calepa,echo"])
+    with pytest.raises(SystemExit) as exc:
+        await cli.cmd_food(args)
+    assert "echo" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_only_the_rows_without_a_phone_are_looked_up_in_places(monkeypatch):
+    """Places is the only billed step. 216 of the 255 merged rows arrive with a
+    registry phone, so paying for those would be most of the bill for nothing."""
+    from fr_mcp.leads import food
+
+    looked_up: list[str] = []
+
+    class _FakeClient:
+        blocked = False
+        block_reason = None
+        calls = 0
+        matched = 0
+        rejected = 0
+        budget_left = 50
+
+        async def lookup(self, *, name, street, city, zip5):
+            looked_up.append(name)
+            self.calls += 1
+            return None
+
+    monkeypatch.setattr(cli.places, "service_account_token_provider", lambda: (lambda: "tok"))
+    monkeypatch.setattr(cli.places, "PlacesClient", lambda *a, **k: _FakeClient())
+    has = food.FoodFacility(key="A", name="Has Phone Foods", phone="9165551234")
+    lacks = food.FoodFacility(key="B", name="No Phone Foods")
+    await cli._enrich_food_phones([has, lacks])
+    assert looked_up == ["No Phone Foods"]
+
+
+@pytest.mark.asyncio
+async def test_a_places_failure_does_not_stop_the_food_run_either(monkeypatch):
+    from fr_mcp.leads import food, places
+
+    def _no_credential():
+        raise places.PlacesError("No service-account credential for Places")
+
+    monkeypatch.setattr(cli.places, "service_account_token_provider", _no_credential)
+    out = await cli._enrich_food_phones([food.FoodFacility(key="A", name="No Phone Foods")])
+    assert out["attempted"] == 0
+    assert "credential" in out["blocked"]
