@@ -1,5 +1,11 @@
-"""Institutional, residential and medical facilities -- the rows a rep should see
-as a different kind of account before dialling.
+"""Nursing, memory-care, medical and residential facilities -- the rows a rep
+should see as a different kind of account before dialling.
+
+Scope is exactly what was asked for: care facilities, hospitals and medical
+sites, and apartment/residential complexes. Schools are deliberately *not*
+marked -- and the first attempt at including them is why: `UNIVERSITY OF BEER`
+is a bar and `DESTINY CHURCH (SACRAMENTO CAMPUS)` is a church, so "university"
+and "campus" produced two false positives out of six matches.
 
 A nursing home, a memory-care wing, a hospital kitchen and an apartment complex
 are all pest accounts, but none of them sells like an independent restaurant:
@@ -38,7 +44,6 @@ from typing import Iterable, Sequence
 CLASS_CARE = "Nursing / memory care / assisted living"
 CLASS_MEDICAL = "Hospital / medical facility"
 CLASS_RESIDENTIAL = "Apartment / residential complex"
-CLASS_SCHOOL = "School / campus dining"
 
 # Ordered most specific first; the first match wins, so a "hospital rehabilitation
 # center" reads as medical rather than as care.
@@ -75,10 +80,28 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (
-        CLASS_SCHOOL,
+        # Operator brands, because a care community often carries none of the words
+        # above and may be filed under a plain restaurant permit. ESKATON MONROE
+        # LODGE is the live example: Sacramento's largest senior-living operator,
+        # permit type "RESTAURANT", and "Lodge" on its own could be a hotel.
+        #
+        # Each brand here is either unambiguous on its own (Eskaton, Brookdale) or
+        # paired with a qualifier, because the bare word is a street or a country
+        # club in this county -- "Sutter" alone is a street, a county and a fort,
+        # and "Oakmont" is a golf course as often as a care home.
+        CLASS_CARE,
         re.compile(
-            r"\b(ELEMENTARY|MIDDLE SCHOOL|HIGH SCHOOL|SCHOOL DISTRICT|UNIFIED|"
-            r"UNIVERSITY|COLLEGE|CAMPUS|ACADEMY)\b",
+            r"\b(ESKATON|BROOKDALE|ATRIA|MERRILL GARDENS|CARLTON SENIOR|"
+            r"OAKMONT OF|PACIFICA SENIOR|WESTMONT (LIVING|OF)|SUNRISE OF|"
+            r"REVERE COURT|GREENHAVEN ESTATES)\b",
+            re.I,
+        ),
+    ),
+    (
+        CLASS_MEDICAL,
+        re.compile(
+            r"\b(KAISER PERMANENTE|SUTTER (HEALTH|MEDICAL|GENERAL|ROSEVILLE|DAVIS|AUBURN)|"
+            r"DIGNITY HEALTH|UC ?DAVIS (HEALTH|MEDICAL)|SHRINERS|MERCY (GENERAL|SAN JUAN|HOSPITAL))\b",
             re.I,
         ),
     ),
@@ -88,7 +111,6 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # `LICENSED HEALTH CARE FACILITY` is Sacramento's own string, verified live.
 _PERMIT_CLASSES: tuple[tuple[str, re.Pattern[str]], ...] = (
     (CLASS_CARE, re.compile(r"LICENSED HEALTH ?CARE FACILITY|RESIDENTIAL CARE", re.I)),
-    (CLASS_SCHOOL, re.compile(r"\bSCHOOL\b", re.I)),
 )
 
 # Names that trip the patterns above but are nothing of the kind. Each was a real

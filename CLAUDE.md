@@ -167,6 +167,26 @@ A few things worth knowing before changing this code:
   2. **One stale Yolo row was repaired by hand.** `YOLO:D0F86945-...` (LA ESTRELLITA MEAT MARKET, first seen 2026-09-08) predated the `_address_key` fix and carried a permit GUID as its key -- so its next inspection would have arrived as a brand-new lead. Today's code keys it `YOLO:FA0014697` (confirmed by re-running the Yolo pull for it), and the sheet cell was updated to match; no rep column was touched. Today's run added no Yolo rows at all, so nothing new regressed.
   3. **Places was re-buying the same unresolvable rows every morning.** `keys_with_business_phone` skipped rows that *had* a business phone, so the 45 rows Places could not resolve -- bad address, no listing, name too generic -- were looked up again on every run, and spent the whole 50-call budget doing it. "Asked and got nothing" is now recorded too, in a `places checked` column on both tabs; the skip set is "has a number **or** was already asked". Clear the cell by hand if a row ever deserves a second look.
 
+## Marking institutional rows (`fr-leads mark-institutions`)
+
+Shades nursing/care, hospital/medical and apartment rows red on both tabs and records what each one is in a `facility class` column. Colour is what a rep reads without reading, but it survives no round trip -- nothing can later ask the sheet "which rows are care homes", and a rep who copies a row loses it -- so the colour and the column are always written together.
+
+**The important finding, and it is about the data rather than the code: the inspection feeds contain almost none of these.** A full 365-day pull of all three counties yields **4 rows** -- two Eskaton senior-living communities, Sacramento Post-Acute, and Mercy San Juan's hospital kitchen. That is not a lookback artefact:
+
+- These are **food-facility** feeds. A care home appears only if it runs a licensed kitchen; most contract catering out. `LICENSED HEALTH CARE FACILITY` is 3 rows in a whole year across the county.
+- **An apartment complex is not a food facility**, so no health-inspection feed will ever list one. Reaching those needs a rental registry or the assessor, not a longer pull.
+- A hospital appears under its cafeteria's permit and its cafeteria's name -- Mercy San Juan reads as "SATELLITE FOOD DISTRIBUTION FACILITY".
+
+So this marks what is genuinely there; it is **not** a way to build a care-facility target list. For that, CDPH (hospitals) and CDSS Community Care Licensing (nursing, memory care, assisted living) publish the licensed-facility registries, which would give hundreds rather than four.
+
+False positives were most of the work, and every one below was a live row:
+
+- `ELDER CREEK MARKET` is a market on Elder Creek Road; `Lira Clinical Store` is a skincare brand ("clinical" is not "clinic"). Hence word-bounded, paired patterns -- a bare "care" or "living" matches nothing, or "Loving Care Catering" comes along.
+- **Operator brands are needed as well as words**: `ESKATON MONROE LODGE` is a real senior-living community filed under a plain `RESTAURANT` permit, and nothing in the name says care. Brands are either unambiguous (Eskaton, Brookdale) or paired -- "Sutter" alone is a street, a county and a fort here, and "Oakmont" is a golf course as often as a care home.
+- **Schools are deliberately not marked.** They were not asked for, and the first attempt produced two false positives out of six matches: `UNIVERSITY OF BEER` is a bar and `DESTINY CHURCH (SACRAMENTO CAMPUS)` is a church.
+
+Where a county filed a permit, the permit beats the name. Re-running is idempotent, and a row that stops matching has its stripe and class cleared rather than left stale.
+
 ## Food Facilities tab (`fr-leads food`)
 
 A second call list on the same Google Sheet, live 2026-09-09: **567 facilities, 528 with a phone (93%)**, from three licence registries plus Google's keyword sweep, rather than the county inspection feeds the Leads tab uses. Things a live pull taught that the plan could not:

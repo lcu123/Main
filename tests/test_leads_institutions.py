@@ -39,7 +39,6 @@ def test_each_class_is_recognised():
     assert institutions.classify("Kaiser Permanente Medical Center") == institutions.CLASS_MEDICAL
     assert institutions.classify("Northgate Dialysis") == institutions.CLASS_MEDICAL
     assert institutions.classify("Riverbank Apartments") == institutions.CLASS_RESIDENTIAL
-    assert institutions.classify("Natomas Unified School District") == institutions.CLASS_SCHOOL
 
 
 def test_a_street_name_is_not_a_care_home():
@@ -74,6 +73,33 @@ def _seed(backend: sheet.SheetBackend, names: list[tuple[str, str]]) -> None:
         sheet.LEADS_TAB,
         [{"key": f"K{i}", "facility": n, "permit types": p} for i, (n, p) in enumerate(names)],
     )
+
+
+def test_a_care_operators_brand_is_recognised_without_any_giveaway_word():
+    """ESKATON MONROE LODGE is a real senior-living community filed under a plain
+    RESTAURANT permit. Nothing in the name says care, and "Lodge" alone is as
+    likely to be a hotel."""
+    assert institutions.classify("ESKATON MONROE LODGE", ["RESTAURANT"]) == institutions.CLASS_CARE
+    assert institutions.classify("Brookdale Carmichael") == institutions.CLASS_CARE
+    assert institutions.classify("Kaiser Permanente South Sacramento") == institutions.CLASS_MEDICAL
+
+
+def test_a_brand_word_that_is_also_a_street_or_a_golf_course_needs_its_qualifier():
+    """"Sutter" is a street, a county and a fort in this region; "Oakmont" is a
+    golf course as often as a care home."""
+    assert institutions.classify("Sutter Street Taqueria") is None
+    assert institutions.classify("Oakmont Country Club Grill") is None
+    assert institutions.classify("Sutter Medical Center Sacramento") == institutions.CLASS_MEDICAL
+    assert institutions.classify("Oakmont of Carmichael") == institutions.CLASS_CARE
+
+
+def test_schools_are_not_marked_because_they_were_not_asked_for():
+    """And the first attempt at including them produced two false positives out of
+    six matches: UNIVERSITY OF BEER is a bar, DESTINY CHURCH (SACRAMENTO CAMPUS)
+    is a church."""
+    assert institutions.classify("UNIVERSITY OF BEER-EAST SACRAMENTO", ["RESTAURANT"]) is None
+    assert institutions.classify("DESTINY CHURCH (SACRAMENTO CAMPUS)", ["SATELLITE FOOD DISTRIBUTION FACILITY"]) is None
+    assert institutions.classify("C K MCCLATCHY HIGH SCHOOL", ["SATELLITE FOOD DISTRIBUTION FACILITY"]) is None
 
 
 def test_matching_rows_are_shaded_and_their_class_recorded():
