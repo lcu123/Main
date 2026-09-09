@@ -445,6 +445,44 @@ shipped constant was wrong. `regions.py` is corrected, which slightly changes ev
 existing lead scraper reports and can move a facility across one of `geo_multiplier`'s band edges.
 Worth knowing before the 28-mile cut is applied to a second tab.
 
+## 13c. Built and live (2026-09-09)
+
+The first three adapters of the corrected build order are shipped and the tab is live in the owner's
+sheet: **281 facilities, 264 of them with a phone (94%)**, `Leads` untouched at 244 rows.
+
+| Source | In range | Kept | Notes |
+| --- | --- | --- | --- |
+| CalEPA site portal | 113 | 108 | Real coordinates; distribution and cold storage |
+| CDFA Market Enforcement | 184 | 181 | Essentially all with a phone; mailing addresses only |
+| USDA FSIS | 28 | 27 | Meat and poultry; served from the Internet Archive, the live host 403s us |
+| Google Places | -- | 27 matched of 39 asked | Fills the rows no registry had a phone for; 9 rejected on address disagreement |
+
+Merged to 281 unique facilities (3 corroborated by two registries). A second run added only the new
+FSIS rows and recognised the other 255 unchanged, so the pull is idempotent and Places was asked for
+17 lookups rather than re-pricing what it had already answered.
+
+Where the build departed from this plan, and why:
+
+1. **Two sources swapped places, and the best one was not on the list.** Section 3's shortlist led with
+   the City of Sacramento BOT registry; CDFA Market Enforcement -- not mentioned in it -- turned out to
+   be the largest phone-bearing source available. See 13b.
+2. **The tab sorts facilities before person-held licences, not purely by distance** (section 6 asked for
+   distance). Nearly half of CDFA's in-range rows are licences held by individuals -- a produce broker
+   working a phone out of a house -- and a plain distance sort put four of them above Blue Diamond
+   Growers. Within each tier the order is still distance. Nothing is dropped, and a second registry that
+   knows the address as a site promotes the row back up.
+3. **Column set trimmed.** Section 6's `Google Maps link`, `Google category` and `Found via` search terms
+   presume the Google keyword sweep, which is not built yet. `found via` exists and carries the registry
+   and its category instead. `distance basis` was added, because a distance from a city centroid means
+   "which town" and the rep should be able to tell that from a real address.
+4. **No score column.** Sections 3 and 6 of the *lead* plan score a candidate on pest evidence; there is
+   no pest evidence here by construction -- a licence is not a violation -- so a score would be a
+   restatement of distance. `needs review` and `type of business` carry the judgement instead.
+
+Still not built, in the corrected order: the Google Places keyword sweep (section 4 -- the only step with
+a real bill attached, and the one that would take the tab from ~281 to an estimated ~500), City of
+Sacramento BOT as a name-classified enrichment source, and EPA ECHO.
+
 ## 14. Known limits
 
 - Registries list what is permitted, not what is reachable: many rows will need Google or the rep for a phone.
