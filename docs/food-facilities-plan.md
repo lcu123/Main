@@ -286,6 +286,74 @@ account exists and the sheet is shared with it as Editor. No `GOOGLE_MAPS_API_KE
 Places API (New) accepts the service account's OAuth `cloud-platform` token, verified live, so there
 is no second credential to store or restrict.
 
+## 13b. Recon findings (2026-09-08/09) — three sources verified against live endpoints
+
+Before writing any adapter, one investigator per source actually hit its endpoint. Three reported
+before a spend limit interrupted the rest; **two of the three overturn assumptions in section 3
+above, which should be read as superseded where they conflict.**
+
+### City of Sacramento BOT — demoted from "permit-grade core" to enrichment only
+
+Section 3 proposed this as a primary discovery source because it carries phones. It does carry
+them (97.4% fill on the 23,762 active rows, verified), and the endpoint is live, free,
+unauthenticated, daily-refreshed, 63,644 rows, 12 paged requests for a full active pull. All true.
+
+**But it is a tax registry, not a facility registry, and has no concept of food processing.** All
+158 distinct `Business_Description` values were enumerated in a single `groupByFieldsForStatistics`
+request: the vocabulary is generic tax classes (`Manufacturing`, `Wholesale Business`,
+`Retail Sales - General`). Precision on the closest categories runs ~30-50%, and recall fails on
+exactly the accounts this division most wants — **Blue Diamond Growers, the largest almond
+processing plant in the world, sitting in downtown Sacramento, is filed as `Retail Sales - General`
+with the phone `(000) 000-0000`.** A category-based `where` clause would ship a list that is half
+restaurants and missing the marquee accounts. Any use of this source needs a name-based classifier.
+
+Two further traps: the phone frequently tracks `Mail_City` (the owner's number, e.g. a 408 number
+on a Sacramento site), not the facility line — the same class of defect the `Leads` phone audit
+found; and coverage is City of Sacramento only, roughly one third of the 28-mile circle by
+population, with the 1,161 rows in other cities present only because they happen to pay Sacramento
+business tax. Also note the layer is an ArcGIS **Table**, so `geometryType` is null — there is no
+lat/lng, and `returnGeometry=true` returns nothing. Stored values carry trailing spaces that SQL
+comparison forgives but Python `==` does not: `.strip()` after parsing, the same trailing-space bug
+class CLAUDE.md already documents for `FOOD PREP ESTAB `.
+
+### USDA FSIS — confirmed as the first adapter to build
+
+The best-shaped source in the effort: a single static CSV, no auth, no pagination, no PDF parsing.
+**28 establishments inside the 28-mile circle, with a phone on every one and real lat/lng on 100%**
+— which makes the radius filter exact rather than zip-centroid-approximated as `regions.py` must do
+for Placer and Yolo. Carries an activity vocabulary separating slaughter from processing, and an
+FSIS size class. Adapter estimated at ~60 lines.
+
+**One real risk, honestly reported:** `www.fsis.usda.gov` returns HTTP 403 to every request from
+this sandbox — an Akamai edge denial against our egress IP, not a proxy problem and not a 404.
+Browser User-Agent, full `Sec-Fetch` headers and WebFetch all failed. The investigator obtained the
+data from the Internet Archive's byte-for-byte copy instead and said so rather than pretending
+otherwise. **Before building: run one live fetch from Railway.** If Railway gets 200 this is
+trivial; if Railway also gets 403 the adapter needs a Wayback fallback.
+
+### EPA ECHO — supplementary only, and it carries a silent-corruption trap
+
+110 facilities in area, clean lat/lng, and a native radius search that solves the 28-mile circle in
+one parameter. But **no phone anywhere in its 202 metadata columns, and no path to one.**
+
+Worth recording even though the source is demoted: **ECHO's QueryIDs are small global integers
+shared across every user worldwide, and they get recycled.** The investigator's query returned qid
+592 (Sacramento County, NAICS 311, 39 rows); replaying that same qid thirty minutes later returned
+23 facilities in Glasford, Illinois — somebody else's query in the reused slot, served as HTTP 200
+with `Message: "Success"` and no warning. Any adapter must call `get_facility_info` and
+`get_qid`/`get_download` back-to-back in one function, never cache a qid, and assert the returned
+rows are actually in California near the office before writing anything downstream.
+
+### What this changes about the build order
+
+Section 12's phase 1 assumed BOT + FSIS + ECHO + CalEPA merge into a "permit-grade core". On the
+evidence so far that core is thinner than hoped: FSIS is excellent but small (28 rows), ECHO has no
+phone, and BOT cannot identify food businesses by category. **Google Places therefore carries more
+of the discovery load than section 3's ordering implies**, which raises the stakes on the
+outstanding `places-strategy` recon question — whether a processor can be told apart from a
+restaurant using only the fields Places returns. Remaining recon (CalEPA, CDFA/CDPH, Places,
+codebase reuse) is still in flight.
+
 ## 14. Known limits
 
 - Registries list what is permitted, not what is reachable: many rows will need Google or the rep for a phone.
