@@ -189,3 +189,39 @@ def test_a_facility_never_looked_up_is_still_worth_paying_for():
     backend = _backend()
     sheet.sync_food_facilities(backend, [_facility(key="A", phone="")], today=TODAY)
     assert sheet.food_keys_needing_phone(backend) == {"A"}
+
+
+def test_a_second_source_corroborating_a_known_row_is_recorded_on_it():
+    """A row first found by one registry and later confirmed by another must say
+    so. `sources` is how a rep judges how solid a lead is, and it is derived
+    wholly from the run -- no rep ever edits it."""
+    backend = _backend()
+    sheet.sync_food_facilities(backend, [_facility(sources=["CalEPA"], found_via="CalEPA NAICS 311")], today=TODAY)
+    result = sheet.sync_food_facilities(
+        backend,
+        [_facility(sources=["CalEPA", "Google"], found_via="CalEPA NAICS 311; Google keyword search")],
+        today=TODAY,
+    )
+    assert result.enriched == 1
+    row = backend.read_rows(sheet.FOOD_TAB)[0]
+    assert row["sources"] == "CalEPA; Google"
+    assert "Google" in row["found via"]
+
+
+def test_a_flag_a_later_source_clears_stops_being_flagged():
+    """Otherwise the review queue only ever grows."""
+    backend = _backend()
+    sheet.sync_food_facilities(
+        backend, [_facility(needs_review=True, review_reason="category from NAICS only")], today=TODAY
+    )
+    sheet.sync_food_facilities(backend, [_facility(needs_review=False, review_reason="")], today=TODAY)
+    row = backend.read_rows(sheet.FOOD_TAB)[0]
+    assert row["needs review"] == ""
+    assert row["review reason"] == ""
+
+
+def test_provenance_that_has_not_changed_is_not_a_write():
+    backend = _backend()
+    sheet.sync_food_facilities(backend, [_facility()], today=TODAY)
+    again = sheet.sync_food_facilities(backend, [_facility()], today=TODAY)
+    assert (again.enriched, again.skipped_no_change) == (0, 1)

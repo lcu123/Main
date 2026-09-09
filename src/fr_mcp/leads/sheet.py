@@ -785,12 +785,22 @@ def _food_row(facility: FoodFacility, *, today: date, in_leads: bool) -> dict[st
     }
 
 
+# Contact facts are backfilled only when blank -- a rep may have typed a better
+# number by hand and losing that is worse than never filling it.
+# Provenance is different: it is derived wholly from this run's sources, a rep
+# never edits it, and it only ever grows as more registries corroborate a row. A
+# row first found by CalEPA and later confirmed by the Google sweep must say so,
+# and a guess a second source confirms must stop being flagged -- otherwise the
+# review queue never shrinks and `sources` understates what is known.
+FOOD_PROVENANCE_COLUMNS = ("sources", "found via", "needs review", "review reason", "type of business")
+
+
 def _food_contact_update(facility: FoodFacility, existing: dict[str, Any], *, today: date) -> dict[str, Any]:
-    """Backfill only what is still blank on a known row, exactly as the Leads tab
-    does: a rep may have typed a better number by hand, and losing that is worse
-    than never filling it."""
     fresh = _food_row(facility, today=today, in_leads=False)
     update = {c: fresh[c] for c in FOOD_CONTACT_COLUMNS if _blank(existing.get(c)) and not _blank(fresh[c])}
+    update.update(
+        {c: fresh[c] for c in FOOD_PROVENANCE_COLUMNS if str(existing.get(c) or "") != str(fresh[c])}
+    )
     if update:
         update["last updated"] = today.isoformat()
     return update
