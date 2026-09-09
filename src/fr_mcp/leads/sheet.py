@@ -36,7 +36,23 @@ SIGNALS_TAB = "Signals"
 RUNS_TAB = "Runs"
 DNC_TAB = "DNC"
 
-DEFAULT_NEW_ROW_CAP = 40  # plan 13, decision 8
+_DEFAULT_NEW_ROW_CAP = 40  # plan 13, decision 8
+_DEFAULT_FOOD_ROW_CAP = 300  # the whole in-range universe is under this, so one pull covers it
+
+
+def _cap(env_var: str, default: int) -> int:
+    """A row cap, overridable per deployment. These were constants until 2026-09-09
+    while the README already documented LEADS_SHEET_NEW_ROW_CAP as settable -- so
+    setting it on Railway did exactly nothing, which is worse than not offering it."""
+    raw = os.environ.get(env_var, "").strip()
+    try:
+        value = int(raw) if raw else default
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+DEFAULT_NEW_ROW_CAP = _cap("LEADS_SHEET_NEW_ROW_CAP", _DEFAULT_NEW_ROW_CAP)
 
 # Tool-owned columns (plan 5.1's table) -- sync_leads is the only writer of these.
 TOOL_COLUMNS = [
@@ -101,7 +117,7 @@ DNC_COLUMNS = ["key", "phone", "email", "reason", "added at"]  # tool reads this
 # a rep has been told not to call is not to be called from either list.
 
 FOOD_TAB = "Food Facilities"
-DEFAULT_FOOD_ROW_CAP = 300  # the whole in-range universe is ~255 rows, so one pull covers it
+DEFAULT_FOOD_ROW_CAP = _cap("LEADS_FOOD_ROW_CAP", _DEFAULT_FOOD_ROW_CAP)
 
 FOOD_TOOL_COLUMNS = [
     "key", "facility", "type of business", "phone", "phone source",

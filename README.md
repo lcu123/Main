@@ -155,7 +155,7 @@ python -m venv /tmp/lockenv && /tmp/lockenv/bin/pip install -e . && /tmp/lockenv
 
 A second, separate CLI (`src/fr_mcp/leads/`) that pulls Sacramento, Placer, and Yolo counties' public food-inspection data, scores facilities for a commercial rodent/pest sales wedge, and writes them into a Google Sheet -- the system of record the two BDRs work from day to day. FieldRoutes (`--destination fieldroutes`, the original phase-1 behaviour) is reserved for the "inspection booked" handoff. It runs as its own process -- a scheduled job, or by hand -- never inside the MCP server, so a run never has to construct the 31-tool MCPServer and the MCP server never has to know the scraper exists. Full design, data sources, scoring model, sheet schema, and the live-tenant validation checklist: [`docs/lead-scraper-plan.md`](docs/lead-scraper-plan.md).
 
-Shipped: all three counties (Sacramento's ArcGIS feed; Placer and Yolo's own inspection-portal JSON API, West Sacramento/Roseville-Rocklin-Lincoln-Granite Bay-Loomis only per the owner's scope), event lane (a recent vermin/closure/suspension inspection) and territory lane (independent ICP-A facilities with no violation) for each, pest classification from the inspection report PDF or (Placer/Yolo) the portal's own inline narrative, and the Google Sheet writer (Leads/Signals/Runs/DNC tabs, dedupe by key, DNC honored by key/phone/email, a new signal on a known row updates only tool-owned columns). Google Places/website/ZoomInfo enrichment, the processor list (ZoomInfo + USDA FSIS), and the `lead_preview`/`lead_import` MCP tools are later phases, not built yet.
+Shipped: all three counties (Sacramento's ArcGIS feed; Placer and Yolo's own inspection-portal JSON API, West Sacramento/Roseville-Rocklin-Lincoln-Granite Bay-Loomis only per the owner's scope), event lane (a recent vermin/closure/suspension inspection) and territory lane (independent ICP-A facilities with no violation) for each, pest classification from the inspection report PDF or (Placer/Yolo) the portal's own inline narrative, the Google Sheet writer (Leads/Signals/Runs/DNC tabs, dedupe by key, DNC honored by key/phone/email, a new signal on a known row updates only tool-owned columns), Google Places phone enrichment, and the **Food Facilities** tab below. Website/ZoomInfo enrichment and the `lead_preview`/`lead_import` MCP tools are later phases, not built yet.
 
 ```
 fr-leads preview --since-days 45 --top 20                       # score only, zero writes anywhere, even reads
@@ -165,7 +165,24 @@ fr-leads run --dry-run                                           # full pipeline
 fr-leads run                                                      # what the scheduled job runs (writes to the sheet)
 fr-leads run --destination fieldroutes --dry-run                 # legacy path: push straight into FieldRoutes instead
 fr-leads push --facility FA0044262 --as-customer 10000 --dry-run   # FieldRoutes validation mode: note+task on an allowlisted test customer, never creates one
+fr-leads food --destination preview --no-places                  # food processors/bakeries/breweries/cold storage: print, write nothing, spend nothing
+fr-leads food --dry-run                                          # every read (Places included) and zero sheet writes
+fr-leads food                                                     # write the Food Facilities tab
+fr-leads food --sources fsis                                     # one registry only
 ```
+
+### The `Food Facilities` tab
+
+A second call list on the same spreadsheet, for a different sale: food processing, manufacturing and storage -- plus bakeries, breweries and wineries -- within 28 miles of the office. It comes from licence registries rather than the county inspection feeds, so a row is a standing prospect rather than a reaction to a violation, and there is no event/territory lane and no score. Design: [`docs/food-facilities-plan.md`](docs/food-facilities-plan.md); what live recon changed about it is section 13b.
+
+| Source | What it brings | Caveat |
+| --- | --- | --- |
+| CalEPA site portal | 108 sites with real coordinates; the distribution and cold-storage half (Sysco, US Foods, US Cold Storage) | Undocumented private API. Its phone column also carries the *regulator's* switchboard -- only operator/owner roles are read |
+| CDFA Market Enforcement | 181 licensees, essentially all with a phone; growers, packers, rice and nut processors | Mailing addresses only (some PO Boxes), and about half are licences held by individuals rather than plants -- ranked below the facilities and flagged |
+| USDA FSIS | 27 federally inspected meat and poultry plants, phone and coordinates on every one | `fsis.usda.gov` blocks some networks with a 403; falls back to the Internet Archive and says so |
+| Google Places | Fills the phone on rows no registry had one for | The only billed step. One lookup per row ever, and the returned address must agree with the registry's |
+
+Live since 2026-09-09: **281 facilities, 264 with a phone**. Reruns are idempotent -- a facility already on the tab is recognised by its registry record ID, and only blank tool-owned columns are backfilled. The tab shares the `DNC` tab with `Leads`, uses the same dialer-first column order, and flags any facility that also appears in `Leads` rather than dropping it.
 
 Every subcommand prints one JSON line per candidate/decision, then a summary line -- pipe through `jq` or grep for `"summary": true`.
 
@@ -183,6 +200,7 @@ Every subcommand prints one JSON line per candidate/decision, then a summary lin
 | `LEADS_ASSIGN_TO` | Employee ID FieldRoutes-destination tasks are assigned to. Falls back to `FR_DEFAULT_EMPLOYEE_ID`. |
 | `LEADS_DAILY_CAP`, `LEADS_TERRITORY_CAP` | `--destination fieldroutes` only: new leads per run, event lane and territory lane (default 15 and 5). |
 | `LEADS_MAX_RUN_WRITES` | `--destination fieldroutes` only: hard ceiling on FieldRoutes writes in one run (default 100). |
+| `LEADS_FOOD_ROW_CAP` | New `Food Facilities` rows per run (default 300 -- the whole in-range universe is under that, so one pull covers it). |
 | `LEADS_PDF_CACHE_DIR` | Where fetched inspection report PDFs are cached (default `./leads_cache/pdf`; point this at a persistent volume in production). |
 
 The FieldRoutes destination path uses the same write guards as the MCP server (`FR_WRITES`, `FR_WRITE_CUSTOMER_IDS`, `FR_ALLOW_DELETE`/`FR_ALLOW_CHARGES`), since `fr-leads` calls the same `fr_mcp.server` helpers rather than its own copy of them; the sheet destination has its own guards (DNC, the new-row cap, batch-at-end-of-run writes) instead. Either way it never touches FieldRoutes Red Notes, never sends SMS/email/phone reminders on a lead it creates, and is polite to every county portal it talks to (25-row pages, one request every 2 seconds, PDFs cached forever by inspection ID, a shared circuit breaker that stops all portal traffic for the rest of the run on anything but a clean 200/JSON response).

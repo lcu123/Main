@@ -408,3 +408,17 @@ def test_a_dnc_phone_typed_with_punctuation_still_blocks_the_lead():
     header = ReportHeader(owner="J DOE", is_entity=False, facility_id="FA9001", permit_id="PR1", phone="9164161664")
     result = sheet.sync_leads(backend, [_event_candidate(header=header)], today=TODAY)
     assert result.skipped_dnc == 1
+
+
+def test_the_row_caps_are_settable_because_the_readme_says_they_are(monkeypatch):
+    """They were plain constants while the README documented them as environment
+    variables, so setting one on the deployment did nothing at all."""
+    monkeypatch.setenv("LEADS_SHEET_NEW_ROW_CAP", "125")
+    assert sheet._cap("LEADS_SHEET_NEW_ROW_CAP", 40) == 125
+    # Nonsense and negatives fall back rather than capping the run at zero rows.
+    monkeypatch.setenv("LEADS_SHEET_NEW_ROW_CAP", "not-a-number")
+    assert sheet._cap("LEADS_SHEET_NEW_ROW_CAP", 40) == 40
+    monkeypatch.setenv("LEADS_SHEET_NEW_ROW_CAP", "-5")
+    assert sheet._cap("LEADS_SHEET_NEW_ROW_CAP", 40) == 40
+    monkeypatch.delenv("LEADS_SHEET_NEW_ROW_CAP")
+    assert sheet._cap("LEADS_SHEET_NEW_ROW_CAP", 40) == 40
