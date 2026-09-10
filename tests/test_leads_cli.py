@@ -120,6 +120,89 @@ async def test_a_credential_that_fails_at_lookup_time_still_lets_the_run_finish(
     assert out["attempted"] == 0  # the token is fetched before the billed call, so none was made
 
 
+class _NoHitClient:
+    """A Places client that answers every lookup with "nothing usable" -- the
+    address disagreed, or there is no listing at all."""
+
+    blocked = False
+    block_reason = None
+    matched = 0
+    rejected = 0
+
+    def __init__(self, hit=None):
+        self.calls = 0
+        self.budget_left = 50
+        self._hit = hit
+
+    async def lookup(self, *, name, street, city, zip5):
+        self.calls += 1
+        self.budget_left -= 1
+        return self._hit
+
+
+def _enrichable(key: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        customer_link=key, pushable=True, name=f"Facility {key}", street="1 Main St",
+        city="Sacramento", zip5="95811", best_phone=None, phone=None, phone_source=None,
+        business_phone=None, website=None, business_status=None, places_checked=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_row_places_could_not_resolve_is_still_marked_as_asked(monkeypatch):
+    """The regression that cost a whole run's budget every morning for two days.
+
+    Both ends of this were tested and both passed: `sheet.py` writes the column
+    when the candidate carries the mark, and `keys_with_business_phone` skips a
+    row that has it. Nothing set it, so the column read blank forever and the
+    ~45 unresolvable rows were re-bought daily -- `attempted: 50, budgetLeft: 0`
+    on the live 2026-09-10 run. The seam between a producer and a consumer is
+    exactly where two green tests still leave a bug."""
+    client = _NoHitClient(hit=None)
+    monkeypatch.setattr(cli.places, "service_account_token_provider", lambda: (lambda: "tok"))
+    monkeypatch.setattr(cli.places, "PlacesClient", lambda *a, **k: client)
+
+    cand = _enrichable("K1")
+    out = await cli._enrich_phones([cand], new_row_cap=5)
+
+    assert out["attempted"] == 1
+    assert cand.places_checked is True
+    assert cand.business_phone is None  # nothing was found; that is the whole point
+
+
+@pytest.mark.asyncio
+async def test_a_row_places_did_resolve_is_marked_too(monkeypatch):
+    hit = SimpleNamespace(phone="9165551234", website="https://example.com", business_status="OPERATIONAL")
+    client = _NoHitClient(hit=hit)
+    monkeypatch.setattr(cli.places, "service_account_token_provider", lambda: (lambda: "tok"))
+    monkeypatch.setattr(cli.places, "PlacesClient", lambda *a, **k: client)
+
+    cand = _enrichable("K1")
+    await cli._enrich_phones([cand], new_row_cap=5)
+
+    assert cand.places_checked is True
+    assert cand.business_phone == "9165551234"
+    # No county number on this row, so the found one becomes the number to dial.
+    assert (cand.phone, cand.phone_source) == ("9165551234", "google_places")
+
+
+@pytest.mark.asyncio
+async def test_a_row_the_budget_never_reached_is_not_marked(monkeypatch):
+    """Marking a row the run never asked about would silence it permanently --
+    the opposite failure, and the more expensive one, since a lead with no phone
+    is a lead nobody calls."""
+    client = _NoHitClient(hit=None)
+    client.budget_left = 1
+    monkeypatch.setattr(cli.places, "service_account_token_provider", lambda: (lambda: "tok"))
+    monkeypatch.setattr(cli.places, "PlacesClient", lambda *a, **k: client)
+
+    first, second = _enrichable("K1"), _enrichable("K2")
+    await cli._enrich_phones([first, second], new_row_cap=5)
+
+    assert first.places_checked is True
+    assert second.places_checked is False
+
+
 # --- the food subcommand -------------------------------------------------
 
 

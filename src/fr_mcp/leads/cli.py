@@ -231,6 +231,10 @@ async def _enrich_phones(
                 if client.blocked or client.budget_left <= 0:
                     break
                 hit = await client.lookup(name=c.name, street=c.street, city=c.city, zip5=c.zip5)
+                # Before the `hit is None` test, not after it: a row Places
+                # declined to resolve is the whole reason this mark exists, and
+                # it is the branch that leaves every other column blank.
+                c.places_checked = True  # asked; a blank answer is still an answer
                 if hit is None:
                     continue
                 c.business_phone = hit.phone
