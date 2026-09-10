@@ -75,6 +75,38 @@ SWEEP_TYPED_QUERIES: tuple[tuple[str, str], ...] = (
     ("apartment_building", "apartments"),
 )
 
+# Naming a city reaches properties the region-wide terms rank below, and it is
+# cheaper per new find than splitting the rectangle again: a quadrant split costs
+# 4x the requests for the same keyword, while a city query costs one and changes
+# what Google ranks. Every incorporated place inside the 28-mile circle, plus the
+# unincorporated communities big enough to be a Google locality.
+SWEEP_CITIES: tuple[str, ...] = (
+    "Sacramento", "West Sacramento", "Elk Grove", "Rancho Cordova", "Citrus Heights",
+    "Folsom", "Roseville", "Rocklin", "Lincoln", "Loomis", "Granite Bay",
+    "Carmichael", "Fair Oaks", "Orangevale", "Antelope", "North Highlands",
+    "Rio Linda", "Elverta", "Arden-Arcade", "Natomas", "Davis", "Woodland",
+    "Winters", "Dixon", "El Dorado Hills", "Auburn", "Galt", "Wilton",
+    "Gold River", "Rosemont", "Foothill Farms", "La Riviera", "Parkway",
+    "Vineyard", "Florin", "Laguna", "Midtown Sacramento", "Downtown Sacramento",
+    "Land Park", "Oak Park", "Del Paso Heights", "Meadowview", "Pocket",
+)
+
+# The per-city terms. Kept short deliberately -- each one multiplies by the city
+# list, so a fourth term is another 43 requests.
+CITY_QUERY_TEMPLATES: tuple[str, ...] = (
+    "apartments in {city}",
+    "apartment complex {city}",
+    "apartment leasing office {city}",
+)
+
+
+def city_queries(cities: tuple[str, ...] = SWEEP_CITIES) -> tuple[str, ...]:
+    return tuple(t.format(city=c) for c in cities for t in CITY_QUERY_TEMPLATES)
+
+
+def all_queries() -> tuple[str, ...]:
+    return SWEEP_QUERIES + city_queries()
+
 # On-site presence, read off the posted hours.
 TIER_OFFICE = "Leasing office (posted hours)"
 TIER_ONSITE = "On-site contact, no posted hours"

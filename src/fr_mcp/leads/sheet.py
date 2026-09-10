@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import os
+
+import gspread
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date
@@ -385,12 +387,44 @@ class GspreadBackend(SheetBackend):
         return rows
 
     def append_rows(self, tab: str, rows: list[dict[str, Any]]) -> None:
+        """Append below the last row that actually holds data.
+
+        `gspread.append_rows` delegates to the Sheets `values.append` API, which
+        picks its own insertion point by "detecting a table". On a tab whose
+        leading columns are rep-owned and therefore blank, that detection is
+        unreliable: appending two probe rows to the live Apartments tab left the
+        row count unchanged while the probes themselves were present, i.e. it had
+        overwritten real rows rather than adding to them.
+
+        So the insertion point is computed here from the `key` column -- which is
+        tool-owned and never blank on a real row -- and written with an explicit
+        range instead of letting the API guess."""
         ws = self._worksheet(tab)
         if ws is None or not rows:
             return
         header = ws.row_values(1)
+        import gspread.utils
+
+        first_free = self._first_free_row(tab, header)
         values = [[r.get(c, "") for c in header] for r in rows]
-        ws.append_rows(values, value_input_option="USER_ENTERED")
+        needed = first_free + len(values) - 1
+        if needed > ws.row_count:
+            ws.add_rows(needed - ws.row_count + 50)
+        end = gspread.utils.rowcol_to_a1(first_free + len(values) - 1, len(header))
+        start = gspread.utils.rowcol_to_a1(first_free, 1)
+        ws.update(values, f"{start}:{end}", value_input_option="USER_ENTERED")
+
+    def _first_free_row(self, tab: str, header: list[str]) -> int:
+        """One past the last row carrying a key. 1-based, header included, so a
+        tab with only a header returns 2."""
+        ws = self._worksheet(tab)
+        if ws is None:
+            return 2
+        if "key" not in header:
+            return len(ws.get_all_values()) + 1
+        column = ws.col_values(header.index("key") + 1)
+        last = max((i for i, v in enumerate(column, start=1) if str(v).strip()), default=1)
+        return last + 1
 
     def update_row(self, tab: str, row_index: int, values: dict[str, Any]) -> None:
         self.update_rows(tab, [(row_index, values)])
@@ -1211,6 +1245,18 @@ def _sync_generic(
             backend.append_rows(tab, appends)
         if updates:
             backend.update_rows(tab, updates)
+        # Read the tab back and check the arithmetic. Everything in this pipeline
+        # soft-fails by design, which means a write that does not land looks
+        # exactly like a write that did -- the run reports "added 487" either way.
+        # Counting is cheap and turns that into a reported error.
+        landed = len(backend.read_rows(tab))
+        expected = len(existing) + len(appends)
+        if landed != expected:
+            result.errors.append(
+                f"{tab}: expected {expected} rows after writing {len(appends)} new "
+                f"({len(existing)} were already there) but the tab reads back {landed} "
+                "-- the append did not land, or something else is writing this tab"
+            )
         backend.append_rows(RUNS_TAB, [_run_row(result, today=today)])
     return result
 

@@ -251,3 +251,63 @@ def test_the_dnc_tab_is_shared_with_every_other_call_list():
 def test_apartment_tool_and_rep_columns_stay_disjoint():
     assert not set(sheet.APARTMENT_TOOL_COLUMNS) & set(sheet.APARTMENT_REP_COLUMNS)
     assert not set(sheet.MANAGER_TOOL_COLUMNS) & set(sheet.APARTMENT_REP_COLUMNS)
+
+
+def test_city_queries_multiply_the_templates_across_every_city():
+    """Naming a city is cheaper per new find than another quadrant split: a split
+    costs 4x the requests for one keyword, a city query costs one and changes what
+    Google ranks."""
+    qs = apt.city_queries(("Elk Grove", "Davis"))
+    assert "apartments in Elk Grove" in qs
+    assert "apartment leasing office Davis" in qs
+    assert len(qs) == 2 * len(apt.CITY_QUERY_TEMPLATES)
+    assert set(apt.SWEEP_QUERIES).issubset(set(apt.all_queries()))
+
+
+def test_a_write_that_does_not_land_is_reported_rather_than_assumed():
+    """Everything here soft-fails, so an append that silently goes nowhere reads
+    exactly like one that worked -- the run says "added 487" either way. Counting
+    the tab back is cheap and turns that into an error."""
+
+    class Dropping(sheet.FakeSheetBackend):
+        def append_rows(self, tab, rows):  # the tab silently swallows new rows
+            if tab == sheet.APARTMENTS_TAB:
+                return
+            super().append_rows(tab, rows)
+
+    backend = Dropping()
+    result = sheet.sync_apartments(backend, [_complex("A", "https://a.com")], today=TODAY)
+    assert result.added == 1
+    assert result.errors and "did not land" in result.errors[0]
+
+
+def test_a_write_that_lands_reports_no_error():
+    backend = sheet.FakeSheetBackend()
+    result = sheet.sync_apartments(backend, [_complex("A", "https://a.com")], today=TODAY)
+    assert result.errors == []
+
+
+def test_the_insertion_point_is_computed_from_the_key_column():
+    """The Sheets append API picks its own insertion point by "detecting a table",
+    and on a tab whose leading columns are rep-owned and blank it gets it wrong --
+    appending two probe rows to the live Apartments tab left the row count
+    unchanged while the probes were present, so it had overwritten real rows. The
+    key column is tool-owned and never blank on a real row, so it is what decides."""
+    header = ["followup date", "facility", "key"]
+
+    class Probe(sheet.GspreadBackend):
+        def __init__(self, column):
+            self._column = column
+
+        def _worksheet(self, tab):
+            class _WS:
+                def col_values(_s, i):
+                    return self._column
+            return _WS()
+
+    # header + 3 keyed rows -> next free row is 5
+    assert Probe(["key", "K1", "K2", "K3"])._first_free_row("t", header) == 5
+    # trailing blanks below the data must not count as occupied
+    assert Probe(["key", "K1", "", ""])._first_free_row("t", header) == 3
+    # header only
+    assert Probe(["key"])._first_free_row("t", header) == 2

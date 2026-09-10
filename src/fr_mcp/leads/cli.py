@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
+import json
 import os
 import sys
 from datetime import date, timedelta
@@ -413,7 +415,7 @@ FOOD_RECT = places.Rect(south=FOOD_BBOX[1], west=FOOD_BBOX[0], north=FOOD_BBOX[3
 # ceiling rather than sharing the enrichment budget. ~60 keywords plus four typed
 # passes, most resolving in one or two pages, is roughly 100-150 requests; 400
 # leaves room for the quadrant splits without letting a recursion run away.
-DEFAULT_SWEEP_CALLS = 400
+DEFAULT_SWEEP_CALLS = 1200
 
 
 def sweep_call_ceiling() -> int:
@@ -450,7 +452,8 @@ async def _sweep_places(*, include_uncertain: bool = False) -> tuple[list[food.F
                 call_ceiling=sweep_call_ceiling(),
             )
             rows = await client.sweep(
-                list(places.SWEEP_QUERIES), FOOD_RECT, typed_queries=list(places.SWEEP_TYPED_QUERIES)
+                list(places.SWEEP_QUERIES), FOOD_RECT,
+                typed_queries=list(places.SWEEP_TYPED_QUERIES), max_depth=3,
             )
         except places.PlacesError as exc:
             return [], {"attempted": 0, "found": 0, "blocked": str(exc)}
@@ -613,7 +616,7 @@ def _food_row_preview(f: food.FoodFacility) -> dict:
     }
 
 
-DEFAULT_APARTMENT_SWEEP_CALLS = 600
+DEFAULT_APARTMENT_SWEEP_CALLS = 2500
 
 
 def apartment_sweep_ceiling() -> int:
@@ -641,13 +644,23 @@ async def cmd_apartments(args: argparse.Namespace) -> int:
                 call_ceiling=apartment_sweep_ceiling(),
             )
             found = await client.sweep(
-                list(apt.SWEEP_QUERIES), FOOD_RECT,
+                list(apt.all_queries()), FOOD_RECT,
                 typed_queries=list(apt.SWEEP_TYPED_QUERIES),
                 field_mask=places.SWEEP_FIELD_MASK_HOURS,
+                max_depth=args.max_depth,
             )
         except places.PlacesError as exc:
             _print({"error": str(exc)})
             return 2
+
+    # The sweep is the expensive part; keep the raw result so re-writing the sheet
+    # or re-tuning the classifier never costs another call.
+    raw_path = Path(os.environ.get("LEADS_CACHE_DIR", "leads_cache")) / "places_apartments.json"
+    try:
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text(json.dumps([dataclasses.asdict(r) for r in found.values()]))
+    except OSError:
+        pass  # a cache we cannot write is not a reason to lose the run
 
     complexes = [c for c in (apt.from_place(r) for r in found.values()) if c and c.in_range]
     managers = apt.group_managers(complexes, min_properties=args.min_properties)
@@ -776,6 +789,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_apt.add_argument(
         "--min-properties", type=int, default=2,
         help="how many properties a company needs before it counts as a manager (default 2)",
+    )
+    p_apt.add_argument(
+        "--max-depth", type=int, default=3,
+        help="how far to split the rectangle when a keyword saturates; each level costs 4x (default 3)",
     )
     p_apt.add_argument("--top", type=int, default=25, help="rows to print in preview mode")
     p_apt.set_defaults(func=cmd_apartments)
