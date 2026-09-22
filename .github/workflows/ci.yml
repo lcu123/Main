@@ -57,3 +57,52 @@ jobs:
           echo "container never became healthy"
           docker logs fr-mcp-ci
           exit 1
+
+  google-ads-docker-build:
+    name: docker build (google-ads)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the Google Ads MCP image (validates google-ads/requirements.lock + Dockerfile, same as Railway)
+        uses: docker/build-push-action@v6
+        with:
+          context: google-ads
+          push: false
+          load: true
+          tags: google-ads-mcp:ci
+
+      - name: Smoke-test unconfigured mode serves a diagnostic /healthz and no /mcp
+        run: |
+          docker run -d --name gads-unconf -p 8081:8080 google-ads-mcp:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8081/healthz >/tmp/h.json; then break; fi
+            sleep 1
+          done
+          cat /tmp/h.json; echo
+          grep -q '"status":"unconfigured"' /tmp/h.json
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8081/mcp)" = "404"
+          docker rm -f gads-unconf
+
+      - name: Smoke-test configured mode mounts /mcp behind OAuth
+        run: |
+          docker run -d --name gads-conf -p 8082:8080 \
+            -e RAILWAY_PUBLIC_DOMAIN=ci.example.test \
+            -e GOOGLE_ADS_MCP_OAUTH_CLIENT_ID=ci.apps.googleusercontent.com \
+            -e GOOGLE_ADS_MCP_OAUTH_CLIENT_SECRET=ci-secret \
+            -e GOOGLE_ADS_DEVELOPER_TOKEN=ci-token \
+            google-ads-mcp:ci
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8082/healthz >/tmp/h.json; then break; fi
+            sleep 1
+          done
+          cat /tmp/h.json; echo
+          grep -q '"status":"ok"' /tmp/h.json
+          grep -q '"oauthRedirectUri":"https://ci.example.test/auth/callback"' /tmp/h.json
+          # Unauthenticated MCP call must be challenged, not served.
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{}' http://localhost:8082/mcp)" = "401"
+          curl -sf http://localhost:8082/.well-known/oauth-authorization-server | grep -q '"registration_endpoint"'
+          docker logs gads-conf 2>&1 | grep -q "Google Ads MCP ready" || (docker logs gads-conf; exit 1)
+          docker rm -f gads-conf

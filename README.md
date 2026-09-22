@@ -56,6 +56,10 @@ Two things on the FieldRoutes subscription screen have no API: **Autoschedule** 
 
 Optionally, set `FR_EXPOSE_ENTITIES` or `FR_EXPOSE_ALL` to add one typed tool per endpoint (`fr_customer_search`, `fr_appointment_cancel`, ...). That costs context on every message (all 187 is about 70k tokens), so leave it off unless you need it.
 
+## Google Ads (second service)
+
+`google-ads/` deploys Google's official read-only [Google Ads MCP](https://github.com/googleads/google-ads-mcp) as a second Railway service (`google-ads-mcp`) with Google sign-in, so the same claude.ai connector works on web, mobile and desktop. Setup, variables and the first prompts are in [`google-ads/README.md`](google-ads/README.md).
+
 ## Safety model
 
 The MCP URL is the password. Anyone holding it has the access below, so treat it like one.

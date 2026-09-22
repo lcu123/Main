@@ -46,7 +46,9 @@ scripts/extract_spec.py  Regenerates fieldroutes_spec.json from FieldRoutes' pub
 tests/test_wire_format.py  Fake FieldRoutes (httpx.MockTransport) verifying the wire format, pagination, quota, and allowlist
 Dockerfile, railway.json   Railway deploy (healthcheck /healthz, installs from requirements.lock)
 requirements.lock          Pinned runtime deps; regenerate deliberately, see README
-.github/workflows/ci.yml   pytest + a real `docker build`/`docker run`/`/healthz` smoke test on every push and PR
+.github/workflows/ci.yml   pytest + a real `docker build`/`docker run`/`/healthz` smoke test on every push and PR (both images)
+google-ads/                Second Railway service: Google's official google-ads-mcp behind its own Dockerfile,
+                           lock, `/healthz` wrapper (serve.py) and owner setup guide. Independent of src/fr_mcp.
 .env.example               Every env var, commented
 README.md                  Deploy steps + first-run checklist (user-facing)
 ```
@@ -134,6 +136,17 @@ The README's first-run checklist has been run against Zest's real account (`zest
 - `reserve_slot`→`schedule_appointment` still blocked on the scheduling-permission gap above. `complete_appointment` not yet run -- it generates a real invoice and this office has a QuickBooks integration (seen in Admin → Preferences), so it needs an explicit go-ahead on a disposable appointment, not just a general "test writes" one.
 - Still open: whether scheduling/rescheduling/cancelling triggers a customer-facing SMS/email depending on office settings (untestable until scheduling is unblocked); `.pestroutes.com` vs `.fieldroutes.com` is resolved (`.fieldroutes.com`, confirmed by `baseUrl` in every `health_check`).
 - **2026-09-07: `FR_WRITE_CUSTOMER_IDS` cleared at the owner's explicit request** -- the deployment is live, writes are unrestricted across the whole office (verified via `health_check`'s `writeCustomerAllowlist: null`). `FR_ALLOW_DELETE`/`FR_ALLOW_CHARGES` stay off, unaffected by this. `reserve_slot`/`schedule_appointment`/`complete_appointment` are still unverified against a real write for the reasons above -- that risk is now live-wide, not contained to a test customer, so take extra care before exercising those for the first time.
+
+## Google Ads MCP (`google-ads/`)
+
+A separate Railway service (`google-ads-mcp`, same project as the FieldRoutes `Main` service) running Google's official [google-ads-mcp](https://github.com/googleads/google-ads-mcp) pinned by commit in `google-ads/requirements.lock`. It shares no code with `src/fr_mcp`; the FieldRoutes tool count, tests and context budget are untouched by it.
+
+- **Why our own Dockerfile**: upstream's Dockerfile hard-asserts `fastmcp==4.0.3` (a Codex CLI patch) and fails to build against FastMCP 4.0.5, which is what `fastmcp>=4.0.3` now resolves to. `google-ads/Dockerfile` installs the lock instead and skips that patch (Claude clients don't need it).
+- **`serve.py` is the entrypoint**, not `google-ads-mcp`'s. It sets defaults *before* importing `ads_mcp` because `ads_mcp.coordinator` snapshots `os.environ` at import: `GOOGLE_ADS_MCP_BASE_URL` from `RAILWAY_PUBLIC_DOMAIN`, filetree storage at `/var/lib/google-ads-mcp` (Railway volume `google-ads-mcp-oauth`), and a JWT signing key generated once into that volume. Without the three Google secrets it serves only `/healthz` (status `unconfigured`, listing what's missing and the exact OAuth redirect URI); with them it mounts `/mcp` behind FastMCP's Google OAuth proxy (DCR on, so claude.ai registers itself; redirect-URI validation is per registered client, the FastMCP default).
+- **Auth model**: user-level Google OAuth, not a secret path. Access control is the Google Cloud consent screen in Testing mode with named test users. The developer token stays server-side. Upstream tools are all `readOnlyHint`; there is no write surface to guard.
+- **Stateful streamable HTTP** on purpose (upstream README): `stateless_http` would drop the GET SSE channel older clients open. One replica.
+- Railway service settings live in the dashboard, not `railway.json` alone: root directory `google-ads`, Dockerfile `Dockerfile`, health check `/healthz`, App Sleeping off. `railway.json` in that folder mirrors the health check for anyone re-creating the service.
+- Not verified against a live Google Ads account yet: needs the owner's OAuth client, developer token (Explorer access) and a public domain on the service. CI proves the image builds and both `/healthz` modes plus the 401 challenge on `/mcp`.
 
 ## Owner context
 
