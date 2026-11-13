@@ -667,3 +667,42 @@ async def test_the_watch_page_leads_with_the_logo_the_tech_the_address_and_the_d
     assert page.index("</header>") < page.index("<video"), "nothing between the heading and the player to scroll past"
     assert page.index("<video") < page.index('name="stars"') < page.index("tel:"), "player, then score, then the office button"
     assert (await env.http.get("/static/logo.png")).status_code == 200
+
+
+# == seen on a real week ===============================================================
+
+
+async def test_a_stop_with_the_main_job_done_and_an_add_on_left_open_still_owes_a_video(env: Env) -> None:
+    """On a real week about one stop in ten had its main appointment completed and an
+    add-on (a leaf pick-up with no tech of its own) left pending for days. The tech has
+    been and worked, so the stop is finished for him: his phone says so, and a missing
+    video is chased, without waiting for the add-on that may never be closed."""
+    from zest_video.http_office import board, stats
+
+    env.fake.data["appointment"][9004].update(status="1", checkIn=minutes_ago(120), checkOut=minutes_ago(100))
+    env.fake.data["appointment"][9011] = {
+        "appointmentID": "9011", "officeID": "7", "customerID": "502", "routeID": "70", "type": "95", "status": "0",
+        "assignedTech": "0", "servicedBy": "0", "employeeID": "22", "date": today(), "start": "09:00:00", "sequence": "2",
+    }
+    headers = await ready(env)
+    bob = next(s for s in (await env.http.get("/v1/today", headers=headers)).json()["stops"] if s["customerId"] == 502)
+    assert bob["appointmentIds"] == [9004, 9011] and bob["done"] is True
+
+    await env.finished(502, ago=timedelta(hours=2), force=False)
+    # Mowing (89) switched off for videos: the only thing he did there needs none.
+    await set_setting(env.ctx, "skip_service_ids", "89", OWNER)
+    assert await jobs.flag_missing(env.ctx) == 0
+    await set_setting(env.ctx, "skip_service_ids", "999", OWNER)
+    assert await jobs.flag_missing(env.ctx) == 1
+    (flag,) = await env.flags("no_video")
+    assert (flag.customer_id, flag.tech_id) == (502, 20)
+
+    rows = {r["stop"].customer_id: r for _, group in (await board(env.ctx, today()))["groups"] for r in group}
+    assert rows[502]["label"] == "No video", "the office sees it as finished with no video, not as 'not done yet'"
+    pat = next(r for r in await stats(env.ctx, 7) if r["name"] == "Pat Rivera")
+    assert pat["missed"] >= 1
+
+    # He films it: the video carries both appointments, and the flag goes.
+    video_id = await film(env, headers, 502)
+    assert (await env.video(video_id)).appointment_ids == [9004, 9011]
+    assert await env.flags("no_video") == []

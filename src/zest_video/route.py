@@ -34,7 +34,13 @@ LIVE_STATES = ("awaiting_upload", "held", "sent", "no_email", "unmatched")
 class StopView:
     """One tech's share of a stop: the appointments he leads there, and what follows
     from them. A tech who leads none (a helper riding along, listed only as an
-    additional tech) shares the whole stop."""
+    additional tech) shares the whole stop.
+
+    `done` means he has been and worked there: at least one of his appointments is
+    completed. It does not wait for all of them. On a real week about one stop in ten
+    had the main job completed and an add-on (leaf pick-up, say) left open for days;
+    waiting for "all" meant such a stop never counted as finished, so a missing video
+    there was never flagged. `types` are the services he completed, once he has any."""
 
     tech_id: int
     lead: bool
@@ -85,16 +91,18 @@ def tech_view(stop: Any, tech_id: int | None) -> StopView:
     ins = [t for t in (_when(a.get("checkIn")) for a in own) if t]
     open_check_in = any(a.get("checkIn") and not a.get("checkOut") for a in own)
     outs = [t for t in (_when(a.get("checkOut")) for a in own if a.get("checkIn")) if t]
-    done = bool(own) and all((to_int(a.get("status")) or 0) == 1 for a in own)
-    seen = [_when(a.get("doneSeenAt")) for a in own]
+    completed = [a for a in own if (to_int(a.get("status")) or 0) == 1]
+    done = bool(completed)
+    seen = [_when(a.get("doneSeenAt")) for a in completed]
     done_seen = None
     if done:
-        done_seen = max(seen) if all(seen) else stop.done_seen_at  # type: ignore[type-var]
+        # The clock on "finished with no video" starts when we first saw him finish anything.
+        done_seen = min(seen) if all(seen) else stop.done_seen_at  # type: ignore[type-var]
     return StopView(
         tech_id=tech_id or 0,
         lead=lead,
         appointment_ids=[a["id"] for a in own if a.get("id")],
-        types={a.get("type") for a in own},
+        types={a.get("type") for a in (completed or own)},
         services=services,
         check_in=min(ins) if ins else None,
         check_out=max(outs) if outs and not open_check_in else None,

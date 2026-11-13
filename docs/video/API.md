@@ -119,8 +119,9 @@ today.
   (listed on the stop with no appointment of his own) sees the whole stop.
 - `lat`/`lng` may be `null` (no map pin). `lastName` may be empty (a business).
 - `checkIn` is the earliest check-in across the stop's appointments, `checkOut`
-  the latest check-out, `null` until it happens. `done` is true when every
-  appointment is completed.
+  the latest check-out, `null` until it happens. `done` is true once the tech
+  has completed any of his appointments there: he has been and worked. (An
+  add-on left open, such as a leaf pick-up, does not keep the stop "not done".)
 - `stop.video` is `{"id", "state", "byYou"}` when this tech has a live video for
   the stop, else `null`. Another tech's video for the same property is not
   his and is not shown, with one exception: a helper also sees the lead's video
