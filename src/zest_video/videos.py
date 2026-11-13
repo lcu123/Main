@@ -165,6 +165,9 @@ async def register(ctx: Ctx, device: Device, body: dict[str, Any]) -> dict[str, 
                         db.videos.c.day == day,
                         db.videos.c.customer_id == customer_id,
                         db.videos.c.state.in_(LIVE_STATES),
+                        # Never this same video: an overlapping retry of this very
+                        # registration must not retire its own twin.
+                        db.videos.c.id != video_id,
                     )
                 )
             ).all()
@@ -188,9 +191,10 @@ async def register(ctx: Ctx, device: Device, body: dict[str, Any]) -> dict[str, 
 
     now = db.now()
     object_key = f"videos/{day}/{video_id}.mp4"
-    async with ctx.engine.begin() as conn:
-        await conn.execute(
-            sa.insert(db.videos).values(
+    try:
+        await _insert_video(
+            ctx,
+            dict(
                 id=video_id,
                 token=security.new_watch_token(),
                 tech_id=device.tech_id,
@@ -222,8 +226,17 @@ async def register(ctx: Ctx, device: Device, body: dict[str, Any]) -> dict[str, 
                 ended_by="",
                 ended_reason="",
                 **snapshot,
-            )
+            ),
         )
+    except sa.exc.IntegrityError:
+        # The same ID was registered a moment ago by a retry that overlapped this call
+        # (a slow first request, then the phone trying again). Answer as the repeat it is.
+        twin = await get_video(ctx, video_id)
+        if twin is None or twin.tech_id != device.tech_id:
+            raise ApiError(400, "bad_request", "This video belongs to someone else.") from None
+        if twin.state == "awaiting_upload":
+            return {"id": video_id, "state": "awaiting_upload", "upload": _upload(ctx, twin.object_key)}
+        return {**describe(twin), "upload": None}
     await audit(
         ctx, "tech", device.tech_id, "video_registered", video_id=video_id, customer_id=customer_id,
         detail={"signals": signals, "override": bool(body.get("override")), "notOnMyList": not_on_list, "bytes": size},
@@ -239,6 +252,11 @@ async def register(ctx: Ctx, device: Device, body: dict[str, Any]) -> dict[str, 
                 detail=f"{device.tech_first_name} sent it past a warning. Did not agree: {', '.join(wrong)}.",
             )
     return {"id": video_id, "state": "awaiting_upload", "upload": _upload(ctx, object_key)}
+
+
+async def _insert_video(ctx: Ctx, values: dict[str, Any]) -> None:
+    async with ctx.engine.begin() as conn:
+        await conn.execute(sa.insert(db.videos).values(**values))
 
 
 def _float(value: Any) -> float | None:
@@ -272,6 +290,9 @@ async def complete(ctx: Ctx, device: Device, video_id: str, body: dict[str, Any]
     if video is None or video.tech_id != device.tech_id:
         raise ApiError(404, "bad_request", "We do not know this video.")
     if video.state != "awaiting_upload":
+        if video.state in ("deleted", "replaced"):
+            # Its upload may have landed after the file was removed. Remove it again.
+            await _drop_object(ctx, video)
         return describe(video)
 
     stored = await ctx.storage.head(video.object_key)
@@ -378,6 +399,30 @@ async def _deliver(ctx: Ctx, video: Any) -> bool:
         return await no_email("demo")
     if video.customer_id is None:
         return False
+
+    # One video per customer per day is enforced at register, but two registrations
+    # arriving in the same instant could both get in. Settle it here, before any email:
+    # a video that already went out wins; otherwise the newest recording wins.
+    async with ctx.engine.connect() as conn:
+        rivals = (
+            await conn.execute(
+                sa.select(db.videos).where(
+                    db.videos.c.day == video.day,
+                    db.videos.c.customer_id == video.customer_id,
+                    db.videos.c.state.in_(LIVE_STATES),
+                    db.videos.c.id != video.id,
+                )
+            )
+        ).all()
+    for rival in rivals:
+        went_out = rival.state in LOCKED_STATES
+        newer = (rival.recorded_at, rival.created_at, rival.id) > (video.recorded_at, video.created_at, video.id)
+        if went_out or newer:
+            if await _end(ctx, video, "replaced", "system", f"another video for this visit stands ({rival.id})",
+                          drop_file=True):
+                await audit(ctx, "system", "email", "video_replaced", video_id=video.id,
+                            customer_id=video.customer_id, detail={"by": rival.id, "reason": "duplicate for the visit"})
+            return False
 
     # Server's own time check, now that FieldRoutes has had time to record the check-in.
     try:

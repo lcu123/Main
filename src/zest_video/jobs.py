@@ -193,6 +193,21 @@ async def daily(ctx: Ctx) -> None:
         else:
             await videos._drop_object(ctx, video)
 
+    # A video deleted or replaced while its upload was still in the air can leave a file
+    # behind: the upload lands after our delete. Deleting is safe to repeat, so sweep the
+    # last few days of them once more.
+    async with ctx.engine.connect() as conn:
+        late = (
+            await conn.execute(
+                sa.select(db.videos).where(
+                    db.videos.c.state.in_(("deleted", "replaced")),
+                    db.videos.c.ended_at > now - timedelta(days=3),
+                )
+            )
+        ).all()
+    for video in late:
+        await videos._drop_object(ctx, video)
+
     async with ctx.engine.begin() as conn:
         await conn.execute(sa.delete(db.login_codes).where(db.login_codes.c.created_at < now - timedelta(days=2)))
         await conn.execute(sa.delete(db.office_sessions).where(db.office_sessions.c.expires_at < now))
