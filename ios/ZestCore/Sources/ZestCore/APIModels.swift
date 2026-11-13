@@ -196,7 +196,9 @@ public struct AppConfig: Codable, Equatable, Sendable {
     }
 }
 
-/// The live video on a stop, from any tech.
+/// The video a stop shows this tech. It is his own (`byYou`), except where
+/// he has no appointment of his own at the stop: there it can be a
+/// teammate's, to say the stop is covered. See `StopCover`.
 public struct StopVideo: Codable, Equatable, Sendable {
     public var id: String
     public var state: VideoState

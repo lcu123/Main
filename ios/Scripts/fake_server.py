@@ -21,6 +21,13 @@ Test controls (all JSON):
                                                             stops side by side on one street
                                                             and no locked stop.
   POST /__test/set     {"switch": value, ...}              change behaviour
+  POST /__test/other-tech {"customerId": N, "state": "sent", "helper": true}
+                                                            another tech already recorded
+                                                            that stop today. "helper": true
+                                                            means the signed-in tech has no
+                                                            appointment of his own there (he
+                                                            is shown that video); false means
+                                                            he has his own (he is not).
   POST /__test/note    {"note": "text"}                    the APP says what it is doing
                                                             (each upload's start and end)
   GET  /__test/state                                        everything it saw
@@ -59,6 +66,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CODE = "123456"
 TECH = {"id": 7, "firstName": "Sam", "demo": False}
+# A second tech, who never signs in here: his videos are put in by the tests.
+OTHER_TECH = {"id": 8, "firstName": "Pat"}
 
 # Where the test "phone" stands: on the first customer's lawn.
 BASE_LAT = 38.67800
@@ -130,6 +139,8 @@ class State:
             self.requests = []        # everything the app sent, in order
             self.videos = {}          # id -> record
             self.order = []           # video ids in the order they were first registered
+            self.other_order = []     # the other tech's video ids, in the order they were put in
+            self.helper_stops = set() # customers where the signed-in tech only helps
             # One device token is issued ahead of time, so a test can start
             # the app already signed in instead of typing a number and a code.
             self.issued_token = "issued-" + uuid.uuid4().hex
@@ -147,10 +158,11 @@ class State:
                     LOCKED_VIDEO_ID, 205, state="sent",
                     recorded=self.started - datetime.timedelta(minutes=40), fixture=True)
 
-    def _video(self, video_id, customer_id, state, recorded, fixture=False):
+    def _video(self, video_id, customer_id, state, recorded, fixture=False, tech=None):
         return {
             "id": video_id,
             "customerId": customer_id,
+            "techId": TECH["id"] if tech is None else tech,
             "state": state,
             "recordedAt": iso(recorded),
             "emailAt": iso(recorded + datetime.timedelta(minutes=self.config["holdMinutes"])),
@@ -186,7 +198,14 @@ class State:
             ]
         out = []
         for customer, name, last, address, north, west, order, checked, done, service in rows:
+            # One video per tech per property: the tech sees his own video.
+            # Another tech's is shown only where he has no appointment of
+            # his own (a helper), and only until he has recorded one himself.
             video = self.live_video(customer)
+            by_you = True
+            if video is None and customer in self.helper_stops:
+                video = self.live_video(customer, tech=OTHER_TECH["id"])
+                by_you = False
             out.append({
                 "customerId": customer,
                 "name": name,
@@ -201,17 +220,34 @@ class State:
                 "checkIn": checked_in if checked else None,
                 "checkOut": checked_out if checked else None,
                 "done": done,
-                "video": None if video is None else {"id": video["id"], "state": video["state"], "byYou": True},
+                "video": None if video is None else {"id": video["id"], "state": video["state"], "byYou": by_you},
             })
         return out
 
-    def live_video(self, customer_id):
-        """The newest video for a customer that still counts."""
+    def live_video(self, customer_id, tech=None):
+        """The newest video one tech made for a customer that still counts.
+        (The signed-in tech's, unless another tech is named.)"""
+        tech = TECH["id"] if tech is None else tech
         live = [v for v in self.videos.values()
-                if v["customerId"] == customer_id and v["state"] not in ("deleted", "replaced", "pulled")]
+                if v["customerId"] == customer_id and v["techId"] == tech
+                and v["state"] not in ("deleted", "replaced", "pulled")]
         if not live:
             return None
         return max(live, key=lambda v: v["recordedAt"])
+
+    def add_other_tech_video(self, customer_id, state="sent", helper=False):
+        """Another tech recorded this stop earlier today."""
+        with self.lock:
+            video_id = "00000000-0000-4000-8000-%012d" % (800000 + len(self.other_order))
+            self.videos[video_id] = self._video(
+                video_id, customer_id, state=state,
+                recorded=self.started - datetime.timedelta(minutes=30), fixture=True, tech=OTHER_TECH["id"])
+            self.other_order.append(video_id)
+            if helper:
+                self.helper_stops.add(customer_id)
+            else:
+                self.helper_stops.discard(customer_id)
+            return video_id
 
     def today(self):
         return {
@@ -222,7 +258,8 @@ class State:
             "stops": self.stops(),
             "videos": [
                 {"id": v["id"], "customerId": v["customerId"], "state": v["state"], "emailAt": v["emailAt"]}
-                for v in self.videos.values() if v["state"] not in ("deleted", "replaced", "pulled")
+                for v in self.videos.values()
+                if v["techId"] == TECH["id"] and v["state"] not in ("deleted", "replaced", "pulled")
             ],
         }
 
@@ -234,6 +271,7 @@ class State:
                 "config": self.config,
                 "requests": self.requests,
                 "videos": [self.videos[i] for i in self.order],
+                "otherTechVideos": [self.videos[i] for i in self.other_order],
                 "codes": self.codes,
                 "logins": self.logins,
                 "logouts": self.logouts,
@@ -256,6 +294,10 @@ class State:
                 lines.append("video %s customer=%s state=%s registers=%d puts=%s bytes=%d completes=%s deletes=%d" % (
                     v["id"], v["customerId"], v["state"], v["registers"],
                     [p["status"] for p in v["puts"]], v["bytes"], v["completes"], v["deletes"]))
+            for v in (self.videos[i] for i in self.other_order):
+                lines.append("another tech's video %s customer=%s state=%s (%s)" % (
+                    v["id"], v["customerId"], v["state"],
+                    "this tech only helps there" if v["customerId"] in self.helper_stops else "this tech has his own appointment there"))
             if self.notes:
                 lines.append("what the app said about its uploads:")
                 for note in self.notes:
@@ -468,13 +510,17 @@ class Handler(BaseHTTPRequestHandler):
             customer = body.get("customerId")
             existing = STATE.videos.get(video_id)
             if existing is None:
-                # A locked stop takes no new video.
+                # One video per tech per property. Only THIS tech's own
+                # earlier video matters here: once it has gone to the
+                # customer the stop takes no new one from him, and before
+                # that recording again replaces it. Another tech's video is
+                # never replaced and never stands in the way.
                 current = STATE.live_video(customer) if customer is not None else None
                 if current is not None and current["state"] in ("sent", "watched"):
                     locked = current
                 else:
                     locked = None
-                    # Recording again replaces the old one by itself.
+                    # Recording again replaces his own old one by itself.
                     if current is not None:
                         current["state"] = "replaced"
             if existing is None and locked is not None:
@@ -602,7 +648,8 @@ class Handler(BaseHTTPRequestHandler):
     def delete(self, video_id):
         with STATE.lock:
             video = STATE.videos.get(video_id)
-            if video is None:
+            if video is None or video["techId"] != TECH["id"]:
+                # Another tech's video is not his to delete.
                 answer, status = None, 404
             elif video["state"] in ("sent", "watched"):
                 answer, status = None, 409
@@ -644,6 +691,16 @@ class Handler(BaseHTTPRequestHandler):
                 answer = {"ok": True, "switches": STATE.switches, "config": STATE.config}
             print("      set %s" % json.dumps(body, sort_keys=True), flush=True)
             return self.reply(200, answer, record=False)
+        if path == "/__test/other-tech" and self.command == "POST":
+            body = body or {}
+            customer = body.get("customerId")
+            state = body.get("state", "sent")
+            if not isinstance(customer, int) or state not in ("awaiting_upload", "held", "sent", "watched"):
+                return self.reply(400, {"error": "customerId (a number) and a live state are needed"}, record=False)
+            video_id = STATE.add_other_tech_video(customer, state, bool(body.get("helper")))
+            print("      another tech's video for customer %s (%s, %s)" % (
+                customer, state, "helper" if body.get("helper") else "own appointment"), flush=True)
+            return self.reply(200, {"ok": True, "id": video_id}, record=False)
         if path == "/__test/state" and self.command == "GET":
             return self.reply(200, STATE.summary(), record=False)
         if path == "/__test/log" and self.command == "GET":
@@ -862,10 +919,76 @@ def self_test():
     state = call("GET", "/__test/state")[1]
     check([v["customerId"] for v in state["videos"]] == list(range(301, 313)), "videos kept in the order they were registered")
 
+    # One video per tech, per property, per day.
+    def stop_video(token, customer):
+        stops = {s["customerId"]: s for s in call("GET", "/v1/today", token=token)[1]["stops"]}
+        return stops[customer]["video"]
+
+    def other(state):
+        return {v["customerId"]: v for v in state["otherTechVideos"]}
+
+    status, body = call("POST", "/__test/reset", {"test": "two techs", "config": {"maxSeconds": 3}})
+    token = body["token"]
+    check(call("POST", "/__test/other-tech", {"customerId": "x"})[0] == 400, "other-tech needs a customer")
+    check(call("POST", "/__test/other-tech", {"customerId": 202, "state": "deleted"})[0] == 400, "and a live state")
+
+    # (a) The lead: he has his own appointment at 202, where another tech
+    #     already recorded. He is not shown that video, his register is not
+    #     refused, and neither video replaces the other.
+    status, body = call("POST", "/__test/other-tech", {"customerId": 202, "state": "sent", "helper": False})
+    check(status == 200, "another tech's sent video at 202")
+    pat_at_202 = body["id"]
+    check(stop_video(token, 202) is None, "the lead does not see the other tech's video")
+    today = call("GET", "/v1/today", token=token)[1]
+    check(pat_at_202 not in [v["id"] for v in today["videos"]], "nor is it among his own videos")
+    status, body = register(token, "mine-202", customer=202)
+    check(status == 200 and body["upload"] is not None, "his own video is taken, no 409: %s" % status)
+    check(put(body["upload"]["url"], video_bytes)[0] == 200, "upload")
+    check(call("POST", "/v1/videos/mine-202/complete", {"sizeBytes": len(video_bytes)}, token)[0] == 200, "complete")
+    state = call("GET", "/__test/state")[1]
+    check(other(state)[202]["state"] == "sent", "the other tech's video was not replaced")
+    check(stop_video(token, 202) == {"id": "mine-202", "state": "held", "byYou": True}, "the stop now shows his own")
+    check(call("DELETE", "/v1/videos/" + pat_at_202, token=token)[0] == 404, "another tech's video is not his to delete")
+
+    # (b) His own re-record still replaces his own, and only his own.
+    status, body = register(token, "mine-202-again", customer=202)
+    check(status == 200, "recording again inside the ten minutes")
+    state = call("GET", "/__test/state")[1]
+    mine = {v["id"]: v for v in state["videos"]}
+    check(mine["mine-202"]["state"] == "replaced" and mine["mine-202-again"]["state"] == "awaiting_upload", "his first is replaced by his second")
+    check(other(state)[202]["state"] == "sent", "the other tech's video is still there")
+
+    # (c) His own locked video still answers 409, and says it is his.
+    status, body = register(token, "mine-205", customer=205)
+    check(status == 409 and body["error"] == "visit_has_video" and body["existing"]["byYou"] is True
+          and body["existing"]["id"] == LOCKED_VIDEO_ID, "his own sent video locks the stop: %s %s" % (status, body))
+
+    # (d) The helper: no appointment of his own at 203, where another tech's
+    #     video is still inside its ten minutes, and at 204, where it has
+    #     gone. He is shown both as not his, and can still record his own.
+    check(call("POST", "/__test/other-tech", {"customerId": 203, "state": "held", "helper": True})[0] == 200, "held, helper")
+    status, body = call("POST", "/__test/other-tech", {"customerId": 204, "state": "sent", "helper": True})
+    pat_at_204 = body["id"]
+    check(stop_video(token, 203)["byYou"] is False and stop_video(token, 203)["state"] == "held", "the helper sees the held one")
+    check(stop_video(token, 204) == {"id": pat_at_204, "state": "sent", "byYou": False}, "and the sent one")
+    today = call("GET", "/v1/today", token=token)[1]
+    check(sorted(v["id"] for v in today["videos"]) == [LOCKED_VIDEO_ID, "mine-202-again"], "his own videos only: %s" % today["videos"])
+    status, body = register(token, "mine-204", customer=204)
+    check(status == 200 and body["upload"] is not None, "the helper's own video is taken even after the lead's was sent: %s" % status)
+    check(register(token, "mine-203", customer=203)[0] == 200, "and beside one still held")
+    state = call("GET", "/__test/state")[1]
+    check(other(state)[203]["state"] == "held" and other(state)[204]["state"] == "sent", "neither of the lead's was replaced")
+    check(stop_video(token, 204) == {"id": "mine-204", "state": "awaiting_upload", "byYou": True}, "once he has his own, the stop shows his own")
+    check(call("DELETE", "/v1/videos/mine-204", token=token)[0] == 200, "he can delete his own")
+    check(stop_video(token, 204) == {"id": pat_at_204, "state": "sent", "byYou": False}, "and the stop is the lead's again")
+    check("another tech's video" in call("GET", "/__test/log")[1].decode(), "the log names the other tech's videos")
+
     # Reset forgets everything except the locked fixture.
     call("POST", "/__test/reset", {"test": "again"})
     state = call("GET", "/__test/state")[1]
-    check(state["videos"] == [] and state["requests"] == [] and state["config"]["maxSeconds"] == 15, "reset")
+    check(state["videos"] == [] and state["otherTechVideos"] == [] and state["requests"] == []
+          and state["config"]["maxSeconds"] == 15, "reset")
+    check(stop_video(call("POST", "/__test/reset", {"test": "again"})[1]["token"], 203) is None, "no helper stops after a reset")
 
     server.shutdown()
     print("self-test passed")

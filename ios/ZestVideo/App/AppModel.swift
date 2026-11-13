@@ -14,7 +14,9 @@ struct VideoSummary: Equatable {
     enum Mode: Equatable {
         /// Inside the undo window: Record again and Delete are offered.
         case changeable(closesAt: Date)
-        /// Another tech's video that has not gone out yet: Record again only.
+        /// A teammate's video, shown where this tech is only helping. The
+        /// stop is covered. He can record his own too, as a new video: the
+        /// customer gets both, and the teammate's is never replaced.
         case otherTech
         /// Past the window but still on the phone: it sends by itself.
         case waiting
@@ -288,7 +290,8 @@ final class AppModel: ObservableObject {
             let minutes = HoldWindow.minutesLeft(secondsLeft: seconds)
             return RowState(badge: onPhone ? .waiting : .sent, text: "CHANGE VIDEO · \(minutes) MIN LEFT", tone: .action)
         case .otherTech:
-            return RowState(badge: .sent, text: "RECORD AGAIN", tone: .action)
+            // Covered, in green like SENT. Tapping it still offers RECORD VIDEO.
+            return RowState(badge: .sent, text: AppModel.teamText, tone: .good)
         case .waiting:
             let text = summary.statusText == "WAITING" ? "WAITING TO SEND" : summary.statusText
             return RowState(badge: .waiting, text: text, tone: .waiting)
@@ -299,7 +302,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// For the header: how many of today's stops have a video the server holds.
+    /// What a stop says when a teammate recorded it and this tech did not.
+    static let teamText = "DONE BY TEAM"
+
+    /// My own videos as the server lists them, less the ones this phone
+    /// knows are gone (see `stops`).
+    private var myServerVideos: [TodayVideo] {
+        (today?.videos ?? []).filter { video in
+            let local = queue.item(video.id)
+            if droppedVideoIDs.contains(video.id) || local?.phase == .deleting { return false }
+            return !(video.state == .awaitingUpload && local == nil)
+        }
+    }
+
+    /// For the header: how many of today's stops have a video the server
+    /// holds. A stop a teammate covered counts: it is not waiting on anyone.
     var videosSentCount: Int {
         let sentHere = Set(queue.items.filter { $0.phase == .done && !$0.notOnMyList }.compactMap { $0.customerId })
         return stops.filter { stop in
@@ -1017,29 +1034,50 @@ final class AppModel: ObservableObject {
             return summary
         }
 
-        if let stop, let video = stop.liveVideo {
-            var summary = VideoSummary(
-                name: name, address: address, statusText: "SENT ✓", mode: .locked,
-                stop: stop, itemID: nil, serverVideoID: video.id
-            )
-            let notOutYet = video.state == .held || video.state == .awaitingUpload
-            if video.byYou {
-                let closesAt = today?.videos.first { $0.id == video.id }?.emailAt
-                if notOutYet, let closesAt, HoldWindow.isOpen(closesAt: closesAt, now: now) {
+        // One video per tech, per property: only his own video can be
+        // changed here. A teammate's is something to know about.
+        if let stop {
+            let cover = StopCover.of(stop, ownVideos: myServerVideos)
+            if let video = cover.video {
+                var summary = VideoSummary(
+                    name: name, address: address, statusText: "SENT ✓", mode: .locked,
+                    stop: stop, itemID: nil, serverVideoID: video.id
+                )
+                switch cover.standing(now: now) {
+                case .change(let closesAt):
                     summary.mode = .changeable(closesAt: closesAt)
+                case .teamCovered:
+                    summary.mode = .otherTech
+                    summary.statusText = AppModel.teamText
+                    // Not his video: nothing here may delete or replace it.
+                    summary.serverVideoID = nil
+                case .locked, .record:
+                    break
                 }
-            } else if notOutYet {
-                summary.mode = .otherTech
+                return summary
             }
-            return summary
         }
 
         return VideoSummary(name: name, address: address, statusText: "", mode: .gone, stop: stop, itemID: nil, serverVideoID: nil)
     }
 
-    /// RECORD AGAIN from a stop's video screen. The new clip replaces the old
-    /// one by itself when it is saved.
+    /// RECORD VIDEO at a stop a teammate already recorded. A plain new
+    /// recording, by the same steps as any other: nothing is replaced, and
+    /// the customer gets both videos.
+    func recordOwn(_ summary: VideoSummary) {
+        guard summary.mode == .otherTech, let stop = summary.stop else { return }
+        focus = nil
+        beginConfirm(RecordTarget(stop: stop))
+    }
+
+    /// RECORD AGAIN from a stop's video screen. The new clip replaces this
+    /// tech's own old one by itself when it is saved.
     func recordAgain(_ summary: VideoSummary) {
+        // Only ever his own video: a teammate's is not his to replace.
+        guard summary.mode != .otherTech else {
+            recordOwn(summary)
+            return
+        }
         if let stop = summary.stop {
             target = RecordTarget(stop: stop)
         } else {
@@ -1053,8 +1091,9 @@ final class AppModel: ObservableObject {
         location.refresh(precise: true)
     }
 
-    /// DELETE VIDEO, after the confirming tap.
+    /// DELETE VIDEO, after the confirming tap. Only ever his own video.
     func deleteVideo(_ summary: VideoSummary) async {
+        guard summary.mode != .otherTech else { return }
         if let itemID = summary.itemID {
             droppedVideoIDs.insert(itemID)
             uploads.drop(itemID)

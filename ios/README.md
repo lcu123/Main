@@ -1,7 +1,8 @@
 # Zest Video (iPhone app)
 
-A tech records one short video per stop. The app saves it on the phone, sends
-it by itself, and deletes it the moment the server confirms. The server
+A tech records one short video per stop: one video per tech, per property,
+per day. The app saves it on the phone, sends it by itself, and deletes it
+the moment the server confirms. The server
 contract is in [`docs/video/API.md`](../docs/video/API.md); the app talks to
 nothing else.
 
@@ -66,6 +67,16 @@ No third-party code. Apple frameworks only, system font, one bundled image
   that is also an everyday word ("Will", "Rose") only counts right after
   "Hi", a name of one or two letters never counts alone, and the tech's own
   first name is not taken for a customer's.
+- **One video per tech, per property, per day** (`StopCover`). Two techs at
+  one property each send their own and the customer gets both. A tech's
+  second video replaces his own first and nobody else's, so RECORD AGAIN
+  and DELETE VIDEO are only ever offered on his own video. The server shows
+  a tech his own video for a stop, or none. Only where he has no
+  appointment of his own (he is helping) is he shown a teammate's: the card
+  says DONE BY TEAM, the stop counts as covered, and its screen says
+  "Another tech already recorded this stop. You can record your own too.
+  The customer gets both." with RECORD VIDEO, which is a plain new
+  recording.
 - **AppModel** is the one router. A screen is a value of `route`; there is no
   navigation stack to swipe back through.
 - **A video's life**: record to `.mov` → re-wrap as a fast-start `.mp4`
@@ -120,8 +131,10 @@ on the screen and what the server got.
 **The server** is `Scripts/fake_server.py` (standard-library Python). It
 speaks `docs/video/API.md`, keeps everything in memory, and can be told to
 misbehave: answer 500, drop the connection, sign the phone out, ask for an
-update, expire an upload address, say "not uploaded", or answer slowly. The
-list of switches is at the top of the file. It checks itself with:
+update, expire an upload address, say "not uploaded", or answer slowly. It
+also plays a second tech who already recorded a stop (`/__test/other-tech`),
+with the signed-in tech as the lead or as a helper there. The list of
+switches is at the top of the file. It checks itself with:
 
 ```bash
 python3 ios/Scripts/fake_server.py --self-test
@@ -154,7 +167,7 @@ issues the token when a test resets it), so only the sign-in tests type a
 number and a code. A test that kills the app starts it again *without* the
 reset: what the app kept is what is being tested.
 
-**What is covered** (61 tests):
+**What is covered** (64 tests):
 
 | Class | What it proves |
 | --- | --- |
@@ -163,6 +176,7 @@ reset: what the app kept is what is being tested.
 | `RecordUITests` | record → SAVE → one register, the whole file once, one complete; FLIP, BACK, ending early; RECORD AGAIN; the recommend switch; the two-keys warning both ways; change and delete inside ten minutes; not-on-my-list; double taps |
 | `KillUITests` | the app killed mid-recording, on review, mid-upload, before "complete" is answered, and right after SAVE: after it is started again there is exactly one video on the server |
 | `NetworkUITests` | 500s, no server, an expired upload address, "not uploaded", signed out by the server, update required, a stop locked by the server, starting with no signal; and a long day: twelve videos saved with no server, all arriving once and in order when it is back |
+| `TeamUITests` | one video per tech per property. The lead is not shown another tech's video, his own is taken with no 409, and RECORD AGAIN replaces only his own. The helper sees DONE BY TEAM, gets no RECORD AGAIN, DELETE or CALL OFFICE on the lead's video, records his own beside it, and deleting his own leaves the lead's alone |
 | `BackgroundUploadUITests` | informational: what the simulator does with the real background upload session. Skipped, with the recorded error, if the upload never arrives |
 | `ScreensUITests` | every screen, opened with made-up data: its main actions are on the screen, tappable and not overlapping, nothing runs off the side, and Apple's accessibility audit (contrast, 44-point tap targets, clipped text, descriptions, Dynamic Type) finds nothing unexplained. Also the route of awkward names, where nothing may be cut off. Run by the `sizes` jobs on several simulators and text sizes |
 | `PerformanceUITests` | informational: launch time, time to My Route, memory on each screen and over ten videos, what is left on disk. Run by the `performance` job |
@@ -256,8 +270,8 @@ xcrun simctl launch --terminate-running-process booted com.zestlawnpest.video -Z
 
 Names: `login`, `code`, `today`, `today2` (the same list scrolled to the end),
 `confirm`, `far`, `record`, `recording`, `review`, `warning`, `saved`,
-`stopvideo`, `locked`, `queue`, `update`. (`recording` is held still on the
-first thing to say, "Hi Jane".)
+`stopvideo`, `locked`, `queue`, `update`, `team` (a stop a teammate already
+recorded). (`recording` is held still on the first thing to say, "Hi Jane".)
 
 All of it sits behind `#if targetEnvironment(simulator)`
 (`App/ScreenshotMode.swift`, `UI/StandInPicture.swift`, and a few small hooks),

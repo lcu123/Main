@@ -21,13 +21,13 @@ cd "$HERE/.."
 APP="build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app"
 SUITE="ZestVideoUITests/ScreensUITests"
 ODD_TEST="$SUITE/testOddNamesAreNeverCutOff"
-ALL="login code today today2 confirm far record recording review warning saved stopvideo locked queue update"
+ALL="login code today today2 confirm far record recording review warning saved stopvideo locked queue update team"
 # The awkward names: the lists, then the screen with the largest type for
 # every customer, then the other screens for the four longest names.
 ODD="today today2 queue queue@4 queue@8"
 ODD="$ODD confirm confirm@1 confirm@2 confirm@3 confirm@4 confirm@5 confirm@6 confirm@7 confirm@8 confirm@9"
 for index in 2 4 5 9; do
-  ODD="$ODD record@$index review@$index warning@$index stopvideo@$index locked@$index"
+  ODD="$ODD record@$index review@$index warning@$index stopvideo@$index locked@$index team@$index"
 done
 
 mkdir -p ui-artifacts/failures out

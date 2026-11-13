@@ -51,6 +51,18 @@ struct FakeServer {
         request("POST", "/__test/set", json: switches)?.status == 200
     }
 
+    /// Another tech already recorded this stop today.
+    /// - Parameter helper: true when the signed-in tech has no appointment
+    ///   of his own there, so the server shows him that video (as not his).
+    ///   False when he has his own appointment: he is shown nothing.
+    /// - Returns: the other tech's video ID, or nil if the server refused.
+    @discardableResult
+    func otherTechRecorded(customerId: Int, state: String = "sent", helper: Bool) -> String? {
+        let body: [String: Any] = ["customerId": customerId, "state": state, "helper": helper]
+        guard let reply = request("POST", "/__test/other-tech", json: body), reply.status == 200 else { return nil }
+        return reply.json["id"] as? String
+    }
+
     /// Everything the server has seen since the last reset.
     func state() -> ServerState {
         ServerState(raw: request("GET", "/__test/state")?.json ?? [:])
@@ -145,6 +157,12 @@ struct ServerState {
     /// fixture video is not among them.
     var videos: [ServerVideo] {
         ((raw["videos"] as? [[String: Any]]) ?? []).map(ServerVideo.init(raw:))
+    }
+
+    /// The other tech's videos (put in by `otherTechRecorded`), which the
+    /// app must never replace, delete or list as its own.
+    var otherTechVideos: [ServerVideo] {
+        ((raw["otherTechVideos"] as? [[String: Any]]) ?? []).map(ServerVideo.init(raw:))
     }
 
     var requests: [[String: Any]] {

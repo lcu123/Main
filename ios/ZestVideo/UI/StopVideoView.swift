@@ -5,6 +5,9 @@ import ZestCore
 ///
 /// For ten minutes after recording the tech can record again or delete it.
 /// After that it has gone to the customer and only the office can change it.
+/// That is all about his own video. Where a teammate recorded the stop and
+/// he is only helping, the screen says so and offers RECORD VIDEO: his own
+/// is a new video, kept beside the first.
 struct StopVideoView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var queue: QueueStore
@@ -33,12 +36,14 @@ struct StopVideoView: View {
                 changeable(summary, secondsLeft: max(0, Int(closesAt.timeIntervalSince(now).rounded(.up))))
             }
         case .otherTech:
+            // A teammate's video. Nothing here can change it; this tech can
+            // add his own, and the customer gets both.
             Screen(bar: "Video", onBack: goBack) {
-                headline(summary, chip: nil)
+                headline(summary, chip: StatusChip(text: summary.statusText, tone: .good))
                 BodyText("Another tech already recorded this stop.", bold: true)
-                BodyText("If you record it again, your video takes its place.")
+                BodyText("You can record your own too. The customer gets both.")
             } footer: {
-                BigButton(title: "RECORD AGAIN", kind: .primary) { app.recordAgain(summary) }
+                BigButton(title: "RECORD VIDEO", kind: .primary) { app.recordOwn(summary) }
                 back
             }
         case .waiting:

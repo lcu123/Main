@@ -285,7 +285,7 @@ jobs:
           blank=""
           slow=""
           number=0
-          for name in login code today today2 confirm far record recording review warning saved stopvideo locked queue update; do
+          for name in login code today today2 confirm far record recording review warning saved stopvideo locked queue update team; do
             number=$((number + 1))
             file=$(printf "screens/%02d-%s.png" "$number" "$name")
             ok=1
@@ -404,7 +404,7 @@ jobs:
             informational: false
           - name: kills, bad network
             slug: b
-            classes: KillUITests NetworkUITests BackgroundUploadUITests
+            classes: KillUITests NetworkUITests TeamUITests BackgroundUploadUITests
             signed: false
             informational: false
           - name: background uploads, signed build, informational

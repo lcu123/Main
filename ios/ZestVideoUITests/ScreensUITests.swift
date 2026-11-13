@@ -79,6 +79,8 @@ final class ScreensUITests: ZestUITestCase {
             return Plan(anchor: "DELETE VIDEO", actions: ["RECORD AGAIN", "DELETE VIDEO", "BACK"], showing: ["bar-back"])
         case "locked":
             return Plan(anchor: "BACK", actions: ["BACK"], showing: ["bar-back"])
+        case "team":
+            return Plan(anchor: "RECORD VIDEO", actions: ["RECORD VIDEO", "BACK"], showing: ["bar-back"])
         case "queue":
             return Plan(anchor: "tab-videos", actions: ["tab-route", "tab-videos"], reachable: ["link-signout", "held-space"])
         case "update":
@@ -102,6 +104,7 @@ final class ScreensUITests: ZestUITestCase {
     func testSaved() { check("saved") }
     func testStopVideo() { check("stopvideo") }
     func testLocked() { check("locked") }
+    func testTeam() { check("team") }
     func testQueue() { check("queue") }
     func testUpdate() { check("update") }
 
@@ -126,7 +129,7 @@ final class ScreensUITests: ZestUITestCase {
         // address, the 45-letter business, the 24-letter word. (CI takes
         // pictures of more; each check here costs a launch of the app.)
         for index in [2, 4, 9] {
-            for screen in ["record", "recording", "review", "stopvideo"] {
+            for screen in ["record", "recording", "review", "stopvideo", "team"] {
                 problems += inspect(screen, odd: index, audits: [.textClipped])
             }
         }
@@ -171,6 +174,9 @@ final class ScreensUITests: ZestUITestCase {
         if screen == "recording" {
             problems += promptProblems(on: name, usualRoute: odd == nil)
         }
+        if screen == "team" {
+            problems += teamProblems(on: name)
+        }
         if Self.bigText {
             problems += textSizeProblems(on: name, screen: screen)
         }
@@ -207,6 +213,24 @@ final class ScreensUITests: ZestUITestCase {
             if ring.frame.width < 118 {
                 problems.append("\(name): the ring is only \(Int(ring.frame.width)) points wide; it must stay at least 120.")
             }
+        }
+        return problems
+    }
+
+    // MARK: A stop a teammate recorded
+
+    /// The words are the new rule's (each tech sends his own, the customer
+    /// gets both), and nothing on the screen can change the teammate's video.
+    private func teamProblems(on name: String) -> [String] {
+        var problems: [String] = []
+        for words in ["Another tech already recorded this stop.", "You can record your own too. The customer gets both."] where !hasText(words) {
+            problems.append("\(name): the screen should say \"\(words)\".")
+        }
+        for words in ["RECORD AGAIN", "DELETE VIDEO", "CALL OFFICE"] where button(words).exists {
+            problems.append("\(name): \(words) must not be offered on a teammate's video.")
+        }
+        if hasText("takes its place") {
+            problems.append("\(name): the screen still says a new video takes the other tech's place.")
         }
         return problems
     }

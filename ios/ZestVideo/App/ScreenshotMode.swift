@@ -37,6 +37,9 @@ enum ScreenshotMode {
         case saved
         case stopvideo
         case locked
+        /// A stop a teammate already recorded, seen by a tech who is only
+        /// helping there: covered, and he can still record his own.
+        case team
         case queue
         case update
     }
@@ -114,6 +117,8 @@ enum ScreenshotMode {
         var sending: Stop
         /// Past its 10 minutes and waiting for signal.
         var waiting: Stop
+        /// Recorded by a teammate; this tech is only helping there.
+        var team: Stop
         /// Where the phone is: on the target's lawn.
         var phone: VideoLocation
     }
@@ -122,7 +127,7 @@ enum ScreenshotMode {
     static let usualCast = Cast(
         stops: [tom, susan, jane, robert, maria, david, linda, hoa],
         target: jane, neighbour: robert, locked: tom, changeable: susan, sending: david, waiting: linda,
-        phone: phoneFix
+        team: maria, phone: phoneFix
     )
 
     /// The awkward customers, with number `index` in the part the screen
@@ -133,7 +138,7 @@ enum ScreenshotMode {
         func at(_ offset: Int) -> Stop { stops[(index + offset) % stops.count] }
         var cast = Cast(
             stops: stops, target: at(0), neighbour: at(1), locked: at(2), changeable: at(3),
-            sending: at(4), waiting: at(5), phone: phoneFix
+            sending: at(4), waiting: at(5), team: at(6), phone: phoneFix
         )
         switch screen {
         case .stopvideo:
@@ -142,6 +147,9 @@ enum ScreenshotMode {
         case .locked:
             cast.locked = at(0)
             cast.target = at(2)
+        case .team:
+            cast.team = at(0)
+            cast.target = at(6)
         default:
             break
         }
@@ -227,6 +235,17 @@ enum ScreenshotMode {
             // Recorded 40 minutes ago: it has gone to the customer.
             shot.route = .stopVideo
             shot.focus = .stop(cast.locked.customerId)
+        case .team:
+            // A teammate recorded this stop 30 minutes ago and it went out.
+            // This tech has no appointment of his own there, so the server
+            // shows him that video as not his.
+            var day = today
+            if let index = day.stops.firstIndex(where: { $0.customerId == cast.team.customerId }) {
+                day.stops[index].video = StopVideo(id: "screenshot-team", state: .sent, byYou: false)
+            }
+            shot.today = day
+            shot.route = .stopVideo
+            shot.focus = .stop(cast.team.customerId)
         case .queue:
             shot.route = .queue
             fillHeldSpace(for: app.queue)
