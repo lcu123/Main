@@ -35,7 +35,10 @@
 .stars input:focus:not(:focus-visible)+label{outline:0}
 /* Read out, not shown: the name of each star. */
 .vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-@media (forced-colors:active){.stars label{color:Canvas}.stars svg{stroke:CanvasText}.stars input:checked~label,.stars label:hover,.stars label:hover~label{color:Highlight}}
+/* A contrast theme: outline in the text colour; not picked is filled with the background,
+   picked with the text colour (the strongest pair a theme has); the highlight colour only
+   previews under a mouse. */
+@media (forced-colors:active){.stars label{color:Canvas}.stars svg{stroke:CanvasText}.stars label:hover,.stars label:hover~label{color:Highlight}.stars input:checked~label{color:CanvasText}}
 textarea{width:100%;min-height:96px;border:2px solid var(--line);border-radius:12px;padding:12px;font:400 19px/1.4 Rubik,system-ui,sans-serif;margin-bottom:14px}
 textarea:focus{outline:3px solid var(--bright);border-color:var(--bright)}
 details{margin-top:22px;font-size:17px}

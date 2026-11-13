@@ -10,7 +10,7 @@
 // both were drawn in the one text colour.
 
 const {
-  test, expect, checkGap, projectFacts, press,
+  test, expect, projectFacts, press,
   pixelsAround, twoColours, contrast, colourAt, lineColour,
 } = require('../lib/harness');
 
@@ -117,9 +117,11 @@ test.describe('forced colours (Windows contrast themes)', () => {
     report(testInfo, 'forced colours', seen);
     expect.soft(seen.headingContrast, 'the heading is hard to read').toBeGreaterThanOrEqual(4.5);
     expect.soft(seen.sendContrast, 'the Send button is hard to read').toBeGreaterThanOrEqual(4.5);
-    // The theme takes every colour away; the page hands the stars the theme's own: hollow in
-    // the text colour, filled in the highlight colour.
-    checkGap(testInfo, 'forced-colours-stars-look-the-same', starFaults(seen), 'in forced colours the stars are hard to see or to tell apart');
+    // The theme takes every colour away; the page hands the stars the theme's own: an outline
+    // in the text colour, filled with the background when not picked and with the text colour
+    // when picked. (Filled with the highlight colour it measured 2.94:1 against "not picked"
+    // in Firefox: too close. Text against background is the strongest pair a theme has.)
+    expect.soft(starFaults(seen).join('; '), 'in forced colours the stars are hard to see or to tell apart').toBe('');
     // A button with no border is a patch of text in forced colours: the page gives .btn one.
     const border = await page.locator('#score button[type=submit]').evaluate((el) => parseFloat(getComputedStyle(el).borderTopWidth));
     expect.soft(border, 'in forced colours a button needs a border to look like a button').toBeGreaterThanOrEqual(2);

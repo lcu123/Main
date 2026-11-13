@@ -99,7 +99,7 @@ on and off and none lost; one ride-along day where every video lands on the
 right customer; your own account gets the email, plays the video, leaves a
 score, and the score shows in FieldRoutes.
 
-### Five checks only a real phone and a real TV can make
+### Six checks only a real phone and a real TV can make
 
 The simulator and the browser tests cannot see these. Each takes a few minutes
 with the first real video a tech records. None needs any code.
@@ -123,6 +123,11 @@ with the first real video a tech records. None needs any code.
    it should say so ("Your signal is weak...") and carry on by itself. If real
    videos stutter for many customers, the recording quality can be lowered a
    little; that is your call, after seeing real footage.
+6. **No signal.** Open a watch link on an iPhone, switch on airplane mode, then
+   press play. After about half a minute a yellow button should be on the
+   screen: "The video did not load. Press here to try again." Press it twice;
+   the page should stay. Switch airplane mode off: the video should start by
+   itself. Do the same once with the phone on its side.
 
 ## 8. Submit to Apple — owner
 

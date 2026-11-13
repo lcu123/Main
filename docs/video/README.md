@@ -170,6 +170,33 @@ Proven:
   machine, 10-minute window, phone-number formatting) has its own test suite
   that also runs on Linux.
 
+- The customer's pages, in real browsers (`tests/browser`, the workflow "Customer
+  pages in real browsers"; start with `tests/browser/README.md`). The watch page,
+  the dead-link page, unsubscribe, privacy, terms, support and the email are
+  opened in Chrome's, Firefox's and Safari's engines at 38 screen sizes: iPhones
+  from the SE to the 17 Pro Max, upright and on their side; four iPads; Android
+  phones; laptops and monitors up to 4K; three TV browsers. Real Safari on a Mac
+  and real Mobile Safari in the iOS Simulator open the same pages. On each one
+  the video plays through the real redirect to a bucket on another address, a
+  score is sent, and the page fits with no sideways scroll. Also run: script
+  switched off; a page left open past the life of its video link; a video taken
+  down while the page is open; a weak signal and a lost one; a file with its
+  index at the end; dark mode, a page the browser has darkened, and Windows
+  contrast themes; 200% and 400% zoom; a keyboard alone; a TV remote (arrows,
+  OK, and the play and pause keys). What the suite still excuses is listed in
+  `tests/browser/lib/known-gaps.js`, each entry with what the customer sees.
+
+  What a customer gets on each kind of screen:
+
+  | Screen | What happens |
+  | --- | --- |
+  | iPhone | The page fits; the video plays in the page with the phone's own player and its full-screen button. On its side the player fills the screen. |
+  | iPad | The same page as a centred column with a bigger player. It plays in the page. |
+  | Android phone | The same, in Chrome, Samsung Internet and the browser inside a mail app. |
+  | Laptop or desktop | A centred column; mouse or keyboard. On a very tall or 4K screen the player grows. |
+  | TV browser | The page opens and the player takes about three quarters of the screen height. A pointer remote presses play; with arrow keys, OK plays and pauses, and the remote's play and pause keys work. Full screen works. The words around the video are small from a couch; that was left as it is, since the video is what a TV is for. |
+  | AirPlay or Chromecast | Nothing on the page blocks either, so a customer can send the video from a phone to a TV. |
+
 - Server under stress (`scripts/video_load_test.py`, on Postgres): 200 techs
   filming 15 stops each, all at once and every request sent twice. 3,000
   videos, 3,000 emails, exactly one per customer, 73 FieldRoutes reads for the
@@ -206,6 +233,10 @@ Not proven until it runs on real phones with real accounts:
   Low Power Mode, a force-quit by the user, and how well speech recognition
   hears a name outdoors. The brief's upload spike (airplane mode, Low Power
   Mode, app swiped closed, restart) still has to be run on a device.
+- The watch page on a real TV, through real AirPlay and Chromecast, in a real
+  mail app on a real Android phone, and in classic Outlook. The browser tests
+  use the same engines at those sizes; they are not those devices.
+  [`GO-LIVE.md`](GO-LIVE.md) lists the six checks, a few minutes each.
 - The TestFlight job (needs the Apple Developer account).
 - Sending through Resend, the bounce webhook's payload, texts through Quo and
   push through APNs. Each is built to the provider's documentation and has

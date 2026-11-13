@@ -28,7 +28,11 @@
 // evening fixed six of those fourteen (the half-minute wait on an expired link in Chrome,
 // "try again" counted as watched, the focus lost when the note is pressed, the stars on a
 // page the browser has darkened, the office number sticking out of its button at 200% zoom,
-// the small link shown when script is off). Eight are left.
+// the small link shown when script is off). The first run of that page in Firefox and Safari's
+// engine then settled two entries that had been written without those engines at hand: Enter
+// on the player works in both (entry deleted), and in a Windows contrast theme Firefox showed
+// a picked star too close to an unpicked one (fixed in the page: a picked star is filled with
+// the theme's text colour; entry deleted). Six are left.
 
 const everywhere = () => true;
 
@@ -47,12 +51,8 @@ module.exports = [
     // A long address wraps the heading to two lines: 95 px above the player instead of 86 (it
     // was 94 before the date grew from 15 to 16 px). 95 + 74% of the window fits from 364 px up.
     // Run: Chromium at 780x360 misses by 1 px; WebKit at 750x342 and 756x352 (first CI run).
-    // The iPhone 11 on its side is 364 px: by the arithmetic it fits with 0.14 px to spare.
-    where: ({ engine, height }) => {
-      if (height >= 331 && height < 364) return true;
-      if (height >= 364 && height < 366 && engine !== 'chromium') return 'unverified';
-      return false;
-    },
+    // The iPhone 11 on its side is 364 px: it fits, with 0.14 px to spare (run on WebKit).
+    where: ({ height }) => height >= 331 && height < 364,
     what: 'With a long address the heading wraps to two lines and pushes the player down: on a phone on its side with a window '
       + 'under 364 px tall the last 1 to 9 px of the player are below the first screen. Its buttons can still be pressed.',
   },
@@ -85,23 +85,6 @@ module.exports = [
       + 'Firefox (Safari\'s own player has its own keys, and on a Mac a plain Tab does not stop on every control). A click works.',
   },
   {
-    id: 'enter-on-the-player',
-    // watch.js makes Enter on the focused player start and pause it (for a TV remote's OK).
-    // Run on Chromium: desktop and the three TV rows. Not run: whether Firefox's own player
-    // also acts on Enter (the two would cancel out), and whether a Safari keyboard user can
-    // put the focus on the player at all.
-    where: ({ engine }) => (engine === 'chromium' ? false : 'unverified'),
-    what: 'In Firefox or in Safari on a Mac, Enter on the player may not start and pause it the way it does in Chrome and on a TV.',
-  },
-  {
-    id: 'forced-colours-stars-look-the-same',
-    // Fixed and measured in Chromium (hollow in the text colour, filled in the highlight colour).
-    // Firefox had the fault with the old typed stars (first CI run) and has not been run since
-    // the stars became drawings; Safari has no forced colours (the test skips itself there).
-    where: ({ engine }) => (engine === 'firefox' ? 'unverified' : false),
-    what: 'In a Windows contrast theme (forced colours) a picked star may look the same as one that is not picked.',
-  },
-  {
     id: 'webkit-ready-only-after-the-whole-file',
     // First CI run, WebKit on Linux and macOS: a faststart file of 2.7 MB at 300 KB a second was
     // "ready" after 9.9 to 12.4 s, the time the WHOLE file takes, where Chromium and Firefox need
@@ -109,7 +92,9 @@ module.exports = [
     // while its one request for the whole file (Range: bytes=0-<end>) is still running; and
     // on a slower bucket, without that wait, WebKit had the picture long before the file was
     // in. The test now measures from the first byte of the page, without waiting for "load".
-    where: ({ engine }) => (engine === 'webkit' ? 'unverified' : false),
+    // Run that way on WebKit on Linux (2026-11-13): it does not happen there. WebKit on a Mac
+    // plays through Apple's own video stack and has not reported yet.
+    where: ({ engine }) => (engine === 'webkit' && process.platform === 'darwin' ? 'unverified' : false),
     what: 'In Safari, on a connection slower than the video itself, the player may show nothing until most of the file has '
       + 'arrived, even though the file is faststart.',
   },

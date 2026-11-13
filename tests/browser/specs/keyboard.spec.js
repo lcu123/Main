@@ -185,16 +185,15 @@ test('Enter on the focused player starts and pauses it', async ({ page, clip }, 
   // The same key a TV remote sends, from a keyboard. Desktop Chrome starts a focused video on
   // Enter by itself, and watch.js does too (for TVs, which do not): the script takes the key
   // for itself, so the video toggles ONCE. If both acted, the two would cancel out.
+  // (Firefox and Safari were in doubt until CI ran them on 2026-11-13: both do it right.)
   await page.goto(clip.watch);
   await waitForMetadata(page);
-  await knownToFail(testInfo, 'enter-on-the-player', async () => {
-    await tabTo(page, testInfo, '#v', { max: 12 });
-    await page.keyboard.press('Enter');
-    expect(await isPlaying(page, 2000), 'Enter on the focused player did not start the video').toBe(true);
-    await waitForTime(page, 0.5);
-    await page.keyboard.press('Enter');
-    expect(await isPaused(page, 2000), 'Enter on the playing video did not pause it').toBe(true);
-  });
+  await tabTo(page, testInfo, '#v', { max: 12 });
+  await page.keyboard.press('Enter');
+  expect(await isPlaying(page, 2000), 'Enter on the focused player did not start the video').toBe(true);
+  await waitForTime(page, 0.5);
+  await page.keyboard.press('Enter');
+  expect(await isPaused(page, 2000), 'Enter on the playing video did not pause it').toBe(true);
 });
 
 test('the play and pause keys of a remote work wherever the focus is', async ({ page, clip, server }, testInfo) => {

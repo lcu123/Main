@@ -251,7 +251,9 @@ test.describe('a weak signal', () => {
   /** Open the page with the signal set to drop part-way into the file, and press play. Returns when the picture has stopped, with the time it stopped. */
   async function playThenStall(page, server, clip, testInfo) {
     await server.stall(clip.token, true, DROPS_AT);
-    await page.goto(clip.watch);
+    // Not the page's "load" event: Safari's engine holds that back until the video's own
+    // request has ended, and this one is held open on purpose.
+    await page.goto(clip.watch, { waitUntil: 'domcontentloaded' });
     await waitForMetadata(page, 30_000);
     await watchNote(page);
     expect(await pressPlay(page, testInfo)).not.toBe('');
