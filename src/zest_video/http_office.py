@@ -21,6 +21,7 @@ from . import __version__, auth, db, security, videos
 from .core import DEFAULT_SETTINGS, FLAG_WORDS, ApiError, Ctx, audit, clear_flags, get_settings, set_setting
 from .fr import FieldRoutesError
 from .http_api import client_ip
+from .jobs import techs_with_the_app
 from .render import render
 from .route import LIVE_STATES, sync_day
 
@@ -136,23 +137,28 @@ async def board(ctx: Ctx, day: str) -> dict[str, Any]:
         if current is None or (current.state == "pulled" and v.state != "pulled"):
             by_customer[v.customer_id] = v
 
+    equipped = await techs_with_the_app(ctx)
     groups: dict[int, list[dict[str, Any]]] = {}
     seen_videos: set[str] = set()
     counts = {"stops": 0, "done": 0, "with_video": 0, "missing": 0}
     for stop in stops:
         tech_id = (stop.tech_ids or [0])[0]
         video = by_customer.get(stop.customer_id)
+        has_app = bool(equipped.intersection(stop.tech_ids or []))
         if video is not None:
             seen_videos.add(video.id)
             label, tone = video_status(ctx, video)
+        elif not has_app:
+            label, tone = "Tech has no app yet", "off"
         elif stop.done:
             label, tone = "No video", "bad"
         else:
             label, tone = "Not done yet", "off"
+        missing = has_app and stop.done and (video is None or video.state == "pulled")
         counts["stops"] += 1
         counts["done"] += 1 if stop.done else 0
         counts["with_video"] += 1 if video is not None and video.state != "pulled" else 0
-        counts["missing"] += 1 if stop.done and (video is None or video.state == "pulled") else 0
+        counts["missing"] += 1 if missing else 0
         groups.setdefault(tech_id, []).append(
             {"stop": stop, "video": video, "label": label, "tone": tone, "score": scores.get(video.id) if video else None}
         )
@@ -200,6 +206,7 @@ async def stats(ctx: Ctx, days: int) -> list[dict[str, Any]]:
         ).all()
     filmed = {(v.day, v.customer_id) for v in vids if v.customer_id is not None}
     stars = {s.video_id: s.stars for s in score_rows}
+    equipped = await techs_with_the_app(ctx)
 
     rows: dict[int, dict[str, Any]] = {}
 
@@ -214,6 +221,8 @@ async def stats(ctx: Ctx, days: int) -> list[dict[str, Any]]:
         types = {a.get("type") for a in stop.appointments}
         if types and types <= skip:
             continue
+        if not equipped.intersection(stop.tech_ids or []):
+            continue  # a tech without the app cannot miss a video
         r = row((stop.tech_ids or [0])[0])
         r["stops"] += 1
         if (stop.day, stop.customer_id) not in filmed:

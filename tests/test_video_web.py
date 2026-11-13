@@ -236,11 +236,16 @@ async def test_the_day_page_shows_every_stop_by_tech_with_its_video_status(env: 
     assert '<span class="pill good">Watched</span>' in text
     assert '<span class="pill wait">Waiting on phone</span>' in text
     assert '<span class="pill bad">No video</span>' in text
-    assert '<span class="pill off">Not done yet</span>' in text
+    assert '<span class="pill off">Tech has no app yet</span>' in text, "Sam has not signed in on a phone"
     assert "Videos not tied to a stop" in text and '<span class="pill bad">Needs a customer</span>' in text
     assert "Not on the list: needs a customer" in text, "the flag is on top"
     for private in ("jane@example.com", "9165550001"):
         assert private not in text, "the office page shows no customer contact details either"
+
+    # Once Sam has the app, his unfinished stop reads as plain "not done yet".
+    await login(env, "sam@example.com")
+    text = (await env.http.get("/office")).text
+    assert '<span class="pill off">Not done yet</span>' in text and "Tech has no app yet" not in text
 
 
 async def test_customer_emails_off_is_shouted_at_the_top_of_the_office_page(tmp_path) -> None:

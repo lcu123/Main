@@ -655,6 +655,28 @@ async def test_a_finished_stop_with_no_video_is_flagged_and_clears_when_the_vide
     assert await jobs.flag_missing(env.ctx) == 0
 
 
+async def test_a_pilot_with_one_tech_does_not_chase_the_techs_without_the_app(env: Env) -> None:
+    pat = await login(env)  # only Pat has the app; Sam does not
+    await env.http.get("/v1/today", headers=pat)
+    await env.run(sa.update(db.stops).values(done=True, done_seen_at=db.now() - timedelta(hours=2)))
+    assert await jobs.flag_missing(env.ctx) == 3, "Pat's three finished stops"
+    assert {f.customer_id for f in await env.flags("no_video")} == {501, 502, 503}, "Sam's stop is left alone"
+
+    # Sam gets the app: now his finished stop counts too.
+    await login(env, "sam@example.com")
+    assert await jobs.flag_missing(env.ctx) == 1
+    assert 504 in {f.customer_id for f in await env.flags("no_video")}
+
+
+async def test_no_fieldroutes_reads_are_spent_keeping_the_day_fresh_until_someone_has_the_app(env: Env) -> None:
+    await jobs.refresh_day(env.ctx)
+    assert env.fake.requests == [], "nobody to chase yet, so the shared quota is left alone"
+    await login(env)
+    before = len(env.fake.requests)
+    await jobs.refresh_day(env.ctx)
+    assert [(r.entity, r.action) for r in env.fake.requests[before:]][0] == ("appointment", "search")
+
+
 async def test_services_switched_off_for_video_are_not_chased(env: Env) -> None:
     from zest_video.core import set_setting
 

@@ -29,9 +29,25 @@ from .route import LIVE_STATES, in_work_hours, stops_for_day, sync_day
 NUDGE_AFTER = timedelta(minutes=30)
 
 
+async def techs_with_the_app(ctx: Ctx) -> set[int]:
+    """Techs who have a signed-in phone. Nobody else can be expected to film a stop, which
+    is what makes a one-tech pilot possible without flagging everyone else's route."""
+    async with ctx.engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                sa.select(db.devices.c.tech_id)
+                .join(db.techs, db.techs.c.id == db.devices.c.tech_id)
+                .where(db.devices.c.revoked_at.is_(None), db.techs.c.active.is_(True), db.techs.c.demo.is_(False))
+                .distinct()
+            )
+        ).all()
+    return {r.tech_id for r in rows}
+
+
 async def refresh_day(ctx: Ctx) -> None:
-    """Keep today's stops fresh during work hours, so check-ins and finished stops show up."""
-    if in_work_hours(ctx):
+    """Keep today's stops fresh during work hours, so check-ins and finished stops show up.
+    Until a tech has the app there is nobody to chase, so no FieldRoutes reads are spent."""
+    if in_work_hours(ctx) and await techs_with_the_app(ctx):
         await sync_day(ctx, ctx.today())
 
 
@@ -48,12 +64,15 @@ async def flag_missing(ctx: Ctx) -> int:
     cutoff = db.now() - timedelta(minutes=settings["missing_alert_minutes"])
     skip = set(settings["skip_service_ids"] or [])
     have = {v.customer_id for v in await _videos_any_state(ctx, day)}
+    equipped = await techs_with_the_app(ctx)
     raised = 0
     for stop in await stops_for_day(ctx, day):
         if not stop.done or stop.done_seen_at is None or stop.done_seen_at > cutoff:
             continue
         if stop.customer_id in have:
             continue
+        if not equipped.intersection(stop.tech_ids or []):
+            continue  # no tech on this stop has the app yet
         types = {a.get("type") for a in stop.appointments}
         if types and types <= skip:
             continue  # every service at this stop is switched off for videos
