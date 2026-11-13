@@ -3,7 +3,7 @@
 {% block title %}Techs and phones{% endblock %}
 {% block body %}
 <h1>Techs and phones</h1>
-<p class="muted">Techs come from FieldRoutes: every active employee whose type is Technician. A tech signs in by himself with the phone or email on his FieldRoutes record. Mark him inactive in FieldRoutes and his app locks within a day; cut off a phone here and it locks at once.</p>
+<p class="muted">Techs come from FieldRoutes: every active employee whose type is Technician. A tech signs in by himself: he types the mobile number on his FieldRoutes employee record and gets a code by text. A tech with no mobile number there cannot get a text; add it in FieldRoutes, press Refresh, and he can sign in. Mark him inactive in FieldRoutes and his app locks within a day; cut off a phone here and it locks at once.</p>
 
 {% if code %}
 <div class="banner ok">
@@ -22,7 +22,7 @@
   {% for t in techs %}
   <tr>
     <td><b>{{ t.fname }} {{ t.lname }}</b><br><small>#{{ t.id }} · {% if t.active %}active{% else %}<span class="pill off">inactive in FieldRoutes</span>{% endif %}</small></td>
-    <td><small>{% if t.email %}{{ mask(t.email) }}{% endif %}{% if t.email and t.phone %}<br>{% endif %}{% if t.phone %}•••-•••-{{ t.phone[-4:] }}{% endif %}{% if not t.email and not t.phone %}<span class="pill bad">no phone or email in FieldRoutes</span>{% endif %}</small></td>
+    <td><small>{% if t.email %}{{ mask(t.email) }}{% endif %}{% if t.email and t.phone %}<br>{% endif %}{% if t.phone %}•••-•••-{{ t.phone[-4:] }}{% endif %}{% if not t.phone %}{% if t.email %}<br>{% endif %}<span class="pill bad">no mobile number in FieldRoutes</span>{% endif %}</small></td>
     <td>
       {% for d in devices.get(t.id, []) %}
       <form class="inline" method="post" action="/office/devices/{{ d.id }}/cut">

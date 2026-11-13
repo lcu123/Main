@@ -55,7 +55,8 @@ SETTING_HELP = {
     "min_build": "Oldest app build allowed. Raise it to force an update.",
     "require_video": "Flag the office when a stop finishes with no video.",
     "recommend_button": "Show the tech the 'I recommended something' switch.",
-    "leave_reminders": "Let the app remind the tech when he leaves a stop with no video.",
+    "leave_reminders": "Let the app remind the tech when he leaves a stop with no video. This asks the tech for "
+    "'Always' location. Leave it off until Apple has approved the app.",
     "missing_alert_minutes": "Minutes after a stop finishes before 'no video' is flagged.",
     "stuck_hours": "Hours a video may sit on a phone before the office is flagged.",
     "retention_months": "Months videos are kept before they are deleted.",

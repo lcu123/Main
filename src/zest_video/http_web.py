@@ -198,6 +198,9 @@ def routes(ctx: Ctx) -> list[Any]:
         months = (await get_settings(ctx))["retention_months"]
         return page(ctx, "info.html", kind="privacy", privacy_contact=ctx.cfg.privacy_contact, retention_months=months)
 
+    async def terms(request: Request) -> Response:
+        return page(ctx, "info.html", kind="terms", privacy_contact=ctx.cfg.privacy_contact)
+
     async def support(request: Request) -> Response:
         return page(ctx, "info.html", kind="support", privacy_contact=ctx.cfg.privacy_contact)
 
@@ -217,6 +220,7 @@ def routes(ctx: Ctx) -> list[Any]:
         Route("/", home),
         Route("/privacy", privacy),
         Route("/support", support),
+        Route("/terms", terms),
         Route("/app", app_store),
         Route("/w/{token}", guarded(watch)),
         Route("/w/{token}/video", guarded(stream)),

@@ -148,9 +148,18 @@ async def test_a_video_still_inside_the_window_can_be_previewed_but_a_waiting_on
 
 
 async def test_public_pages_exist_for_the_app_store_listing(env: Env) -> None:
-    for path, words in (("/privacy", "What the app collects"), ("/support", "No code arrived?"), ("/", "Service videos")):
+    for path, words in (
+        ("/privacy", "What the app collects"),
+        ("/terms", "Terms of Use"),
+        ("/support", "No code arrived?"),
+        ("/", "Service videos"),
+    ):
         r = await env.http.get(path)
         assert r.status_code == 200 and words in r.text
+        assert 'href="/privacy"' in r.text and 'href="/terms"' in r.text, "legal links on every public page"
+    privacy = (await env.http.get("/privacy")).text
+    assert "deleted after 12 months" in privacy and "deleting your data" in privacy
+    assert "We do not sell this information" in privacy
     assert (await env.http.get("/healthz")).text == "ok"
     assert (await env.http.get("/app")).headers["location"] == "/support", "until the App Store page exists"
     static = await env.http.get("/static/rubik.woff2")

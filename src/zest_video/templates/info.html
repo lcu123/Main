@@ -1,44 +1,93 @@
 {% extends "_base.html" %}
-{% block title %}{% if kind == "privacy" %}Privacy · {% elif kind == "support" %}Support · {% endif %}{{ brand }}{% endblock %}
+{% block title %}{% if kind == "privacy" %}Privacy · {% elif kind == "support" %}Support · {% elif kind == "terms" %}Terms · {% endif %}{{ brand }}{% endblock %}
+{% macro reach_us() %}{% if office_phone %}call <a href="tel:{{ office_phone }}">{{ office_phone | phone }}</a>{% endif %}{% if privacy_contact %}{% if office_phone %} or {% endif %}email <a href="mailto:{{ privacy_contact }}">{{ privacy_contact }}</a>{% endif %}{% if not office_phone and not privacy_contact %}contact our office{% endif %}{% endmacro %}
 {% block body %}
 <header class="top">
   <img src="/static/logo.png?v={{ version }}" width="58" height="58" alt="{{ brand }}">
   <p>{{ brand }}</p>
 </header>
 {% if kind == "privacy" %}
-<h1>Privacy</h1>
-<p>Zest Video is the app our technicians use to record a short video after a service visit. This page covers the app and the video page our customers open.</p>
+<h1>Privacy Policy</h1>
+<p>Zest Video is the app {{ brand }} technicians use to record a short video after a service visit. This policy covers the app and the web page our customers open to watch their video.</p>
 
 <h2>What the app collects</h2>
-<p><strong>Video and sound.</strong> One short clip per visit, recorded by the technician on purpose. It shows the property and the technician's own voice.</p>
-<p><strong>Location.</strong> The phone's location when a recording starts, to check the video is for the right address. If the technician turns on reminders, the phone also notices when he leaves a stop so it can remind him to record. Location is not tracked at any other time.</p>
-<p><strong>Speech.</strong> The phone turns the clip's speech into text, on the phone, to check the customer's name or street was said.</p>
-<p><strong>Sign-in details.</strong> The technician's work phone number or email, and a token that keeps that phone signed in.</p>
+<p><strong>Video and sound.</strong> One short clip per visit, recorded by the technician on purpose. It shows the property and the technician's own voice. The screen shows a red border and a timer the whole time it records. Nothing is recorded at any other time.</p>
+<p><strong>Location.</strong> The phone's location when the technician opens his list of stops and when a recording starts, to suggest the right stop and to check the video is for the right address. If reminders are turned on, the phone also notices when he leaves a stop, so it can remind him to record. Location is not tracked at any other time and is not used for ads.</p>
+<p><strong>Speech.</strong> The phone turns the clip's speech into text, on the phone itself, to check that the customer's name or street was said. That text is kept with the video so our office can match a video to the right customer.</p>
+<p><strong>Sign-in details.</strong> The technician's work mobile number or email, a one-time code we send to it by text message or email, and a token that keeps that phone signed in.</p>
+<p><strong>Device details.</strong> The phone model, iOS version, app version and a notification token, so we can fix problems and send a reminder when a video is waiting to upload.</p>
 
-<h2>How it is used</h2>
-<p>The video is sent to the customer whose property was serviced, by a private link. We use the location and speech only to make sure a video reaches the right customer. We do not sell this information, we do not use it for ads, and we do not track anyone across other apps or websites.</p>
+<h2>What the watch page collects</h2>
+<p>When you open your video link we note that the video was played. If you leave a score or a comment, we keep it and share it with our office. The page sets no advertising or tracking cookies.</p>
+
+<h2>How we use it</h2>
+<p>The video is sent to the customer whose property was serviced, by a private link. We use location and speech only to make sure a video reaches the right customer. We do not sell this information, we do not use it for advertising, and we do not track anyone across other apps or websites.</p>
+
+<h2>Who we share it with</h2>
+<p>Only the companies that run the service for us: our hosting and storage provider, our email and text message providers, Apple (for notifications), and FieldRoutes, the system we use to manage service visits. They may use the information only to provide their service to us.</p>
 
 <h2>How long we keep it</h2>
-<p>Videos are stored privately and deleted after {{ retention_months }} months, or sooner if our office removes them. Videos leave the technician's phone as soon as they are uploaded and never go into the phone's photo library.</p>
+<p>Videos are stored privately and deleted after {{ retention_months }} months, or sooner if our office removes them. A video leaves the technician's phone as soon as it is uploaded and never goes into the phone's photo library.</p>
 
 <h2>Customers</h2>
-<p>You do not need an account to watch your video. The link is private to you. If you leave a score or a comment, it goes to our office and is not posted publicly. Every video email has a link to stop these emails.</p>
+<p>You do not need an account to watch your video. The link is private to you; please do not share it if you do not want others to see the video. Scores and comments go to our office and are not posted publicly. Every video email has a link to stop these emails.</p>
 
-<h2>Your choices</h2>
-<p>To have a video removed, to stop video emails, or to ask what we hold about you, contact us{% if privacy_contact %} at <a href="mailto:{{ privacy_contact }}">{{ privacy_contact }}</a>{% endif %}{% if office_phone %}{% if privacy_contact %} or{% endif %} call <a href="tel:{{ office_phone }}">{{ office_phone | phone }}</a>{% endif %}. Technicians can sign out in the app at any time; our office removes access when someone leaves.</p>
+<h2>Your choices and deleting your data</h2>
+<p><strong>Customers:</strong> to have a video removed, to stop video emails, or to ask what we hold about you, {{ reach_us() }}.</p>
+<p><strong>Technicians:</strong> you can sign out in the app at any time, which removes this phone's access. Sign-in is provided by {{ brand }} as part of your work; to have your sign-in details and device details deleted, {{ reach_us() }}. Access is removed automatically when you no longer work with us.</p>
+<p>You can turn off the camera, microphone, location, speech recognition and notifications for the app at any time in the iPhone's Settings. The app needs the camera and microphone to record.</p>
+
+<h2>Children</h2>
+<p>The app is for adult employees. It is not directed to children, and technicians are asked to keep children and other people out of the picture.</p>
+
+<h2>Changes and contact</h2>
+<p>If this policy changes we will post the new version here. Questions: {{ reach_us() }}.</p>
+<p style="color:#5b4a70;font-size:15px">Last updated November 2026.</p>
+
+{% elif kind == "terms" %}
+<h1>Terms of Use</h1>
+<p>These terms cover the Zest Video app and the web page where customers watch their service video. By using either one you agree to them.</p>
+
+<h2>Who the app is for</h2>
+<p>The app is for technicians working with {{ brand }}. You may use it only with the sign-in we give you, and only for work. Keep your sign-in code to yourself. We may remove access at any time, and access ends when you stop working with us.</p>
+
+<h2>Recording</h2>
+<p>Record only the property you serviced and your own voice. Do not record customers, children, neighbors or anyone else without their permission, and do not record inside a home. Do not record anything unlawful or offensive. You are responsible for what you record.</p>
+
+<h2>The videos</h2>
+<p>Videos made with the app belong to {{ brand }}. We send each one to the customer whose property was serviced, and we may remove any video at any time.</p>
+
+<h2>Customers</h2>
+<p>Your video link is for you. The video is general information about your service visit; it is not a warranty and does not replace your service agreement with us. If a video shows a property that is not yours, please tap “This is not my home” so we can take it down.</p>
+
+<h2>Acceptable use</h2>
+<p>Do not try to break, copy or misuse the app or the service, get into videos that are not yours, or use the service to harm anyone.</p>
+
+<h2>No guarantee</h2>
+<p>We work to keep the service running and your videos safe, but the app and the watch page are provided as they are, without any guarantee that they will always be available or free of errors. To the extent the law allows, {{ brand }} is not liable for indirect or incidental loss from using them.</p>
+
+<h2>Apple</h2>
+<p>If you got the app from the App Store, Apple is not a party to these terms and is not responsible for the app or its support. Apple's standard licensed application end user license agreement also applies.</p>
+
+<h2>Changes and contact</h2>
+<p>We may update these terms; the new version will be posted here. They are governed by the laws of the State of California. Questions: {{ reach_us() }}.</p>
+<p>See also our <a href="/privacy">Privacy Policy</a>.</p>
+<p style="color:#5b4a70;font-size:15px">Last updated November 2026.</p>
+
 {% elif kind == "support" %}
 <h1>Support</h1>
-<p>Zest Video is for {{ brand }} technicians. Sign in with the mobile number or email on your work record and the 6-digit code we send you.</p>
+<p>Zest Video is for {{ brand }} technicians. Sign in with the mobile number on your work record. We text you a 6-digit code.</p>
 <h2>Technicians</h2>
-<p><strong>No code arrived?</strong> Check the number or email is the one on your work record, then ask for a new code.</p>
+<p><strong>No code arrived?</strong> Check you typed the mobile number the office has for you, then ask for a new code. If it still does not come, call the office: your number may need to be added or fixed.</p>
 <p><strong>A video says Waiting?</strong> It sends by itself when you have signal. Keep the app installed and open it once you are back in range.</p>
 <p><strong>Recorded the wrong house?</strong> For 10 minutes you can delete it or record again in the app. After that, call the office.</p>
+<p><strong>Want to stop using the app?</strong> Open My videos and tap Sign out. To have your details deleted, call the office.</p>
 <h2>Customers</h2>
-<p>If your video will not play, check your connection and tap play again. If the video shows a property that is not yours, tap "This is not my home" under the video.</p>
-<p>Need help?{% if office_phone %} Call <a href="tel:{{ office_phone }}">{{ office_phone | phone }}</a>{% endif %}{% if privacy_contact %}{% if office_phone %} or{% endif %} email <a href="mailto:{{ privacy_contact }}">{{ privacy_contact }}</a>{% endif %}.</p>
+<p>If your video will not play, check your connection and tap play again. If the video shows a property that is not yours, tap “This is not my home” under the video.</p>
+<h2>Contact</h2>
+<p>For help, {{ reach_us() }}.</p>
 {% else %}
 <h1>Service videos</h1>
 <p>After a visit, your {{ brand }} technician records a short video: what was done, what was seen, and what is recommended. We email you a private link to watch it.</p>
-<p><a href="/privacy">Privacy</a> · <a href="/support">Support</a></p>
 {% endif %}
 {% endblock %}

@@ -62,7 +62,9 @@ async def test_code_goes_to_both_phone_and_email_and_signs_the_tech_in(env: Env)
     assert [to for to, _ in env.texter.sent] == ["9165550101"]
     assert [m.to for m in env.mailer.sent] == ["pat.rivera@example.com"]
     code = code_from(env.mailer.sent[0].text)
-    assert code in env.texter.sent[0][1]
+    text = env.texter.sent[0][1]
+    assert text.startswith(f"{code} is your Zest Video code"), "the code leads, so iOS offers it above the keyboard"
+    assert len(text) <= 160, "one text message, not two"
 
     r = await env.http.post("/v1/auth/verify", json={"contact": "9165550101", "code": code, "appBuild": 1})
     assert r.status_code == 200
@@ -76,6 +78,27 @@ async def test_code_goes_to_both_phone_and_email_and_signs_the_tech_in(env: Env)
     # The code works once.
     again = await env.http.post("/v1/auth/verify", json={"contact": "9165550101", "code": code})
     assert again.status_code == 401 and again.json()["error"] == "bad_code"
+
+
+async def test_a_text_alone_is_enough_to_sign_in_when_no_email_sender_exists(env: Env) -> None:
+    # Techs mostly do not use email. With texting set up and no mail provider at all,
+    # the mobile number on file must still get a tech in.
+    from zest_video.notify import Mailer
+
+    env.ctx.mailer = Mailer()  # nothing configured
+    r = await env.http.post("/v1/auth/request-code", json={"contact": "916-555-0101"})
+    assert r.status_code == 200
+    code = code_from(env.texter.sent[0][1])
+    r = await env.http.post("/v1/auth/verify", json={"contact": "+1 (916) 555-0101", "code": code})
+    assert r.status_code == 200 and r.json()["tech"]["firstName"] == "Pat"
+
+
+async def test_a_code_is_only_ever_texted_to_the_number_on_the_techs_own_record(env: Env) -> None:
+    # The texting line cannot be used to send messages to arbitrary numbers:
+    # an unknown number gets nothing, and so does an office employee's.
+    for number in ("9165559999", "9165550199", "9165550123"):
+        await env.http.post("/v1/auth/request-code", json={"contact": number})
+    assert env.texter.sent == []
 
 
 async def test_email_also_works_as_the_contact_and_is_case_blind(env: Env) -> None:

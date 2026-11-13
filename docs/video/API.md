@@ -81,7 +81,7 @@ today.
     "minBuild": 1,
     "requireVideo": true,
     "recommendButton": true,
-    "leaveReminders": true,
+    "leaveReminders": false,
     "prompts": ["Say the name or street", "What I did", "What I saw", "What I recommend"],
     "officePhone": "+19165550100"
   },

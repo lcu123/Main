@@ -42,7 +42,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "min_build": 1,
     "require_video": True,
     "recommend_button": True,
-    "leave_reminders": True,
+    # Off for version one: the leave-a-stop reminder needs "Always" location, which is the
+    # permission App Review questions most. The owner can turn it on once the app is approved.
+    "leave_reminders": False,
     "missing_alert_minutes": 60,
     "stuck_hours": 3,
     "retention_months": 12,

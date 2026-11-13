@@ -37,7 +37,8 @@ footer{margin-top:34px;font-size:15px;color:#5b4a70;text-align:center}
 <body>
 <div class="wrap">
 {% block body %}{% endblock %}
-<footer>{{ brand }}{% if office_phone %} · <a href="tel:{{ office_phone }}">{{ office_phone | phone }}</a>{% endif %}</footer>
+<footer>{{ brand }}{% if office_phone %} · <a href="tel:{{ office_phone }}">{{ office_phone | phone }}</a>{% endif %}<br>
+  <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/support">Support</a></footer>
 </div>
 {% block script %}{% endblock %}
 </body>

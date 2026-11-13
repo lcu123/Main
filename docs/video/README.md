@@ -9,6 +9,7 @@ with a link to watch it. Built from the Visit Video build brief (Nov 12, 2026).
 | Video server | `src/zest_video/` | The only thing the app talks to. Holds the FieldRoutes keys, tracks every video, sends the email, serves the watch page and the office page. |
 | App ↔ server contract | [`API.md`](API.md) | Every call the app makes. |
 | Owner's checklist | [`GO-LIVE.md`](GO-LIVE.md) | What is left before techs can use it. |
+| Apple submission | [`APP-REVIEW.md`](APP-REVIEW.md) | The usual rejection reasons, where we stand, and what to type in App Store Connect. |
 | Tech's one-page guide | [`TECH-GUIDE.md`](TECH-GUIDE.md) | Hand this to the techs. |
 
 The server ships in the same Docker image as the FieldRoutes MCP server and

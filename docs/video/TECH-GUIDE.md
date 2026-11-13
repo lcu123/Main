@@ -5,8 +5,8 @@ One short video at every stop. It takes about 30 seconds.
 ## First time only
 
 1. Open **Zest Video**.
-2. Type your mobile number or your email. Use the one the office has for you.
-3. Tap **SEND MY CODE**. Type the 6 numbers we send you.
+2. Type your mobile number. Use the one the office has for you.
+3. Tap **SEND MY CODE**. We text you 6 numbers. Type them in.
 
 You stay signed in after that.
 
@@ -42,7 +42,7 @@ That is it. The video sends by itself. You can close the app and drive.
 
 | Problem | Do this |
 | --- | --- |
-| No code came | Check you typed the number or email the office has. Ask for a new code. |
+| No code came | Check you typed the mobile number the office has. Ask for a new code. Still nothing? Call the office. |
 | A video says WAITING | It will send when you have signal. Open the app and leave it open a minute. |
 | The app says you look far away | If you are at the right house, tap **YES, STILL RIGHT**. |
 | Anything else | Call the office. |

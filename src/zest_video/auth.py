@@ -182,7 +182,10 @@ async def _deliver_code(ctx: Ctx, code: str, *, email: str, phone: str, first_na
     brand = ctx.cfg.brand_name
     if phone and ctx.texter.configured:
         try:
-            await ctx.texter.send(phone, f"{code} is your {brand} video app code. It works for 15 minutes.")
+            # The code leads the message so iOS offers it above the keyboard by itself.
+            await ctx.texter.send(
+                phone, f"{code} is your Zest Video code. It works once, for 15 minutes. Do not share it."
+            )
             delivered.append("text")
         except DeliveryError:
             pass
