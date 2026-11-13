@@ -47,6 +47,14 @@ from zest_video.storage import MemoryStorage  # noqa: E402
 
 TZ_NAME = "America/Los_Angeles"
 
+# Importing the test fixtures also loads the MCP server, whose SDK turns on INFO logging
+# with a pretty-printer. One log line per request would be most of what this measures.
+import logging  # noqa: E402
+
+logging.getLogger().setLevel(logging.WARNING)
+for _name in ("httpx", "httpcore", "mcp"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
+
 
 def make_day(techs: int, stops: int) -> dict:
     from zoneinfo import ZoneInfo
