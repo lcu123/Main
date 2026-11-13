@@ -49,6 +49,11 @@ requirements.lock          Pinned runtime deps; regenerate deliberately, see REA
 .github/workflows/ci.yml   pytest + a real `docker build`/`docker run`/`/healthz` smoke test on every push and PR
 .env.example               Every env var, commented
 README.md                  Deploy steps + first-run checklist (user-facing)
+src/zest_video/            Second service: the Visit Video server (see "Zest Visit Video" below)
+ios/                       The Zest Video iPhone app (SwiftUI) + ZestCore logic package
+docs/video/                Video docs: README, API contract, owner go-live checklist, tech guide
+tests/test_video_*.py      Video server tests (video_helpers.py holds the fixtures)
+.github/workflows/ios.yml  ZestCore tests on Linux, real Xcode build on macOS, manual TestFlight job
 ```
 
 ## Tool inventory (server.py)
@@ -101,7 +106,8 @@ Naming: curated tools are verbs/nouns an office person would say. Generated tool
 ```
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-pytest                                  # fake-API wire-format tests, must stay green (58 tests)
+pip install -e ".[dev,video]"           # add the video server's deps
+pytest                                  # MCP wire-format tests + video server tests, must stay green
 MCP_TRANSPORT=http FR_AUTH_KEY=x FR_AUTH_TOKEN=y FR_SUBDOMAIN=z MCP_PATH_SECRET=s fr-mcp
 curl localhost:8080/healthz             # -> ok
 ```
@@ -134,6 +140,21 @@ The README's first-run checklist has been run against Zest's real account (`zest
 - `reserve_slot`→`schedule_appointment` still blocked on the scheduling-permission gap above. `complete_appointment` not yet run -- it generates a real invoice and this office has a QuickBooks integration (seen in Admin → Preferences), so it needs an explicit go-ahead on a disposable appointment, not just a general "test writes" one.
 - Still open: whether scheduling/rescheduling/cancelling triggers a customer-facing SMS/email depending on office settings (untestable until scheduling is unblocked); `.pestroutes.com` vs `.fieldroutes.com` is resolved (`.fieldroutes.com`, confirmed by `baseUrl` in every `health_check`).
 - **2026-09-07: `FR_WRITE_CUSTOMER_IDS` cleared at the owner's explicit request** -- the deployment is live, writes are unrestricted across the whole office (verified via `health_check`'s `writeCustomerAllowlist: null`). `FR_ALLOW_DELETE`/`FR_ALLOW_CHARGES` stay off, unaffected by this. `reserve_slot`/`schedule_appointment`/`complete_appointment` are still unverified against a real write for the reasons above -- that risk is now live-wide, not contained to a test customer, so take extra care before exercising those for the first time.
+
+## Zest Visit Video (second service in this repo)
+
+Built from the Visit Video build brief (Nov 12, 2026). A tech records one 15-second video per property visit; the customer gets an email with a link. Start with `docs/video/README.md`; `docs/video/API.md` is the app-to-server contract and `docs/video/GO-LIVE.md` is what is left for the owner.
+
+- **Two services, one image.** `fr-mcp` (this file's main subject) and `zest-video` (`src/zest_video/app.py:main`). On Railway they are separate services built from the same Dockerfile; `zest-video` sets its start command to `zest-video`. Do not import `fr_mcp.server` from `zest_video` (it builds the MCP and its tools at import); import `fr_mcp.client` only. `zest_video/fr.py` is the one place the video server talks to FieldRoutes.
+- **Never surprise the owner applies here too.** Customer email is off unless `VIDEO_EMAIL_MODE` is `test` or `live`. FieldRoutes writes obey the same `FR_WRITES` / `FR_WRITE_CUSTOMER_IDS` as the MCP server and go through an outbox (`fr_outbox`) that retries, so a FieldRoutes outage never loses a note, score or task. The deployed service currently runs with `VIDEO_EMAIL_MODE=off` and `FR_WRITES=off`; do not flip either without the owner saying so.
+- **Every phone-facing call is safe to repeat.** The video ID is made on the phone. A second register, complete or delete with the same ID must never create a second video or a second email. Keep it that way when touching `videos.py`.
+- **The phone gets no contact data.** `/v1/today` carries name, service address, map pin and appointment IDs only (`test_the_phone_never_receives_contact_or_billing_data` pins the exact key set). The server does not store customer emails; it reads the address from FieldRoutes at the moment it sends.
+- **Do not raise `ApiError` inside `engine.begin()` after a write you need kept.** The exception rolls the transaction back. This silently disabled the 5-wrong-tries lock on login codes until a test caught it; see `auth._check_code` for the pattern (decide inside, raise outside).
+- **Monotonic time starts at boot.** "Never happened" must be `None` or `-inf`, not `0`. `last_tech_sync = 0.0` meant nobody could log in for the first five minutes on a fresh machine; only CI's fresh runners showed it.
+- **Stops**: one row per customer per day, every appointment folded in (one video per property per visit). Tech = the appointment's `assignedTech`, falling back to the route's tech; checked against a real day where it matched `servicedBy` on all 44 completed appointments. Check-in is a hint, not proof (several real stops had check-in and check-out seconds apart), so the server's time check only ever raises a flag.
+- **Tests** run on SQLite by default and on Postgres when `VIDEO_TEST_DATABASE_URL` is set (CI does both). `tests/video_helpers.py` seeds a day shaped like the live data: string-valued fields, a customer with three appointments in one visit, a business with no person, a customer with no email, a tech who exists only on the route.
+- **iOS**: no third-party dependencies, no bundled fonts, Swift 5 language mode, generated project (XcodeGen, `ios/project.yml`). Anything testable lives in `ios/ZestCore` (Foundation only, tested on Linux); the app target is compiled only on the macOS CI runner, so push and read the `iOS` workflow to check a change. UI rule from the owner: build it for a 75-year-old in gloves in bright sun (body text 22 pt and up, full-width buttons 76 pt and up, one question per screen, no icons without words, red only for recording).
+- **Not yet proven on real hardware or real accounts**: recording and background upload on a physical iPhone, the TestFlight job, Resend, the bounce webhook payload, Quo texts, APNs, and `review/create` against the live account. `docs/video/README.md` keeps the list.
 
 ## Owner context
 
