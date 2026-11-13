@@ -80,9 +80,9 @@ struct TodayView: View {
             } label: {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("1 video not saved yet")
-                        .font(Theme.heading)
+                        .zestFont(.rowName)
                     Text("TAP HERE TO FINISH")
-                        .font(Theme.bodyBold)
+                        .zestFont(.bodyBold)
                 }
                 .foregroundColor(Theme.black)
                 .frame(maxWidth: .infinity, minHeight: Theme.buttonHeight, alignment: .leading)
@@ -127,7 +127,7 @@ struct TodayView: View {
 
     private func sectionLabel(_ text: String) -> some View {
         Text(text)
-            .font(Theme.bodyBold)
+            .zestFont(.section)
             .foregroundColor(Theme.purple)
             .padding(.top, 6)
             .accessibilityAddTraits(.isHeader)
@@ -147,29 +147,30 @@ struct StopCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 if let hint {
                     Text(hint)
-                        .font(Theme.bodyBold)
+                        .zestFont(.section)
                         .foregroundColor(highlighted ? Theme.yellow : Theme.purple)
                 }
                 Text(entry.stop.name)
-                    .font(highlighted ? Theme.title : Theme.heading)
+                    .zestFont(highlighted ? .title : .rowName)
                     .foregroundColor(highlighted ? Theme.white : Theme.ink)
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
                     .multilineTextAlignment(.leading)
                 Text(entry.stop.address)
-                    .font(Theme.bodyBold)
+                    .zestFont(.rowStreet)
                     .foregroundColor(highlighted ? Theme.white : Theme.ink)
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
                     .multilineTextAlignment(.leading)
-                HStack(spacing: 12) {
-                    StatusPill(status: status)
-                    if let meters = entry.distanceMeters {
-                        Text(Geo.distanceText(meters: meters))
-                            .font(Theme.body)
-                            .foregroundColor(highlighted ? Theme.white : Theme.softInk)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
+                // Side by side when there is room, one under the other when not.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        StatusPill(status: status)
+                        distance
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        StatusPill(status: status)
+                        distance
                     }
                 }
             }
@@ -190,6 +191,17 @@ struct StopCard: View {
         .accessibilityLabel("\(entry.stop.name), \(entry.stop.address). \(status.text.capitalized).")
         .accessibilityAddTraits(.isButton)
     }
+
+    @ViewBuilder
+    private var distance: some View {
+        if let meters = entry.distanceMeters {
+            Text(Geo.distanceText(meters: meters))
+                .zestFont(.distance)
+                .foregroundColor(highlighted ? Theme.white : Theme.softInk)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+    }
 }
 
 /// A video's state in words on a colored pill: never a bare icon.
@@ -198,7 +210,7 @@ struct StatusPill: View {
 
     var body: some View {
         Text(status.text)
-            .font(Theme.bodyBold)
+            .zestFont(.pill)
             .foregroundColor(status.kind == .problem ? Theme.white : Theme.black)
             .lineLimit(1)
             .minimumScaleFactor(0.7)

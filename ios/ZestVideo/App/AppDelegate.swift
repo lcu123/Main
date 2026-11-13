@@ -3,6 +3,10 @@ import UserNotifications
 
 /// The few things SwiftUI's app lifecycle does not cover: background upload
 /// wake-ups, the push token, and notifications.
+///
+/// Pushes from the server are ordinary visible alerts. The app declares no
+/// background mode and handles no silent pushes: a tapped alert simply opens
+/// the app, which then gets the queue moving.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(
         _ application: UIApplication,
@@ -41,19 +45,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         // No push token (the simulator, or push not set up yet). The app's own
         // local reminders still work.
-    }
-
-    /// A push from the server ("a video is stuck"): try the queue again.
-    func application(
-        _ application: UIApplication,
-        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
-        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
-    ) {
-        AppModel.shared.start()
-        AppModel.shared.nudged()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-            completionHandler(.newData)
-        }
     }
 
     // MARK: UNUserNotificationCenterDelegate

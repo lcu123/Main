@@ -12,8 +12,8 @@ struct CountdownRing: View {
     /// When the file output began recording.
     let startedAt: Date
     let maxSeconds: Double
-    var diameter: CGFloat = 230
-    var lineWidth: CGFloat = 18
+    var diameter: CGFloat = 280
+    var lineWidth: CGFloat = 22
     /// Hold the ring still at this many seconds in. Only set in screenshot mode.
     var frozenElapsed: TimeInterval?
 
@@ -69,7 +69,7 @@ private struct RingFace: View {
                 .strokeBorder(Color.white.opacity(0.9), lineWidth: 2)
 
             Text("\(secondsLeft)")
-                .font(.system(size: 96, weight: .heavy, design: .rounded))
+                .font(.system(size: diameter * Theme.ringNumberShare, weight: .heavy, design: .rounded))
                 .monospacedDigit()
                 .foregroundColor(.white)
                 .shadow(color: .black.opacity(0.9), radius: 6, x: 0, y: 2)

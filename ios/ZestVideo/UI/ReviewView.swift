@@ -58,7 +58,7 @@ struct ReviewView: View {
         Screen(title: "Save this video?") {
             if let draft = app.draft {
                 Text(draft.target.name)
-                    .font(Theme.heading)
+                    .zestFont(.rowName)
                     .foregroundColor(Theme.ink)
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
@@ -96,7 +96,7 @@ struct ReviewView: View {
                 #endif
                 if ended {
                     Text("TAP TO PLAY AGAIN")
-                        .font(Theme.bodyBold)
+                        .zestFont(.bodyBold)
                         .foregroundColor(.white)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
@@ -105,7 +105,7 @@ struct ReviewView: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 320)
+            .frame(height: Theme.clipHeight)
             .clipShape(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous))
             .contentShape(Rectangle())
         }
@@ -119,13 +119,15 @@ struct ReviewView: View {
         } label: {
             HStack(spacing: 14) {
                 Text(recommend ? "YES" : "NO")
-                    .font(Theme.bodyBold)
+                    .zestFont(.bodyBold)
                     .foregroundColor(Theme.black)
-                    .frame(width: 76, height: 52)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .frame(width: 88, height: 60)
                     .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(recommend ? Theme.lime : Theme.white))
                     .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.black, lineWidth: 3))
                 Text("I recommended something")
-                    .font(Theme.bodyBold)
+                    .zestFont(.bodyBold)
                     .foregroundColor(Theme.ink)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
@@ -183,12 +185,12 @@ struct ReviewView: View {
             Theme.lime.ignoresSafeArea()
             VStack(spacing: 18) {
                 Text("SAVED ✓")
-                    .font(.system(size: 64, weight: .heavy, design: .rounded))
+                    .zestFont(.saved)
                     .foregroundColor(Theme.black)
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
                 Text("It sends by itself.")
-                    .font(Theme.title)
+                    .zestFont(.title)
                     .foregroundColor(Theme.black)
                     .multilineTextAlignment(.center)
             }
@@ -257,7 +259,7 @@ struct PickStopView: View {
         Screen(title: "Pick the right stop") {
             if let better {
                 Text("IT SOUNDED LIKE THIS ONE")
-                    .font(Theme.bodyBold)
+                    .zestFont(.bodyBold)
                     .foregroundColor(Theme.purple)
                 row(better, highlighted: true)
             }

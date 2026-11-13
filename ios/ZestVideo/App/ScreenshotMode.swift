@@ -40,6 +40,29 @@ enum ScreenshotMode {
         return Screen(rawValue: arguments[index + 1].lowercased())
     }
 
+    /// A small file the app writes once the screen is up and the main thread
+    /// is free again. The CI job waits for it before taking the picture, so a
+    /// slow first launch gives a late picture rather than a blank one, and a
+    /// screen that never comes up is reported as such.
+    static var readyMarker: URL {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        return documents.appendingPathComponent("zest-screen-ready.txt")
+    }
+
+    /// Called when the first screen appears. Writes the marker a moment later.
+    static func markReady() {
+        guard let screen = requested else { return }
+        let name = screen.rawValue
+        let marker = readyMarker
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            try? FileManager.default.createDirectory(
+                at: marker.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try? Data(name.utf8).write(to: marker, options: .atomic)
+        }
+    }
+
     /// Everything the model needs to show one screen.
     struct Shot {
         var route: AppModel.Route
@@ -55,6 +78,7 @@ enum ScreenshotMode {
 
     @MainActor
     static func show(_ screen: Screen, in app: AppModel) {
+        Files.remove(readyMarker)
         let now = Date()
         let today = self.today(now: now)
         var shot = Shot(route: .today, today: today)
@@ -65,12 +89,17 @@ enum ScreenshotMode {
 
         switch screen {
         case .login:
+            // A made-up mobile number, typed in. No keyboard is raised, so the
+            // whole screen shows.
             shot = Shot(route: .login, tech: nil, today: nil)
+            shot.seeds.loginContact = "9165550100"
+            shot.seeds.autoFocus = false
         case .code:
             shot = Shot(route: .login, tech: nil, today: nil)
             shot.seeds.loginStep = .code
-            shot.seeds.loginContact = "9165550123"
+            shot.seeds.loginContact = "9165550100"
             shot.seeds.loginCode = "482"
+            shot.seeds.autoFocus = false
         case .today:
             break
         case .today2:

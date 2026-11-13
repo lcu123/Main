@@ -50,7 +50,7 @@ struct ConfirmStopView: View {
                 BodyText("The office will match it to the customer.")
             } else {
                 StopHeadline(name: target.name, address: target.address, cityLine: target.cityLine)
-                    .padding(.top, 8)
+                    .padding(.top, 12)
             }
         } footer: {
             BigButton(title: target.notOnMyList ? "RECORD" : "THIS IS IT", kind: .go) {

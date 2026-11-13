@@ -61,8 +61,6 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UIRequiresFullScreen: true
-        UIBackgroundModes:
-          - remote-notification
         LSApplicationQueriesSchemes:
           - tel
         NSCameraUsageDescription: Zest Video uses the camera to record a short video of the property after each visit.

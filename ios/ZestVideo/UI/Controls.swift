@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The app's one kind of button: full width, at least 76 pt tall, words in
-/// heavy 28 pt type. Big enough to hit with a gloved thumb.
+/// The app's one kind of button: full width, 88 pt tall on a big phone
+/// (never under 76), words in heavy 30 pt type. Big enough to hit with a
+/// gloved thumb.
 struct BigButton: View {
     enum Kind {
         /// Purple with white words: the main action.
@@ -32,13 +33,13 @@ struct BigButton: View {
                         .accessibilityHidden(true)
                 }
                 Text(title)
-                    .font(Theme.button)
+                    .zestFont(.button)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .minimumScaleFactor(0.6)
             }
             .frame(maxWidth: .infinity, minHeight: Theme.buttonHeight)
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 14)
             .padding(.vertical, 6)
         }
         .buttonStyle(BigButtonStyle(kind: kind))
@@ -90,8 +91,15 @@ struct BigButtonStyle: ButtonStyle {
     }
 }
 
-/// A screen: a big title, content that can scroll if the text size is turned
-/// up, and the buttons pinned at the bottom where a thumb reaches them.
+/// A screen: a big title, content that scrolls when it has to, and the
+/// buttons pinned at the bottom where a thumb reaches them.
+///
+/// - The scrolling part never runs up under the clock and the camera island:
+///   a strip sits between it and the top of the screen.
+/// - The scrolling part ends with spare room, and a line marks the edge above
+///   the buttons, so the last thing on the page is never half-hidden.
+/// - On a very short screen the buttons join the scrolling part, so nothing
+///   is squeezed out.
 struct Screen<Content: View, Footer: View>: View {
     var title: String?
     /// Open scrolled to the end. Only ever true in screenshot mode.
@@ -101,36 +109,63 @@ struct Screen<Content: View, Footer: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // With this strip above it the scroll view stops at the safe
+            // area instead of sliding its content under the status bar; the
+            // strip's own background paints that area solid.
+            Color.clear
+                .frame(height: 1)
+                .background(Theme.background.ignoresSafeArea(edges: .top))
+                .zIndex(1)
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if let title {
                         Text(title)
-                            .font(Theme.title)
+                            .zestFont(.title)
                             .foregroundColor(Theme.ink)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityAddTraits(.isHeader)
                     }
                     content()
+                    if Theme.compactHeight {
+                        VStack(spacing: 14) {
+                            footer()
+                        }
+                        .padding(.top, 10)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Theme.gutter)
-                .padding(.top, 20)
-                .padding(.bottom, 16)
+                .padding(.top, 14)
+                // Spare room, so the last line clears the edge when scrolled.
+                .padding(.bottom, 32)
             }
             .defaultScrollAnchor(startAtBottom ? .bottom : nil)
-            VStack(spacing: 14) {
-                footer()
+
+            if Theme.compactHeight {
+                Color.clear.frame(height: 1)
+            } else {
+                VStack(spacing: 14) {
+                    footer()
+                }
+                .padding(.horizontal, Theme.gutter)
+                .padding(.top, 14)
+                .padding(.bottom, 14)
+                .frame(maxWidth: .infinity)
+                .background(Theme.background.ignoresSafeArea(edges: .bottom))
+                // A clear edge: what is above this line scrolls.
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(Theme.card)
+                        .frame(height: 3)
+                }
             }
-            .padding(.horizontal, Theme.gutter)
-            .padding(.top, 12)
-            .padding(.bottom, 14)
-            .background(Theme.background)
         }
         .background(Theme.background.ignoresSafeArea())
     }
 }
 
-/// Plain 22 pt text.
+/// Plain text at the app's ordinary size (26 pt).
 struct BodyText: View {
     let text: String
     var bold = false
@@ -144,7 +179,7 @@ struct BodyText: View {
 
     var body: some View {
         Text(text)
-            .font(bold ? Theme.bodyBold : Theme.body)
+            .zestFont(bold ? .bodyBold : .body)
             .foregroundColor(color)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -163,7 +198,7 @@ struct Banner: View {
 
     var body: some View {
         Text(text)
-            .font(Theme.bodyBold)
+            .zestFont(.bodyBold)
             .foregroundColor(Theme.black)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -182,36 +217,77 @@ struct Banner: View {
     }
 }
 
-/// The customer's name and address in very large type.
+/// The customer's name and street, as large as they go: this is how the tech
+/// knows he has the right house.
 struct StopHeadline: View {
     let name: String
     let address: String
     var cityLine: String = ""
-    var onDark = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(name)
-                .font(.system(size: 40, weight: .heavy, design: .rounded))
-                .foregroundColor(onDark ? Theme.white : Theme.ink)
+                .zestFont(.heroName)
+                .foregroundColor(Theme.ink)
                 .lineLimit(3)
                 .minimumScaleFactor(0.6)
                 .fixedSize(horizontal: false, vertical: true)
             if !address.isEmpty {
                 Text(address)
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                    .foregroundColor(onDark ? Theme.white : Theme.ink)
+                    .zestFont(.heroStreet)
+                    .foregroundColor(Theme.ink)
                     .lineLimit(3)
                     .minimumScaleFactor(0.6)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !cityLine.isEmpty {
                 Text(cityLine)
-                    .font(Theme.body)
-                    .foregroundColor(onDark ? Theme.white : Theme.softInk)
+                    .zestFont(.body)
+                    .foregroundColor(Theme.softInk)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// An underlined word that does something. At least 48 pt tall to tap.
+struct TextLink: View {
+    let title: String
+    var color: Color = Theme.purple
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .underline()
+                .zestFont(.link)
+                .foregroundColor(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(minWidth: 48, minHeight: 48)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// "Terms" and "Privacy": open the server's pages in Safari.
+struct LegalLinks: View {
+    @EnvironmentObject private var app: AppModel
+
+    var body: some View {
+        HStack(spacing: 28) {
+            TextLink(title: "Terms") {
+                app.openTerms()
+            }
+            .accessibilityHint("Opens in Safari")
+            TextLink(title: "Privacy") {
+                app.openPrivacy()
+            }
+            .accessibilityLabel("Privacy Policy")
+            .accessibilityHint("Opens in Safari")
+        }
     }
 }

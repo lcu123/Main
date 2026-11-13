@@ -65,8 +65,10 @@ final class APIClient: @unchecked Sendable {
 
     /// `CFBundleVersion` as a number, sent on every request.
     static let build: Int = {
+        // "57" or "57.2" (a re-run of the same CI build): the first part is the build.
         let raw = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
-        return Int(raw) ?? 1
+        let first = raw.split(separator: ".").first.map(String.init) ?? ""
+        return Int(first) ?? 1
     }()
 
     init(baseURL: URL? = nil, session: URLSession? = nil) {

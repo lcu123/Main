@@ -11,8 +11,14 @@ final class TodayStore {
     }
 
     func load(now: Date = Date()) -> TodayResponse? {
+        load { ZestDates.isToday($0, now: now) }
+    }
+
+    /// Loads the saved route if `isCurrent` says its date is still today's;
+    /// otherwise deletes it.
+    func load(isCurrent: (String) -> Bool) -> TodayResponse? {
         guard let cached = Files.read(TodayResponse.self, from: url) else { return nil }
-        guard ZestDates.isToday(cached.date, now: now) else {
+        guard isCurrent(cached.date) else {
             wipe()
             return nil
         }

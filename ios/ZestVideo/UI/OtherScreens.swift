@@ -36,6 +36,9 @@ struct UpdateRequiredView: View {
             if app.waitingCount > 0 {
                 Banner(text: "Videos on your phone are safe. They send after you update.", tone: .info)
             }
+            if let office = app.officePhoneText {
+                BodyText(office, bold: true)
+            }
         } footer: {
             if app.appStoreURL != nil {
                 BigButton(title: "UPDATE NOW", kind: .primary) {

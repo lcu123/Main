@@ -21,6 +21,14 @@ on:
         description: "Also archive and upload this build to TestFlight"
         type: boolean
         default: false
+      build_number:
+        description: "TestFlight build number (blank = this run's number, always higher than the last)"
+        type: string
+        default: ""
+      version:
+        description: "TestFlight version, e.g. 1.0.1 (blank = the one in ios/Config/App.xcconfig)"
+        type: string
+        default: ""
 
 concurrency:
   group: ios-${{ github.ref }}
@@ -241,6 +249,9 @@ jobs:
           xcrun simctl status_bar "$SIM_UDID" override --time "9:41" --batteryState charged \
             --batteryLevel 100 --cellularBars 4 --wifiBars 3 || echo "status bar override not available"
           xcrun simctl ui "$SIM_UDID" appearance light || true
+          # The simulator's own first-run "slide to type" sheet would cover the keyboard.
+          xcrun simctl spawn "$SIM_UDID" defaults write com.apple.keyboard.preferences \
+            DidShowContinuousPathIntroduction -bool true || echo "keyboard tutorial setting not available"
           # The build is unsigned; an ad-hoc signature costs nothing and avoids
           # a simulator that refuses to launch it.
           codesign --force --sign - --timestamp=none "$APP" || echo "ad-hoc signing skipped"
@@ -248,19 +259,61 @@ jobs:
 
       - name: Take the pictures
         run: |
-          mkdir -p screens
+          mkdir -p screens tiny
+          BUNDLE=com.zestlawnpest.video
+          # The app writes a small file once a screen is up and the main thread
+          # is free. Waiting for it beats guessing how long a launch takes.
+          DATA=$(xcrun simctl get_app_container "$SIM_UDID" "$BUNDLE" data 2>/dev/null || true)
+          MARKER="$DATA/Documents/zest-screen-ready.txt"
+
+          # 0 = the picture is one flat colour (a launch screen, not a real screen).
+          is_blank() {
+            sips -Z 160 "$1" --out "tiny/check.png" >/dev/null 2>&1 || return 1
+            python3 Scripts/is_blank.py "tiny/check.png" >/dev/null 2>&1
+          }
+
           failed=""
+          blank=""
+          slow=""
           number=0
           for name in login code today today2 confirm far record recording review warning saved stopvideo locked queue update; do
             number=$((number + 1))
             file=$(printf "screens/%02d-%s.png" "$number" "$name")
             ok=1
-            xcrun simctl launch --terminate-running-process "$SIM_UDID" com.zestlawnpest.video -ZestScreen "$name" || ok=0
-            # The first launch after install is the slow one.
-            if [ "$number" -eq 1 ]; then sleep 8; else sleep 3; fi
+            [ -n "$DATA" ] && rm -f "$MARKER"
+            xcrun simctl launch --terminate-running-process "$SIM_UDID" "$BUNDLE" -ZestScreen "$name" || ok=0
+
+            # Wait (up to 30 s) for the app to say this screen is up.
+            ready=0
+            if [ "$ok" -eq 1 ] && [ -n "$DATA" ]; then
+              for _ in $(seq 1 60); do
+                if [ "$(cat "$MARKER" 2>/dev/null)" = "$name" ]; then ready=1; break; fi
+                sleep 0.5
+              done
+            fi
+            if [ "$ready" -eq 1 ]; then
+              sleep 1
+            else
+              slow="$slow $name"
+              sleep 6
+            fi
+
             if [ "$ok" -eq 1 ]; then
               xcrun simctl io "$SIM_UDID" screenshot "$file" || ok=0
             fi
+            # A flat picture means the screen had not been drawn yet: try once more.
+            if [ "$ok" -eq 1 ] && is_blank "$file"; then
+              echo "blank   $name (retaking in 2 s)"
+              sleep 2
+              xcrun simctl io "$SIM_UDID" screenshot "$file" || ok=0
+              if [ "$ok" -eq 1 ] && is_blank "$file"; then
+                blank="$blank $name"
+                echo "---- last log lines from the app for $name ----"
+                xcrun simctl spawn "$SIM_UDID" log show --last 40s --style compact \
+                  --predicate 'process == "ZestVideo"' 2>/dev/null | tail -40 || true
+              fi
+            fi
+
             if [ "$ok" -eq 1 ] && [ -s "$file" ]; then
               echo "ok      $name"
             else
@@ -268,12 +321,20 @@ jobs:
               failed="$failed $name"
             fi
           done
-          xcrun simctl terminate "$SIM_UDID" com.zestlawnpest.video || true
+          xcrun simctl terminate "$SIM_UDID" "$BUNDLE" || true
           echo
           ls -l screens
+          if [ -n "$slow" ]; then
+            echo "::warning::These screens never reported ready (slow, hung or crashed):$slow"
+          fi
+          if [ -n "$blank" ]; then
+            echo "::warning::These pictures are still one flat colour after a retake:$blank"
+          fi
           if [ -n "$failed" ]; then
             echo "::warning::These screens could not be captured:$failed"
           fi
+          # Any crash of the app during the run shows up here.
+          ls -1 ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -i zestvideo || echo "no crash reports for ZestVideo"
           # One missing picture is not a failure. No pictures at all is.
           count=$(find screens -name '*.png' | wc -l | tr -d ' ')
           if [ "$count" -eq 0 ]; then
@@ -364,6 +425,35 @@ jobs:
           printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
           chmod 600 "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
 
+      - name: Pick the build number
+        env:
+          BUILD_INPUT: ${{ inputs.build_number }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          # App Store Connect refuses a build number it has already seen for
+          # the same version. The run number only ever goes up; a re-run of
+          # the same run gets ".2", ".3" so it is still new.
+          BUILD="$BUILD_INPUT"
+          if [ -z "$BUILD" ]; then
+            BUILD="${{ github.run_number }}"
+            if [ "${{ github.run_attempt }}" != "1" ]; then
+              BUILD="$BUILD.${{ github.run_attempt }}"
+            fi
+          fi
+          case "$BUILD" in
+            ""|*[!0-9.]*) echo "::error::Build number must be digits and dots, got '$BUILD'."; exit 1 ;;
+          esac
+          VERSION_SETTING=""
+          if [ -n "$VERSION_INPUT" ]; then
+            case "$VERSION_INPUT" in
+              *[!0-9.]*) echo "::error::Version must be digits and dots, got '$VERSION_INPUT'."; exit 1 ;;
+            esac
+            VERSION_SETTING="MARKETING_VERSION=$VERSION_INPUT"
+          fi
+          echo "Build number: $BUILD   Version: ${VERSION_INPUT:-from App.xcconfig}"
+          echo "BUILD_NUMBER=$BUILD" >> "$GITHUB_ENV"
+          echo "VERSION_SETTING=$VERSION_SETTING" >> "$GITHUB_ENV"
+
       - name: Archive
         run: |
           set -o pipefail
@@ -379,7 +469,8 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             CODE_SIGN_STYLE=Automatic \
-            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            $VERSION_SETTING \
             -quiet 2>&1 | tee archive.log
 
       - name: Upload to App Store Connect

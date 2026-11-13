@@ -69,6 +69,8 @@ struct ScreenSeeds: Equatable {
     var frozenElapsed: TimeInterval?
     /// Draw a stand-in picture where the camera or the clip would be.
     var standInPicture = false
+    /// Put the cursor in the sign-in field as soon as it shows.
+    var autoFocus = true
 }
 
 /// One line under a stop on the Today list.
@@ -145,6 +147,8 @@ final class AppModel: ObservableObject {
         static let askedNotifications = "askedNotifications"
         static let offeredReminders = "offeredReminders"
         static let pushToken = "pushToken"
+        static let serverDay = "serverDay"
+        static let serverDayFetchedOn = "serverDayFetchedOn"
     }
 
     private init() {
@@ -229,8 +233,10 @@ final class AppModel: ObservableObject {
         if let data = defaults.data(forKey: Key.tech) {
             tech = try? ZestJSONBridge.decoder.decode(TechInfo.self, from: data)
         }
-        today = todayStore.load()
-        queue.pruneOldDays(today: ZestDates.dayString(Date()))
+        today = todayStore.load { [defaults] day in
+            AppModel.isCurrent(day: day, defaults: defaults)
+        }
+        queue.pruneOldDays(today: workingDay)
         loadDraft()
 
         uploads.onUnauthorized = { [weak self] in self?.signedOutByServer() }
@@ -248,10 +254,10 @@ final class AppModel: ObservableObject {
     func becameActive() {
         guard started else { return }
         // A new day: yesterday's route and finished rows go.
-        if let today, !ZestDates.isToday(today.date) {
+        if let today, !AppModel.isCurrent(day: today.date, defaults: defaults) {
             self.today = nil
             todayStore.wipe()
-            queue.pruneOldDays(today: ZestDates.dayString(Date()))
+            queue.pruneOldDays(today: workingDay)
             discardStaleDraft()
         }
         guard signedIn else { return }
@@ -294,6 +300,33 @@ final class AppModel: ObservableObject {
         return names
     }
 
+    // MARK: - Which day is it
+
+    /// Is a route dated `day` the one for right now?
+    ///
+    /// Normally that just means "the phone's date". But the date on a route
+    /// is the office's, and a phone in another time zone (travel, or Apple's
+    /// reviewer) can be a calendar day ahead or behind. So the server's day
+    /// also counts as current for the rest of the phone-day it was fetched
+    /// on. It is still wiped the next morning.
+    private static func isCurrent(day: String, defaults: UserDefaults) -> Bool {
+        let phoneDay = ZestDates.dayString(Date())
+        if day == phoneDay { return true }
+        return defaults.string(forKey: Key.serverDay) == day
+            && defaults.string(forKey: Key.serverDayFetchedOn) == phoneDay
+    }
+
+    /// The date today's videos are filed under: the office's day when known.
+    private var workingDay: String {
+        let phoneDay = ZestDates.dayString(Date())
+        if let today, AppModel.isCurrent(day: today.date, defaults: defaults) { return today.date }
+        if defaults.string(forKey: Key.serverDayFetchedOn) == phoneDay,
+           let serverDay = defaults.string(forKey: Key.serverDay) {
+            return serverDay
+        }
+        return phoneDay
+    }
+
     // MARK: - Today
 
     func refreshToday() async {
@@ -308,6 +341,9 @@ final class AppModel: ObservableObject {
                 defaults.set(data, forKey: Key.tech)
             }
             todayStore.save(fresh)
+            // Remember which phone-day the server's day was fetched on (see `isCurrent`).
+            defaults.set(fresh.date, forKey: Key.serverDay)
+            defaults.set(ZestDates.dayString(Date()), forKey: Key.serverDayFetchedOn)
             offline = false
             // The server's word on each of my videos.
             for video in fresh.videos where queue.item(video.id) != nil {
@@ -410,6 +446,8 @@ final class AppModel: ObservableObject {
         today = nil
         todayStore.wipe()
         defaults.removeObject(forKey: Key.tech)
+        defaults.removeObject(forKey: Key.serverDay)
+        defaults.removeObject(forKey: Key.serverDayFetchedOn)
         location.clearLeaveRegions()
         camera.shutDown()
         route = .login
@@ -509,7 +547,7 @@ final class AppModel: ObservableObject {
         discardDraft(log: true)
 
         let pending = PendingRecording(
-            id: QueueItem.newID(), target: target, stopDate: today?.date ?? ZestDates.dayString(Date()),
+            id: QueueItem.newID(), target: target, stopDate: today?.date ?? workingDay,
             location: location.freshFix(), startedAt: Date()
         )
         draftStore.savePending(pending)
@@ -670,7 +708,8 @@ final class AppModel: ObservableObject {
             transcript: transcript, fix: draft.location, recordedAt: draft.recordedAt,
             stop: stop, all: stops, farMeters: config.farMeters
         )
-        let verdict = TwoKeys.verdict(outcome.signals)
+        // Only keys that can be read for this stop count towards the two.
+        let verdict = TwoKeys.verdict(outcome.signals, stop: stop)
         check = .done(CheckResult(
             signals: outcome.signals, clean: verdict.clean, reasons: verdict.reasons,
             better: verdict.clean ? nil : outcome.better, transcript: transcript
@@ -898,15 +937,51 @@ final class AppModel: ObservableObject {
 
     /// CALL OFFICE.
     func callOffice() {
-        guard let phone = config.officePhone else { return }
-        let dialable = phone.filter { $0.isNumber || $0 == "+" }
-        guard !dialable.isEmpty, let url = URL(string: "tel:\(dialable)") else { return }
+        guard let url = officeCallURL else { return }
         UIApplication.shared.open(url)
     }
 
+    private var officeCallURL: URL? {
+        guard let phone = config.officePhone else { return nil }
+        let dialable = phone.filter { $0.isASCII && ($0.isNumber || $0 == "+") }
+        guard dialable.contains(where: { $0.isNumber }) else { return nil }
+        return URL(string: "tel:\(dialable)")
+    }
+
+    /// True only when this device can really place the call. An iPad (where
+    /// Apple also runs the app) cannot, so there the number is shown instead
+    /// of a button that would do nothing.
     var canCallOffice: Bool {
-        guard let phone = config.officePhone else { return false }
-        return phone.contains { $0.isNumber }
+        guard let url = officeCallURL else { return false }
+        return UIApplication.shared.canOpenURL(url)
+    }
+
+    /// The office number in words, for devices that cannot dial it.
+    var officePhoneText: String? {
+        guard !canCallOffice, let phone = config.officePhone else { return nil }
+        let digits = PhoneFormat.digits(from: phone)
+        guard PhoneFormat.isComplete(digits) else { return nil }
+        return "Office: " + PhoneFormat.display(digits)
+    }
+
+    // MARK: - Terms and privacy
+
+    /// Opens the server's Terms page in Safari.
+    func openTerms() {
+        openServerPage("/terms")
+    }
+
+    /// Opens the server's Privacy Policy page in Safari.
+    func openPrivacy() {
+        openServerPage("/privacy")
+    }
+
+    private func openServerPage(_ path: String) {
+        var base = api.baseURL.absoluteString
+        while base.hasSuffix("/") { base.removeLast() }
+        if let url = URL(string: base + path) {
+            UIApplication.shared.open(url)
+        }
     }
 
     // MARK: - Leave reminders and push

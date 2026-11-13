@@ -1,7 +1,9 @@
 import SwiftUI
+import ZestCore
 
-/// One-time setup. Step one: the phone number or email on the tech's record.
-/// Step two: six big boxes for the code. No password anywhere.
+/// One-time setup. Step one: the tech's mobile number (a texted code is the
+/// way in; email is there for anyone who needs it). Step two: six big boxes
+/// for the code. No password anywhere.
 struct LoginView: View {
     @EnvironmentObject private var app: AppModel
 
@@ -10,19 +12,30 @@ struct LoginView: View {
         case code
     }
 
+    /// How the code is sent.
+    private enum Mode {
+        case mobile
+        case email
+    }
+
     @State private var step: Step
+    @State private var mode: Mode = .mobile
+    /// What is in the field: a grouped number "(916) 555-0100", or an email.
     @State private var contact: String
     @State private var code: String
     @State private var busy = false
     @State private var problem: String?
     @FocusState private var contactFocused: Bool
     @FocusState private var codeFocused: Bool
+    private let autoFocus: Bool
 
     /// The defaults are the real flow. Other values only come from `ScreenSeeds`.
-    init(step: Step = .contact, contact: String = "", code: String = "") {
+    /// - Parameter contact: ten digits of a mobile number to start with.
+    init(step: Step = .contact, contact: String = "", code: String = "", autoFocus: Bool = true) {
         _step = State(initialValue: step)
-        _contact = State(initialValue: contact)
+        _contact = State(initialValue: PhoneFormat.display(PhoneFormat.digits(from: contact)))
         _code = State(initialValue: code)
+        self.autoFocus = autoFocus
     }
 
     var body: some View {
@@ -32,47 +45,108 @@ struct LoginView: View {
         }
     }
 
+    /// What goes to the server: ten plain digits, or the email as typed.
+    private var contactValue: String {
+        switch mode {
+        case .mobile: return PhoneFormat.digits(from: contact)
+        case .email: return contact.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
     // MARK: Step one
 
     private var contactStep: some View {
         Screen(title: "Zest Video") {
-            BodyText("Type your phone number or your email.")
-            TextField("Phone or email", text: $contact)
-                .font(.system(size: 30, weight: .bold, design: .rounded))
-                .keyboardType(.emailAddress)
-                .textContentType(.username)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.go)
-                .focused($contactFocused)
-                .onSubmit(sendCode)
-                .padding(.horizontal, 16)
-                .frame(minHeight: 84)
-                .background(
-                    RoundedRectangle(cornerRadius: Theme.corner, style: .continuous)
-                        .strokeBorder(Theme.purple, lineWidth: 4)
-                )
-                .accessibilityLabel("Phone number or email")
-            BodyText("We will send you a 6-digit code.", color: Theme.softInk)
+            BodyText(mode == .mobile ? "Type your mobile number." : "Type your email.", bold: true)
+            field
+            BodyText(mode == .mobile ? "We will text you a 6-digit code." : "We will email you a 6-digit code.", color: Theme.softInk)
             if let problem {
                 Banner(text: problem, tone: .attention)
             }
+            VStack(alignment: .leading, spacing: 0) {
+                BodyText("By signing in you agree to the Terms and Privacy Policy.", color: Theme.softInk)
+                LegalLinks()
+            }
+            .padding(.top, 10)
         } footer: {
             BigButton(title: "SEND MY CODE", kind: .primary, isBusy: busy, action: sendCode)
+            BigButton(title: mode == .mobile ? "USE EMAIL INSTEAD" : "USE MOBILE NUMBER INSTEAD", kind: .plain) {
+                flipMode()
+            }
         }
-        .onAppear { contactFocused = true }
+        .onAppear {
+            if autoFocus { contactFocused = true }
+        }
+    }
+
+    @ViewBuilder
+    private var field: some View {
+        Group {
+            switch mode {
+            case .mobile:
+                TextField("Mobile number", text: $contact)
+                    .keyboardType(.phonePad)
+                    .textContentType(.telephoneNumber)
+                    .accessibilityLabel("Mobile number")
+            case .email:
+                TextField("Email", text: $contact)
+                    .keyboardType(.emailAddress)
+                    .textContentType(.emailAddress)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.go)
+                    .onSubmit(sendCode)
+                    .accessibilityLabel("Email")
+            }
+        }
+        .zestFont(.field)
+        .foregroundColor(Theme.ink)
+        .minimumScaleFactor(0.6)
+        .focused($contactFocused)
+        .padding(.horizontal, 16)
+        .frame(minHeight: Theme.fieldHeight)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.corner, style: .continuous)
+                .strokeBorder(Theme.purple, lineWidth: 4)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { contactFocused = true }
+        .onChange(of: contact) { _, newValue in
+            // Group the digits as they are typed: (916) 555-0100.
+            guard mode == .mobile else { return }
+            let grouped = PhoneFormat.display(PhoneFormat.digits(from: newValue))
+            if grouped != newValue {
+                contact = grouped
+            }
+        }
+    }
+
+    private func flipMode() {
+        mode = (mode == .mobile) ? .email : .mobile
+        contact = ""
+        problem = nil
+        contactFocused = true
     }
 
     private func sendCode() {
-        let trimmed = contact.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !busy else {
-            if trimmed.isEmpty { problem = "Type your phone number or email first." }
-            return
+        guard !busy else { return }
+        let value = contactValue
+        switch mode {
+        case .mobile:
+            guard PhoneFormat.isComplete(value) else {
+                problem = value.isEmpty ? "Type your mobile number first." : "Type all 10 digits of your mobile number."
+                return
+            }
+        case .email:
+            guard value.contains("@"), value.contains(".") else {
+                problem = value.isEmpty ? "Type your email first." : "That does not look like an email. Please check it."
+                return
+            }
         }
         busy = true
         problem = nil
         Task {
-            let failure = await app.requestCode(contact: trimmed)
+            let failure = await app.requestCode(contact: value)
             busy = false
             if let failure {
                 problem = failure
@@ -87,7 +161,7 @@ struct LoginView: View {
 
     private var codeStep: some View {
         Screen(title: "Type your code") {
-            BodyText("We sent a 6-digit code to your phone and your email.")
+            BodyText(mode == .mobile ? "We texted a 6-digit code to your phone." : "We emailed a 6-digit code.", bold: true)
             codeBoxes
             if busy {
                 BodyText("Checking…", bold: true)
@@ -95,6 +169,12 @@ struct LoginView: View {
             if let problem {
                 Banner(text: problem, tone: .attention)
             }
+            BodyText(
+                mode == .mobile
+                    ? "No code? Ask the office to check your mobile number."
+                    : "No code? Ask the office to check your email.",
+                color: Theme.softInk
+            )
         } footer: {
             BigButton(title: "SEND A NEW CODE", kind: .plain, isBusy: busy) {
                 problem = nil
@@ -105,23 +185,29 @@ struct LoginView: View {
                 problem = nil
             }
         }
-        .onAppear { codeFocused = true }
+        .onAppear {
+            if autoFocus { codeFocused = true }
+        }
     }
 
     /// Six boxes drawn over one hidden text field, so iOS can fill the code
-    /// in from the text message by itself.
+    /// in from the text message by itself. The boxes are as large as fit six
+    /// across the screen.
     private var codeBoxes: some View {
-        ZStack {
+        let spacing: CGFloat = Theme.screenWidth < 360 ? 6 : 8
+        let boxWidth = (Theme.screenWidth - 2 * Theme.gutter - 5 * spacing) / 6
+        let boxHeight = min(120, max(76, boxWidth * 1.5))
+        return ZStack {
             TextField("", text: $code)
                 .keyboardType(.numberPad)
                 .textContentType(.oneTimeCode)
                 .focused($codeFocused)
                 .foregroundColor(.clear)
                 .tint(.clear)
-                .frame(maxWidth: .infinity, minHeight: 88)
+                .frame(maxWidth: .infinity, minHeight: boxHeight)
                 .accessibilityLabel("6-digit code")
                 .onChange(of: code) { _, newValue in
-                    let digits = String(newValue.filter { $0.isNumber }.prefix(6))
+                    let digits = String(newValue.filter { $0.isASCII && $0.isNumber }.prefix(6))
                     if digits != newValue {
                         code = digits
                         return
@@ -130,9 +216,9 @@ struct LoginView: View {
                         submitCode(digits)
                     }
                 }
-            HStack(spacing: 8) {
+            HStack(spacing: spacing) {
                 ForEach(0..<6, id: \.self) { index in
-                    codeBox(index)
+                    codeBox(index, height: boxHeight)
                 }
             }
             .allowsHitTesting(false)
@@ -142,19 +228,22 @@ struct LoginView: View {
         .onTapGesture { codeFocused = true }
     }
 
-    private func codeBox(_ index: Int) -> some View {
+    private func codeBox(_ index: Int, height: CGFloat) -> some View {
         let digits = Array(code)
         let filled = index < digits.count
+        let isNext = index == digits.count
         return Text(filled ? String(digits[index]) : "")
-            .font(.system(size: 44, weight: .heavy, design: .rounded))
+            .zestFont(.codeDigit)
             .foregroundColor(Theme.ink)
-            .frame(maxWidth: .infinity, minHeight: 88)
+            .lineLimit(1)
+            .minimumScaleFactor(0.5)
+            .frame(maxWidth: .infinity, minHeight: height)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.card)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(index == digits.count ? Theme.brightPurple : Theme.purple, lineWidth: index == digits.count ? 5 : 3)
+                    .strokeBorder(isNext ? Theme.brightPurple : Theme.purple, lineWidth: isNext ? 5 : 3)
             )
     }
 
@@ -162,9 +251,9 @@ struct LoginView: View {
         guard !busy else { return }
         busy = true
         problem = nil
-        let trimmed = contact.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = contactValue
         Task {
-            let failure = await app.verify(contact: trimmed, code: digits)
+            let failure = await app.verify(contact: value, code: digits)
             busy = false
             if let failure {
                 problem = failure

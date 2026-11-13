@@ -34,10 +34,28 @@ public enum TwoKeys {
     public static let requiredMatches = 2
 
     public static func verdict(_ signals: Signals) -> Verdict {
+        verdict(signals, required: requiredMatches)
+    }
+
+    /// The verdict for one stop.
+    ///
+    /// Two keys must agree, but only keys that *can* be read for this stop
+    /// count towards the two. A stop with no map pin has no GPS key; a stop
+    /// with no check-in has no check-in key. When the spoken key is the only
+    /// one there is, a spoken match is enough: asking for a second key that
+    /// cannot exist would warn on every video for that stop for ever.
+    public static func verdict(_ signals: Signals, stop: Stop) -> Verdict {
+        var readable = 1                                  // the spoken key
+        if stop.coordinate != nil { readable += 1 }       // the GPS key
+        if stop.checkIn != nil { readable += 1 }          // the check-in key
+        return verdict(signals, required: min(requiredMatches, readable))
+    }
+
+    private static func verdict(_ signals: Signals, required: Int) -> Verdict {
         let all: [(Key, SignalResult)] = [(.spoken, signals.spoken), (.gps, signals.gps), (.checkIn, signals.checkIn)]
         let matches = all.filter { $0.1 == .match }.count
         return Verdict(
-            clean: matches >= requiredMatches,
+            clean: matches >= required,
             matches: matches,
             mismatched: all.filter { $0.1 == .mismatch }.map { $0.0 },
             unknown: all.filter { $0.1 == .unknown }.map { $0.0 }

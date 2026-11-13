@@ -111,6 +111,40 @@ final class TwoKeysTests: XCTestCase {
         XCTAssertFalse(TwoKeys.verdict(wrong.signals).clean)
     }
 
+    func testAStopWithNoPinAndNoCheckInNeedsOnlyTheSpokenKey() {
+        // The App Review account's stops are like this: nothing but the words to go on.
+        let bare = Fixtures.noPin
+        XCTAssertNil(bare.coordinate)
+        XCTAssertNil(bare.checkIn)
+        let said = Signals(spoken: .match, gps: .unknown, checkIn: .unknown)
+        XCTAssertFalse(TwoKeys.verdict(said).clean, "the plain rule still wants two")
+        XCTAssertTrue(TwoKeys.verdict(said, stop: bare).clean, "the only key there is, matched")
+
+        // Not said, or speech did not run: still one warning.
+        XCTAssertFalse(TwoKeys.verdict(Signals(spoken: .mismatch, gps: .unknown, checkIn: .unknown), stop: bare).clean)
+        XCTAssertFalse(TwoKeys.verdict(.allUnknown, stop: bare).clean)
+    }
+
+    func testAStopWithAPinStillNeedsTwoKeys() {
+        // A real stop has a map pin, so a spoken match alone is not enough,
+        // even when the phone has no fix and nobody has checked in.
+        let said = Signals(spoken: .match, gps: .unknown, checkIn: .unknown)
+        XCTAssertFalse(TwoKeys.verdict(said, stop: Fixtures.quill).clean)
+        XCTAssertTrue(TwoKeys.verdict(Signals(spoken: .match, gps: .match, checkIn: .unknown), stop: Fixtures.quill).clean)
+
+        // No pin but checked in: two keys can be read, so two are needed.
+        var checkedIn = Fixtures.noPin
+        checkedIn.checkIn = Fixtures.at(-5)
+        XCTAssertFalse(TwoKeys.verdict(said, stop: checkedIn).clean)
+        XCTAssertTrue(TwoKeys.verdict(Signals(spoken: .match, gps: .unknown, checkIn: .match), stop: checkedIn).clean)
+
+        // With all three readable the rule is unchanged.
+        var full = Fixtures.quill
+        full.checkIn = Fixtures.at(-5)
+        XCTAssertTrue(TwoKeys.verdict(Signals(spoken: .mismatch, gps: .match, checkIn: .match), stop: full).clean)
+        XCTAssertFalse(TwoKeys.verdict(Signals(spoken: .match, gps: .mismatch, checkIn: .mismatch), stop: full).clean)
+    }
+
     // MARK: Hold window
 
     func testHoldWindowIsOpenForTenMinutesThenShutsForGood() {

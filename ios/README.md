@@ -7,6 +7,12 @@ nothing else.
 
 Built for a 75-year-old in gloves in bright sun: very large type, full-width
 buttons, one question per screen, no swipes, no menus, no typing after setup.
+Every size in the app comes from one table in `UI/Theme.swift`, written for a
+430 pt wide phone and scaled down gently for narrower ones.
+
+Sign-in is a mobile number and a texted 6-digit code (email is the other
+choice on the same screen). Terms and Privacy open the server's `/terms` and
+`/privacy` pages, from the sign-in screen and from My videos.
 
 ## Layout
 
@@ -114,6 +120,11 @@ The `screens` CI job runs every name on the largest iPhone simulator and
 uploads the pictures, plus `00-contact-sheet.png` with all of them on one
 page (`Scripts/contact_sheet.py`, standard-library Python).
 
+It does not guess how long a launch takes: in screenshot mode the app writes
+a small file once the screen is up, and the job waits for it. A picture that
+is still one flat colour (`Scripts/is_blank.py`) is taken again, and the job
+warns, with the app's last log lines, if it stays blank.
+
 ## Ship to TestFlight
 
 One-time setup, in Zest's Apple Developer account:
@@ -127,12 +138,21 @@ One-time setup, in Zest's Apple Developer account:
    (the whole text of the `.p8` file).
 
 Then, on GitHub: Actions → **iOS** → Run workflow → tick *Also archive and
-upload this build to TestFlight*. The build number is the run number, so
-every upload is newer than the last.
+upload this build to TestFlight*. The build number is the run number (a
+re-run of the same run gets `.2`, `.3`), so an upload is never refused as a
+duplicate. Both the build number and the version can be typed in on that
+form when a specific one is wanted, for example version `1.0.1` after `1.0.0`
+is on sale.
 
 The same archive can be made by hand in Xcode: Product → Archive →
 Distribute App → App Store Connect.
 
 Before App Review: set `ZEST_APP_STORE_URL` once the listing exists, and give
 the reviewer the demo sign-in (the server marks that account `demo`, so its
-videos never reach a customer).
+videos never reach a customer). Say in the review notes whether the demo
+sign-in is a mobile number or an email: the sign-in screen opens on mobile
+number, with USE EMAIL INSTEAD underneath.
+
+The app declares no background modes. Pushes from the server are ordinary
+visible alerts; uploads continue in the background through a background
+`URLSession`, which needs no mode.

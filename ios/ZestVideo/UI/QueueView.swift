@@ -35,7 +35,7 @@ struct QueueView: View {
                 } label: {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(item.customerName)
-                            .font(Theme.heading)
+                            .zestFont(.rowName)
                             .foregroundColor(Theme.ink)
                             .lineLimit(2)
                             .minimumScaleFactor(0.7)
@@ -60,18 +60,21 @@ struct QueueView: View {
                 BodyText("Waiting videos send by themselves when there is signal.", color: Theme.softInk)
             }
 
-            Button {
-                confirmingSignOut = true
-            } label: {
-                Text("Sign out")
-                    .font(Theme.body)
-                    .underline()
-                    .foregroundColor(Theme.softInk)
-                    .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
-                    .contentShape(Rectangle())
+            // The small print, at the very end.
+            VStack(alignment: .leading, spacing: 4) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 28) {
+                        signOutLink
+                        LegalLinks()
+                    }
+                    VStack(alignment: .leading, spacing: 0) {
+                        signOutLink
+                        LegalLinks()
+                    }
+                }
+                BodyText("To delete your data, sign out and call the office.", color: Theme.softInk)
             }
-            .buttonStyle(.plain)
-            .padding(.top, 30)
+            .padding(.top, 26)
         } footer: {
             BigButton(title: "BACK", kind: .plain) {
                 app.backToToday()
@@ -96,6 +99,12 @@ struct QueueView: View {
             BigButton(title: "NO, STAY", kind: .plain) {
                 confirmingSignOut = false
             }
+        }
+    }
+
+    private var signOutLink: some View {
+        TextLink(title: "Sign out", color: Theme.softInk) {
+            confirmingSignOut = true
         }
     }
 

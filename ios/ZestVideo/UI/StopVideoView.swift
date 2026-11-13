@@ -33,8 +33,8 @@ struct StopVideoView: View {
                 changeable(summary, secondsLeft: max(0, Int(closesAt.timeIntervalSince(now).rounded(.up))))
             }
         case .otherTech:
-            Screen(title: summary.name) {
-                address(summary)
+            Screen {
+                headline(summary)
                 BodyText("Another tech already recorded this stop.", bold: true)
                 BodyText("If you record it again, your video takes its place.")
             } footer: {
@@ -42,8 +42,8 @@ struct StopVideoView: View {
                 back
             }
         case .waiting:
-            Screen(title: summary.name) {
-                address(summary)
+            Screen {
+                headline(summary)
                 StatusPill(status: RowStatus(text: summary.statusText, kind: .waiting))
                 BodyText("This video is waiting to send.", bold: true)
                 BodyText("It sends by itself when there is signal. You do not need to do anything.")
@@ -53,9 +53,10 @@ struct StopVideoView: View {
         case .locked:
             locked(summary, message: UploadManager.lockedMessage)
         case .blocked(let message):
-            Screen(title: summary.name) {
-                address(summary)
+            Screen {
+                headline(summary)
                 Banner(text: message, tone: .attention)
+                officeNumber
             } footer: {
                 if app.canCallOffice {
                     BigButton(title: "CALL OFFICE", kind: .primary) { app.callOffice() }
@@ -70,8 +71,8 @@ struct StopVideoView: View {
     // MARK: Inside the ten minutes
 
     private func changeable(_ summary: VideoSummary, secondsLeft: Int) -> some View {
-        Screen(title: summary.name) {
-            address(summary)
+        Screen {
+            headline(summary)
             StatusPill(status: RowStatus(
                 text: summary.statusText,
                 kind: summary.statusText.hasPrefix("SENT") ? .sent : .waiting
@@ -104,10 +105,11 @@ struct StopVideoView: View {
     // MARK: After the ten minutes
 
     private func locked(_ summary: VideoSummary, message: String) -> some View {
-        Screen(title: summary.name) {
-            address(summary)
+        Screen {
+            headline(summary)
             StatusPill(status: RowStatus(text: "SENT ✓", kind: .sent))
             BodyText(message, bold: true)
+            officeNumber
         } footer: {
             if app.canCallOffice {
                 BigButton(title: "CALL OFFICE", kind: .primary) { app.callOffice() }
@@ -124,13 +126,17 @@ struct StopVideoView: View {
         }
     }
 
+    /// The name and street, as large as on the confirm screen.
+    private func headline(_ summary: VideoSummary) -> some View {
+        StopHeadline(name: summary.name, address: summary.address)
+            .padding(.top, 6)
+    }
+
+    /// On a device that cannot place a call, the number in words instead.
     @ViewBuilder
-    private func address(_ summary: VideoSummary) -> some View {
-        if !summary.address.isEmpty {
-            Text(summary.address)
-                .font(Theme.heading)
-                .foregroundColor(Theme.ink)
-                .fixedSize(horizontal: false, vertical: true)
+    private var officeNumber: some View {
+        if let text = app.officePhoneText {
+            BodyText(text, bold: true)
         }
     }
 

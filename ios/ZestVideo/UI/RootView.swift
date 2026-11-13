@@ -10,13 +10,18 @@ struct RootView: View {
             Theme.background.ignoresSafeArea()
             screen
         }
-        // Respect the phone's text size, within limits that keep every layout whole.
-        .dynamicTypeSize(DynamicTypeSize.large ... DynamicTypeSize.accessibility1)
+        // The app's own sizes are already very large. The phone's text-size
+        // setting can make them larger still, up to a point that keeps every
+        // layout whole, and can never make them smaller.
+        .dynamicTypeSize(DynamicTypeSize.large ... DynamicTypeSize.xxxLarge)
         .preferredColorScheme(.light)
         .tint(Theme.purple)
         .task {
             // The first "became active" can arrive before this view exists.
             app.becameActive()
+            #if targetEnvironment(simulator)
+            ScreenshotMode.markReady()
+            #endif
         }
     }
 
@@ -24,7 +29,10 @@ struct RootView: View {
     private var screen: some View {
         switch app.route {
         case .login:
-            LoginView(step: app.seeds.loginStep, contact: app.seeds.loginContact, code: app.seeds.loginCode)
+            LoginView(
+                step: app.seeds.loginStep, contact: app.seeds.loginContact, code: app.seeds.loginCode,
+                autoFocus: app.seeds.autoFocus
+            )
         case .today:
             TodayView()
         case .confirm:
