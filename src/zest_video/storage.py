@@ -30,6 +30,7 @@ class Storage(Protocol):
     def put_url(self, key: str, content_type: str, seconds: int) -> str: ...
     def get_url(self, key: str, seconds: int) -> str: ...
     async def head(self, key: str) -> StoredObject | None: ...
+    async def read_range(self, key: str, start: int, length: int) -> bytes | None: ...
     async def delete(self, key: str) -> None: ...
 
 
@@ -123,6 +124,15 @@ class S3Storage:
         resp.raise_for_status()
         return StoredObject(size=int(resp.headers.get("content-length", "0")), etag=resp.headers.get("etag", "").strip('"'))
 
+    async def read_range(self, key: str, start: int, length: int) -> bytes | None:
+        """A slice of an object (for a look at a video's header, never the whole file)."""
+        end = max(start, start + length - 1)
+        resp = await self._http.get(self._url("GET", key, 60), headers={"Range": f"bytes={start}-{end}"})
+        if resp.status_code in (404, 416):
+            return None
+        resp.raise_for_status()
+        return resp.content[:length]
+
     async def delete(self, key: str) -> None:
         resp = await self._http.delete(self._url("DELETE", key, 60))
         if resp.status_code not in (200, 204, 404):
@@ -150,6 +160,10 @@ class MemoryStorage:
         if body is None:
             return None
         return StoredObject(size=len(body), etag=hashlib.md5(body, usedforsecurity=False).hexdigest())
+
+    async def read_range(self, key: str, start: int, length: int) -> bytes | None:
+        body = self.objects.get(key)
+        return None if body is None else body[start:start + length]
 
     async def delete(self, key: str) -> None:
         self.deleted.append(key)

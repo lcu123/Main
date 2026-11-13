@@ -54,35 +54,36 @@ Every project (every row of the table in `playwright.config.js`):
 
 | Spec | In one line |
 | --- | --- |
-| `specs/watch.spec.js` | The watch page opens with no error, fits the screen with the player in the first screen, the video loads through the redirect to the bucket and plays, pauses, seeks and replays, the server hears "played" exactly once, a score is saved once and stays, "This is not my home" takes the video down, every control is 44x44 px and no text is under 16 px. |
-| `specs/other-pages.spec.js` | A dead link and an unknown link show the kind message and the office number; unsubscribe, privacy, terms and support open, fit and read. |
+| `specs/watch.spec.js` | The watch page opens with no error, fits the screen with the player in the first screen, the picture sits whole inside a player as wide as the column (room for the browser's control bar), the video loads through the redirect to the bucket and plays, pauses, seeks and replays, the server hears "played" exactly once, a score is saved once and stays, "This is not my home" takes the video down and a plain GET of its address never does, every control is 44x44 px, no text is under 16 px, and the office number can be read on its button. |
+| `specs/other-pages.spec.js` | A dead link and an unknown link show the kind message and the office number; unsubscribe asks once and says "Done" ever after; privacy, terms and support open, fit and read; a link opened more than 120 times in a minute says "wait a minute" (not "no longer available"), and the player's own requests do not use up page opens. |
 
 Only the rows marked `deep` (the three desktop engines, iPhone 13, iPad (gen 7), Pixel 7):
 
 | Spec | In one line |
 | --- | --- |
-| `specs/noscript.spec.js` | With script switched off the video, the score and "not my home" still work. |
-| `specs/expiring-links.spec.js` | What happens when the 15-minute bucket link has run out before play, after a pause, on a seek. |
-| `specs/slow-link.spec.js` | On a slow bucket, slow page files and (Chromium) a throttled connection, the page is usable at once and the video starts when it can. |
-| `specs/non-faststart.spec.js` | A video whose index is at the END of the file still plays, and how the browser finds the index. |
+| `specs/noscript.spec.js` | With script switched off the video, the score and "not my home" still work, and a link under the player opens the video by itself. |
+| `specs/expiring-links.spec.js` | The 15-minute bucket link has run out before play, on a skip while paused, after a pause: the page fetches a fresh one by itself and the picture carries on from the same second, with one "played". |
+| `specs/recovery.spec.js` | A video that will not load: two automatic tries, never more than six on a page, then one note that is a button (one press tries again, a second opens the page afresh); a tap on a dead player is not a viewing; a signal that drops for more than 6 s says so and a 2 s hiccup does not. |
+| `specs/slow-link.spec.js` | On a slow bucket, slow page files and (Chromium) a throttled connection, the page is usable at once, nothing jumps when the video arrives, and a play pressed before the script arrived is still counted. |
+| `specs/non-faststart.spec.js` | A video whose index is at the END of the file still plays, and how long each browser needs for the index, measured against the same file with the index at the front. |
 | `specs/page-weight.spec.js` | The page without the video stays inside its byte budget, and each file is fetched once. |
-| `specs/colour-schemes.spec.js` | Dark mode, forced colours and browser "darken websites": text stays readable and a picked star still looks picked (measured in pixels). |
-| `specs/email.spec.js` | The email's one button is big, fits the screen and opens the video. |
-| `specs/old-engines.spec.js` | The page with the CSS that iOS 12-14 and 2017-2021 TV browsers do not understand taken away: what is left still fits and works. |
+| `specs/colour-schemes.spec.js` | Light, dark, forced colours and browser "darken websites": text stays readable, a picked star is filled and one that is not is hollow with a 3:1 outline, the thank-you can be read (all measured in pixels). |
+| `specs/email.spec.js` | The email's one button is big, fits the screen, opens the video, and carries what classic Outlook needs. |
+| `specs/old-engines.spec.js` | The page with the CSS that iOS 12-14 and 2017-2021 TV browsers do not understand taken away: it still fits and works, the player's place is kept before the video loads, the logo keeps its distance, a focused star is outlined. |
 
 Only where there is a keyboard or a remote (desktop engines and TV rows):
 
 | Spec | In one line |
 | --- | --- |
-| `specs/keyboard.spec.js` | Tab, Shift+Tab, Space, Enter and arrows (or a TV remote's arrows and OK) reach and work the player, the stars and Send, and the focused control is visibly outlined. |
-| `specs/zoom-reflow.spec.js` | At 200% and 400% desktop zoom and iPhone "Page Zoom" 150% and 200%: no sideways scroll, nothing cut off, the form still works. (Desktop engines.) |
-| `specs/tv.spec.js` | On a TV: pointer-mode remote plays and scores, full screen works, nothing blocks AirPlay or Chromecast, text and player size from 3 metres. (TV rows.) |
+| `specs/keyboard.spec.js` | Tab, Shift+Tab, Space, Enter and arrows (or a TV remote's arrows, OK and play/pause keys) reach and work the player, the stars, Send and the "try again" note; the arrows on the stars go the way they point; the focused control is visibly outlined. On a Mac, Safari is driven with Option+Tab, as its users do. |
+| `specs/zoom-reflow.spec.js` | At 200% and 400% desktop zoom and iPhone "Page Zoom" 150% and 200%: no sideways scroll, nothing cut off, the player keeps its size, five stars fit inside the card, the form still works. (Desktop engines.) |
+| `specs/tv.spec.js` | On a TV: pointer-mode remote plays and scores, full screen works, nothing blocks AirPlay or Chromecast, the picture fills 74% of the screen height on every TV size, text size from 3 metres. (TV rows.) |
 
 No browser (`--project=static`):
 
 | Spec | In one line |
 | --- | --- |
-| `static/es5.spec.js` | `watch.js` parses as ES5 (old iOS and TV engines run none of a file with newer syntax) and uses only listed browser features; no inline script. |
+| `static/es5.spec.js` | `watch.js` parses as ES5 (old iOS and TV engines run none of a file with newer syntax), uses only listed browser features and listed methods and properties, never trusts `play()` to return a promise; no inline script. |
 | `static/compat.spec.js` | Every CSS and browser feature the pages use that some browser on the support list lacks is printed with the versions, and must be in `static/compat-allowlist.json` with a reason. |
 | `static/gaps.spec.js` | `lib/known-gaps.js` has no dead or duplicate entries. |
 
@@ -90,8 +91,9 @@ Live mode only: `specs/live.spec.js` (below).
 
 ## Known gaps: a green run does not mean nothing is wrong
 
-`lib/known-gaps.js` is the one list of things the pages get wrong **today**. Each entry is a
-product bug waiting for a fix in `src/zest_video`. While it waits the suite stays green, and:
+`lib/known-gaps.js` is the one list of things the pages get wrong **today**, or that one
+browser does that the page cannot change. Each entry says what the customer gets and the
+smallest fix. While it waits the suite stays green, and:
 
 * anything **new** that goes wrong still fails the build;
 * the day a listed bug is **fixed**, its test fails with *"listed in known-gaps.js but the page
@@ -102,8 +104,25 @@ Every run ends by printing the gaps it touched and on which projects (also in
 
 * **TO CONFIRM**: an entry marked `'unverified'` for an engine was written without that engine
   at hand. The run says whether it happens there; put `true` or `false` in the entry.
-* **DEPENDS ON THE DEVICE**: an entry marked `'varies'` (today: the star row, drawn with
-  whatever symbol font the device has) is reported, never failed.
+* **DEPENDS ON THE DEVICE**: an entry marked `'varies'` is reported, never failed. (None today:
+  the stars used to be drawn with whatever symbol font the device had; they are drawings now.)
+
+The list on 2026-11-13, after two fix rounds: 8 entries. (The first list had 24; 18 were fixed
+or shown not to happen and deleted, and 8 new ones were found on the fixed page. The second
+round fixed 6 of those 14: the half-minute wait on an expired link in Chrome, "try again"
+counted as watched, the focus lost when the note is pressed, the stars on a browser-darkened
+page, the office number sticking out of its button at 200% zoom, and the small script-off link.)
+
+| Entry | Where | In short |
+| --- | --- | --- |
+| `player-below-first-screen` | windows under 331 px tall (iPhone SE on its side) | The last 6 px of the player are below the first screen. |
+| `long-address-pushes-player-down` | windows 331 to 363 px tall | With a two-line heading the last 1 to 9 px of the player are below the first screen. |
+| `tv-words-too-small` | TV windows 1080 px and taller | Left as it is on purpose; listed so the decision stays visible. |
+| `script-off-player-cannot-be-started` | WebKit | Safari with script off draws no player buttons; the noscript link is the way out. |
+| `safari-player-keys` | WebKit | Space and arrows on the player are Safari's own. |
+| `enter-on-the-player` | Firefox, WebKit: to confirm | Enter on the focused player (made for a TV remote's OK). |
+| `forced-colours-stars-look-the-same` | Firefox: to confirm | Fixed and measured in Chromium. |
+| `webkit-ready-only-after-the-whole-file` | WebKit: to confirm | The first run's measurement included the page's `load` event; the test no longer does. |
 
 `static/compat-allowlist.json` is the same idea for old-browser support.
 
@@ -150,19 +169,51 @@ video, checks time moves, takes a picture (`safari-shots/`), and reports what Sa
 the bucket link has expired. With `LIVE_WATCH_URL` set it also plays the real video. It prints
 every step.
 
+Each target ends as one of three, and they are not the same thing:
+
+* **PASS**: the video played in that Safari and time was measured moving.
+* **FAIL**: it was driven and something was wrong.
+* **SEEN, NOT MEASURED**: `safaridriver` would not open a session on that simulator (in the
+  first CI run, the iPad), so the page was opened there with `xcrun simctl openurl` and
+  photographed with `xcrun simctl io screenshot`. The server's own record says that Safari
+  fetched the page and the start of the video; nobody pressed play. It is never called a pass.
+  The run stays green with a warning; `SAFARI_STRICT=1` makes it fail.
+
+Getting a session is the fragile part. The script starts one `safaridriver` for the whole run,
+waits for the simulator to finish booting, opens Safari in it once and waits until the server
+has seen it fetch a page, tries first the form of request that worked for the last device of
+that kind, and, if every form fails, shuts the simulator down, boots it again and tries once
+more before falling back.
+
 ## `serve.py`
 
 ```sh
-python tests/browser/serve.py --port 19300 [--link-seconds N] [--bucket https|same-origin] [--host 0.0.0.0 --base-url http://192.168.1.20:19300]
+python tests/browser/serve.py --port 19300 [--link-seconds N] [--bucket https|same-origin] [--rate-limit off|real] [--host 0.0.0.0 --base-url http://192.168.1.20:19300]
 ```
 
 The real server plus a stand-in bucket on another origin (https, throwaway certificate,
-byte ranges, links that really expire). `--bucket same-origin` serves the video from the web
-server itself, for anything that cannot accept the certificate: real Safari, or your own phone
-on the same Wi-Fi (use `--host 0.0.0.0 --base-url http://<this machine's address>:19300`, then
-open the printed `watch` link on the phone). `GET /__test/info` lists the URLs;
-`POST /__test/video` films a fresh video; `GET /__test/state?token=...` says what the server
-and the bucket recorded for a link. The file's own header documents the rest.
+byte ranges, links that really expire, and the refusal a real bucket gives: a 403 with an XML
+body). `--bucket same-origin` serves the video from the web server itself, for anything that
+cannot accept the certificate: real Safari, or your own phone on the same Wi-Fi (use
+`--host 0.0.0.0 --base-url http://<this machine's address>:19300`, then open the printed
+`watch` link on the phone).
+
+The control API, all under `/__test/`:
+
+| Call | What it does |
+| --- | --- |
+| `GET info` | The URLs. |
+| `POST video?file=...&throttle=...&first_byte_ms=...&link_seconds=...&address=...&pulled=1&refusal=visible` | Films a fresh video. Files: `sample`, `moov-at-end`, `stretched` (the size of a real visit video), `stretched-moov-at-end`, `cut-short` (breaks off part-way). |
+| `GET state?token=...` | What the server and the bucket recorded for a link. |
+| `POST expire?token=...` | Every bucket link handed out so far for it is dead. |
+| `POST pull?token=...` | The office takes the video down, now. |
+| `POST stall?token=...&on=1` | The bucket stops sending in mid-answer (a dropped signal); `on=0` lets it flow. |
+| `GET email?token=...` | The HTML email that was "sent". |
+
+The rate limiter is off for the test browsers (forty of them on 127.0.0.1 are not one
+customer) and REAL for any client that says, in `X-Forwarded-For`, that it comes from
+198.18.0.0/15: a test that wants to hit the limit picks an address of its own there. The
+file's own header documents the rest.
 
 Tests share one server and never share a video: each test films its own, so they run in
 parallel.

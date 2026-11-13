@@ -23,17 +23,32 @@ A control API, added by wrapping the app HERE and never in src/:
     GET  /__test/health                 "ok" once both servers are up
     GET  /__test/info                   the URLs: watch, watch2, dead, unknown, unsubscribe, ...
     POST /__test/video?...              film a brand new video; returns its watch link. Options:
-           file=sample | moov-at-end | stretched | stretched-moov-at-end
+           file=sample | moov-at-end | stretched | stretched-moov-at-end | cut-short
            throttle=BYTES_PER_SECOND    the bucket trickles this object (a slow connection)
            first_byte_ms=N              the bucket waits this long before the first byte
-           link_seconds=N               this video's signed links live N seconds (default 900)
+           link_seconds=N               this video's signed links live N seconds (default 900),
+                                        and its watch page is told so (data-life), as a server
+                                        set to N seconds would tell it
            address=TEXT                 the address shown in the heading
            pulled=1                     pull it straight away (a dead link)
+           refusal=visible              how the bucket words its 403 (see "The refusal" below)
     GET  /__test/state?token=TOKEN      what the server recorded for that link: was "played"
                                         posted, the score, was it pulled, every request the web
                                         server and the bucket got for it (with Range headers)
     GET  /__test/email?token=TOKEN      the HTML email that was "sent" for watch / watch2
     POST /__test/expire?token=TOKEN     every signed link handed out so far for it is now dead
+    POST /__test/pull?token=TOKEN       the office takes the video down, now (the link answers 410)
+    POST /__test/stall?token=TOKEN&on=1 the bucket stops sending this object in mid-answer, as when
+                                        a phone loses its signal; on=0 lets it flow again. Only for
+                                        a video filmed with throttle= (those are sent in pieces).
+
+The refusal. A real S3-compatible bucket refuses an expired link with status 403 and a body that
+starts `<?xml version="1.0" encoding="UTF-8"?><Error>...`, sent as application/xml. That is the
+default here, and it matters: Chromium will not hand a cross-origin XML answer to a <video>
+(net::ERR_BLOCKED_BY_ORB), so the player is never told "403": it sees a network failure and
+tries the same dead link again and again for about half a minute before it gives up.
+refusal=visible leaves the XML declaration off, which Chromium does pass on; the player then
+fails at once. It exists to tell the page's own recovery apart from the browser's waiting.
 
 The fixtures (tests/browser/fixtures):
 
@@ -42,15 +57,22 @@ The fixtures (tests/browser/fixtures):
 * sample-moov-at-end.mp4: the same streams with the moov atom at the END, which is what a
   recorder writes when nobody asks for faststart. Made with
       ffmpeg -i sample.mp4 -c copy -map 0 -movflags -faststart sample-moov-at-end.mp4
+* "cut-short" is the stretched file with its last 45% missing, cut in the middle of a frame:
+  an upload that broke off, or a file damaged in the bucket. The index at the front still
+  promises all 8 seconds. Made here at start-up, like the stretched files.
 * "stretched" files are made here at start-up, in memory, with no ffmpeg: zero bytes are put
   between the media chunks and the chunk offset tables are moved to match, so the 142 KB clip
   becomes a 2.7 MB file with the bit rate of a real visit video (about 5 MB for 15 s). A browser
   cannot swallow that in one gulp, so it has to make the same later range requests it makes in
   production. That is what the expiring-link and slow-link tests need.
 
-Rate limits: the real server allows 120 page hits a minute per IP address. Forty browsers
-tested in parallel from 127.0.0.1 are one "customer" to it, so the limiter is switched off
-here unless --rate-limit real is given. The tests count requests instead.
+Rate limits: the real server allows 120 page opens a minute per IP address (and 600 requests
+from the player). Forty browsers tested in parallel from 127.0.0.1 are one "customer" to it, so
+the limiter is switched off for them unless --rate-limit real is given. It stays REAL for any
+client that says it comes from 198.18.0.0/15 (the address block set aside for testing, RFC
+2544) in an X-Forwarded-For header, which is where the real server reads the address from
+behind Railway's edge. A test that wants to hit the limit picks an address of its own in that
+block and disturbs nobody else.
 """
 
 from __future__ import annotations
@@ -65,6 +87,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import struct
@@ -176,6 +199,23 @@ def stretch(data: bytes, target: int) -> bytes:
     return bytes(out)
 
 
+def chunk_offsets(data: bytes) -> list[int]:
+    """Where every media chunk starts, in file order."""
+    moov = next(b for b in top_boxes(data) if b[0] == "moov")
+    out = set()
+    for first, count, width in _chunk_tables(data, moov[1], moov[1] + moov[2]):
+        out.update(int.from_bytes(data[first + n * width:first + (n + 1) * width], "big") for n in range(count))
+    return sorted(out)
+
+
+def cut_short(data: bytes, share: float) -> bytes:
+    """`data` with its end missing: the file stops ten bytes into the first frame that starts
+    after `share` of the way in. (A cut between two frames reads as a clean, early end; a cut
+    inside one is what a broken upload or a damaged object looks like to a decoder.)"""
+    at = next(o for o in chunk_offsets(data) if o >= len(data) * share)
+    return data[:at + 10]
+
+
 def load_files() -> dict[str, bytes]:
     sample = (FIXTURES / "sample.mp4").read_bytes()
     tail = (FIXTURES / "sample-moov-at-end.mp4").read_bytes()
@@ -186,6 +226,7 @@ def load_files() -> dict[str, bytes]:
         "moov-at-end": tail,
         "stretched": stretch(sample, STRETCH_TO),
         "stretched-moov-at-end": stretch(tail, STRETCH_TO),
+        "cut-short": cut_short(stretch(sample, STRETCH_TO), 0.55),
     }
 
 
@@ -203,6 +244,8 @@ class Bucket(MemoryStorage):
         self.link_seconds: dict[str, int] = {}  # per object
         self.throttle: dict[str, tuple[int, int]] = {}  # per object: (bytes a second, first byte ms)
         self.dead_before: dict[str, float] = {}  # per object: links signed before this are dead
+        self.held: set[str] = set()  # objects whose answers are stopped in mid-flow (no signal)
+        self.refusal: dict[str, str] = {}  # per object: "visible" leaves the XML declaration off
         self.requests: list[dict[str, Any]] = []
         self.links: list[dict[str, Any]] = []
 
@@ -231,11 +274,13 @@ class Bucket(MemoryStorage):
 
 
 def bucket_app(bucket: Bucket, prefix: str = "") -> Starlette:
-    async def trickle(part: bytes, rate: int, first_byte_ms: int, row: dict[str, Any]):
+    async def trickle(key: str, part: bytes, rate: int, first_byte_ms: int, row: dict[str, Any]):
         if first_byte_ms:
             await asyncio.sleep(first_byte_ms / 1000)
-        step = max(512, rate // 20)
+        step = max(512, min(rate, 2_000_000) // 20)
         for i in range(0, len(part), step):
+            while key in bucket.held:  # the signal has dropped: nothing more arrives until it is back
+                await asyncio.sleep(0.05)
             piece = part[i:i + step]
             yield piece
             row["sent"] += len(piece)
@@ -254,7 +299,9 @@ def bucket_app(bucket: Bucket, prefix: str = "") -> Starlette:
         refused = bucket.check(key, request.query_params)
         if refused:
             row["refused"] = refused
-            xml = f"<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error><Code>AccessDenied</Code><Message>{refused}</Message></Error>"
+            xml = f"<Error><Code>AccessDenied</Code><Message>{refused}</Message></Error>"
+            if bucket.refusal.get(key) != "visible":  # what S3 and R2 really send; Chromium hides it from the player
+                xml = '<?xml version="1.0" encoding="UTF-8"?>' + xml
             return done(Response(xml, 403, media_type="application/xml"))
         body = bucket.objects.get(key)
         if body is None:
@@ -283,7 +330,7 @@ def bucket_app(bucket: Bucket, prefix: str = "") -> Starlette:
         rate, first_byte_ms = bucket.throttle.get(key, (0, 0))
         if rate or first_byte_ms:
             row["status"], row["bytes"] = status, len(part)
-            return StreamingResponse(trickle(part, rate or 10**9, first_byte_ms, row), status, headers=head)
+            return StreamingResponse(trickle(key, part, rate or 10**9, first_byte_ms, row), status, headers=head)
         row["sent"] = len(part)
         return done(Response(part, status, headers=head), len(part))
 
@@ -333,10 +380,17 @@ def throwaway_cert(dirpath: Path) -> tuple[str, str]:
 # The real server, with a pool of customers to film and a control API in front of it
 # ---------------------------------------------------------------------------------------------
 
+LIMITED = ("198.18.", "198.19.")  # 198.18.0.0/15: set aside for testing (RFC 2544), never a customer
+
+
 class NoLimit(RateLimiter):
-    """Forty test browsers on 127.0.0.1 are not one customer hammering the page."""
+    """Forty test browsers on 127.0.0.1 are not one customer hammering the page, so they are
+    not limited. A client that says (X-Forwarded-For) it is in 198.18.0.0/15 gets the real
+    limiter, unchanged: that is how one test hits the limit without slowing the others."""
 
     def retry_after(self, key: str, limit: int, window: float) -> int:
+        if key.rpartition(":")[2].startswith(LIMITED):
+            return super().retry_after(key, limit, window)
         return 0
 
 
@@ -373,6 +427,21 @@ class Harness:
     def __init__(self, real: Any, control: Any, bucket: Any | None):
         self.real, self.control, self.bucket = real, control, bucket
         self.requests: list[dict[str, Any]] = []
+        self.page_life: dict[str, int] = {}  # per watch token: the link life its page is told
+
+    def told_life(self, path: str, body: bytes) -> bytes:
+        """The watch page tells its script how long the player's storage link lives (data-life,
+        nine tenths of the server's one setting, 900 s). A video filmed with link_seconds=N has
+        links that live N seconds, so its page must say so, as a server set to N would. The
+        number is swapped in place, padded to the same length; nothing else is touched."""
+        life = self.page_life.get(path.rsplit("/", 1)[-1]) if path.startswith("/w/") and path.count("/") == 2 else None
+        found = re.search(rb'data-life="(\d+)"', body) if life else None
+        if not found:
+            return body
+        new = b'data-life="%d"' % life
+        if len(new) > len(found.group(0)):
+            return body
+        return body[:found.start()] + new.ljust(len(found.group(0))) + body[found.end():]
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
@@ -393,6 +462,8 @@ class Harness:
         async def watched_send(message: Any) -> None:
             if message["type"] == "http.response.start":
                 row["status"] = message["status"]
+            elif message["type"] == "http.response.body" and self.page_life and message.get("body"):
+                message = {**message, "body": self.told_life(path, message["body"])}
             await send(message)
 
         await self.real(scope, receive, watched_send)
@@ -486,6 +557,7 @@ async def main() -> None:
         "officePhone": env.ctx.cfg.office_phone,
         "brand": env.ctx.cfg.brand_name,
         "linkSeconds": args.link_seconds or env.ctx.cfg.watch_url_seconds,
+        "rateLimit": args.rate_limit,  # "off": only clients from 198.18.0.0/15 are limited
         "files": {name: {"bytes": len(data), "moovFirst": moov_first(data)} for name, data in files.items()},
     }
 
@@ -512,6 +584,9 @@ async def main() -> None:
             await env.run(sa.update(db.videos).where(db.videos.c.id == row.id).values(address=q["address"][:200]))
         if q.get("link_seconds"):
             bucket.link_seconds[row.object_key] = int(q["link_seconds"])
+            harness.page_life[row.token] = max(1, int(q["link_seconds"]) * 9 // 10)
+        if q.get("refusal"):
+            bucket.refusal[row.object_key] = q["refusal"]
         if q.get("throttle") or q.get("first_byte_ms"):
             bucket.throttle[row.object_key] = (int(q.get("throttle") or 0), int(q.get("first_byte_ms") or 0))
         if q.get("pulled"):
@@ -562,6 +637,25 @@ async def main() -> None:
         bucket.dead_before[row.object_key] = time.time()
         return JSONResponse({"ok": True})
 
+    async def pull(request: Request) -> Response:
+        row = await videos.by_token(env.ctx, request.query_params.get("token", ""))
+        if row is None:
+            return JSONResponse({"error": "no such token"}, status_code=404)
+        await videos.pull(env.ctx, row.id, "office", "browser tests: pulled while the customer had the page open")
+        return JSONResponse({"ok": True})
+
+    async def stall(request: Request) -> Response:
+        row = await videos.by_token(env.ctx, request.query_params.get("token", ""))
+        if row is None:
+            return JSONResponse({"error": "no such token"}, status_code=404)
+        if row.object_key not in bucket.throttle:
+            return JSONResponse({"error": "only a video filmed with throttle= can be stalled"}, status_code=400)
+        if request.query_params.get("on", "1") in ("1", "true", "yes"):
+            bucket.held.add(row.object_key)
+        else:
+            bucket.held.discard(row.object_key)
+        return JSONResponse({"ok": True, "stalled": row.object_key in bucket.held})
+
     async def bucket_seen(request: Request) -> Response:
         return JSONResponse(bucket.requests)
 
@@ -572,6 +666,8 @@ async def main() -> None:
         Route("/__test/state", state),
         Route("/__test/email", email),
         Route("/__test/expire", expire, methods=["POST"]),
+        Route("/__test/pull", pull, methods=["POST"]),
+        Route("/__test/stall", stall, methods=["POST"]),
         Route("/__test/bucket", bucket_seen),
     ])
 

@@ -15,10 +15,11 @@
 html{-webkit-text-size-adjust:100%}
 body{margin:0;font-family:Rubik,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:19px;line-height:1.45;color:var(--ink);background:#fff}
 .wrap{max-width:560px;margin:0 auto;padding:14px 16px 40px}
-header.top{display:flex;align-items:center;gap:12px;padding:2px 0 12px}
-header.top img{width:58px;height:58px;flex:none}
-header.top p,header.top h1{margin:0;font-size:18px;font-weight:600;line-height:1.25}
-header.top small{display:block;font-size:15px;font-weight:400;color:#5b4a70;margin-top:2px}
+/* No flex gap: iPhones before iOS 14.5 and TVs before 2021 do not know it. */
+header.top{display:flex;align-items:center;padding:2px 0 12px}
+header.top img{width:58px;height:58px;flex:none;margin-right:12px}
+header.top p,header.top h1{margin:0;font-size:18px;font-weight:600;line-height:1.25;min-width:0;overflow-wrap:break-word}
+header.top small{display:block;font-size:16px;font-weight:400;color:#5b4a70;margin-top:2px}
 h1{font-size:26px;line-height:1.2;font-weight:700;margin:22px 0 10px}
 h2{font-size:22px;line-height:1.25;font-weight:700;margin:26px 0 10px}
 p{margin:0 0 14px}
@@ -27,11 +28,21 @@ a{color:var(--violet)}
 .btn:active{background:var(--violet)}
 .btn.ghost{background:#fff;color:var(--purple);border:3px solid var(--purple)}
 .btn.quiet{background:var(--soft);color:var(--ink);font-weight:600;font-size:18px;min-height:52px}
+/* A ring a keyboard or a TV remote user can see from across a room; engines that can tell a
+   mouse from a key drop it for the mouse, older ones keep it. */
+.btn:focus,footer a:focus,summary:focus{outline:4px solid #932FFB;outline-offset:3px}
+.btn:focus:not(:focus-visible),footer a:focus:not(:focus-visible),summary:focus:not(:focus-visible){outline:0}
+/* A phone number stays in one piece while it fits, and wraps inside its button when a
+   customer has made the page very large. */
+.nb{display:inline-block}
 .card{background:var(--soft);border-radius:16px;padding:18px;margin-top:18px}
-.ok{background:var(--lime);color:#000;border-radius:14px;padding:16px;font-weight:600;font-size:20px;text-align:center}
+/* White with a lime frame, not a lime block: phones that force a dark page turn the words
+   white, and white on lime cannot be read. */
+.ok{background:#fff;border:4px solid var(--lime);color:#000;border-radius:14px;padding:14px;font-weight:600;font-size:20px;text-align:center}
 .note{background:var(--yellow);color:#000;border-radius:12px;padding:12px 14px;font-weight:600;margin-bottom:14px}
 footer{margin-top:34px;font-size:16px;color:#5b4a70;text-align:center}
 footer a{display:inline-block;padding:13px 10px;min-height:48px}
+@media (forced-colors:active){.btn{border:3px solid ButtonText}}
 {% block style %}{% endblock %}
 </style>
 </head>

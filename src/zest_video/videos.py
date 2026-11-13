@@ -321,6 +321,7 @@ async def complete(ctx: Ctx, device: Device, video_id: str, body: dict[str, Any]
         await audit(ctx, "tech", device.tech_id, "video_uploaded", video_id=video_id, customer_id=video.customer_id,
                     detail={"bytes": stored.size})
         await clear_flags(ctx, db.flags.c.dedupe == f"stuck:{video_id}", "system", "it arrived")
+        await _check_format(ctx, video, stored.size)
         if video.not_on_list and not video.demo:
             said = f' He said: "{video.spoken_text[:200]}"' if video.spoken_text else ""
             await raise_flag(
@@ -354,6 +355,53 @@ async def delete_by_tech(ctx: Ctx, device: Device, video_id: str) -> dict[str, A
 
 
 # -- the email ----------------------------------------------------------------
+
+
+PLAYS_EVERYWHERE = {"avc1", "avc3"}  # H.264: every browser, phone and TV customers own
+SAMPLE_PEEK = 256 * 1024
+
+
+def video_format(data: bytes) -> str | None:
+    """The video codec named in an MP4's track tables ('avc1' is H.264, 'hvc1'/'hev1' HEVC),
+    or None when this slice of the file does not hold them."""
+    found = []
+    at = data.find(b"stsd")
+    while at != -1:
+        entry = data[at + 16: at + 20]  # stsd, 4 version/flags, 4 count, 4 entry size, then the format
+        if len(entry) == 4 and entry.isalnum():
+            found.append(entry.decode("ascii", "replace"))
+        at = data.find(b"stsd", at + 4)
+    video = [f for f in found if f not in ("mp4a", "ac-3", "ec-3", "alac", "Opus", "samr")]
+    return video[0] if video else None
+
+
+async def _check_format(ctx: Ctx, video: Any, size: int) -> None:
+    """Tell the office when a phone sends a video that some customers cannot play.
+
+    The app records H.264, which plays everywhere. If a phone ever sends HEVC instead (a
+    changed setting, an iOS update, a bug in the export), customers on Windows Chrome,
+    Firefox and older Android phones hear the sound over a black picture and nothing
+    reports an error. Nothing is converted here; the video still goes out, because most
+    phones and every Apple device play it. Best effort: an unreadable file raises nothing."""
+    if video.demo:
+        return
+    try:
+        data = await ctx.storage.read_range(video.object_key, 0, SAMPLE_PEEK) or b""
+        fmt = video_format(data)
+        if fmt is None and size > SAMPLE_PEEK:  # the track tables are at the end of this file
+            fmt = video_format(await ctx.storage.read_range(video.object_key, size - SAMPLE_PEEK, SAMPLE_PEEK) or b"")
+    except Exception:  # noqa: BLE001 - storage trouble must never fail an upload that is already confirmed
+        return
+    if fmt is None or fmt in PLAYS_EVERYWHERE:
+        return
+    name = "HEVC" if fmt in ("hvc1", "hev1", "dvh1", "dvhe") else fmt
+    who = video.customer_name or "a stop not on the list"
+    await raise_flag(
+        ctx, "bad_format", f"format:{video.id}", day=video.day, tech_id=video.tech_id,
+        customer_id=video.customer_id, video_id=video.id,
+        detail=f"{video.tech_first_name}'s video for {who} was recorded as {name}, not H.264. Many Windows and "
+        "older Android browsers show a black picture for it. Watch it yourself, and have that phone's app checked.",
+    )
 
 
 async def file_unchanged(ctx: Ctx, video: Any) -> bool:
@@ -697,13 +745,24 @@ async def save_score(ctx: Ctx, video: Any, stars: int, comment: str) -> None:
     comment = comment.replace("\x00", "").strip()[:1000]
     now = db.now()
     first = False
-    async with ctx.engine.begin() as conn:
-        updated = await conn.execute(
-            sa.update(db.scores).where(db.scores.c.video_id == video.id).values(stars=stars, comment=comment)
-        )
-        if updated.rowcount == 0:
-            await conn.execute(sa.insert(db.scores).values(video_id=video.id, stars=stars, comment=comment, created_at=now))
-            first = True
+    for attempt in (1, 2):
+        try:
+            async with ctx.engine.begin() as conn:
+                updated = await conn.execute(
+                    sa.update(db.scores).where(db.scores.c.video_id == video.id).values(stars=stars, comment=comment)
+                )
+                first = updated.rowcount == 0
+                if first:
+                    await conn.execute(
+                        sa.insert(db.scores).values(video_id=video.id, stars=stars, comment=comment, created_at=now)
+                    )
+            break
+        except sa.exc.IntegrityError:
+            # Two Sends in the same instant (a double tap on a slow link): the other one
+            # inserted first. Go round once more; this time the row is there to update, so
+            # the customer sees the thank-you and FieldRoutes still gets one review.
+            if attempt == 2:
+                raise
     await audit(ctx, "customer", "link", "score_saved", video_id=video.id, customer_id=video.customer_id,
                 detail={"stars": stars, "first": first})
     if video.demo or video.customer_id is None:
@@ -728,6 +787,15 @@ async def not_my_home(ctx: Ctx, video: Any) -> None:
             detail=f"The person who opened the link for {video.customer_name} said it is not their home. "
             "The link is dead. Move the video to the right customer.",
         )
+
+
+async def has_opted_out(ctx: Ctx, video: Any) -> bool:
+    if video.customer_id is None or video.customer_id <= 0:
+        return False
+    async with ctx.engine.connect() as conn:
+        return (
+            await conn.execute(sa.select(db.email_optouts).where(db.email_optouts.c.customer_id == video.customer_id))
+        ).first() is not None
 
 
 async def opt_out(ctx: Ctx, video: Any) -> None:

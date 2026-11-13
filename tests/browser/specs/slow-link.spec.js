@@ -5,7 +5,7 @@
 //   * the whole connection is throttled through Chrome's own network emulation: Chromium only.
 
 const {
-  test, expect, checkGap, projectFacts, videoState, waitForMetadata, pressPlay, waitForTime, press,
+  test, expect, projectFacts, videoState, waitForMetadata, pressPlay, waitForTime, press,
 } = require('../lib/harness');
 
 const hold = (ms) => async (route) => { await new Promise((r) => setTimeout(r, ms)); await route.continue(); };
@@ -27,8 +27,7 @@ test('a slow bucket: the page is usable at once, the video starts when it can, n
   await waitForMetadata(page, 30_000);
   // The player keeps its place while the video is on its way, so the form below does not jump under a finger.
   const formAfter = (await page.locator('#score').boundingBox()).y;
-  const jump = Math.round(Math.abs(formAfter - formBefore));
-  checkGap(testInfo, 'page-jumps-when-video-loads', jump <= 4 ? '' : `the score form moves ${jump} px when the video's details arrive`, 'the page jumps when the video loads');
+  expect(Math.round(Math.abs(formAfter - formBefore)), 'the score form moved when the video\'s details arrived: the page jumped under the customer\'s finger').toBeLessThanOrEqual(4);
   testInfo.annotations.push({ type: 'slow bucket', description: `player knew the video's length after ${Date.now() - started} ms` });
   expect(await pressPlay(page, testInfo)).not.toBe('');
   await waitForTime(page, 0.5, 40_000);
@@ -39,10 +38,13 @@ test('a slow bucket: the page is usable at once, the video starts when it can, n
   expect(await problems.list()).toEqual([]);
 });
 
-test('slow page files: words show before the font arrives, and the player works before the script', async ({ page, clip, server }, testInfo) => {
+test('slow page files: words show before the font arrives, and a play pressed before the script arrives is still counted', async ({ page, clip, server }, testInfo) => {
+  let letTheScriptThrough;
+  const scriptHeld = new Promise((resolve) => { letTheScriptThrough = resolve; });
   await page.route('**/static/rubik.woff2*', hold(2500));
   await page.route('**/static/logo.png*', hold(2500));
-  await page.route('**/static/watch.js*', hold(9000)); // long enough that play is pressed first in every engine
+  // watch.js stays on its way until this test has pressed play: the same order in every engine.
+  await page.route('**/static/watch.js*', async (route) => { await scriptHeld; await route.continue(); });
   await page.goto(clip.watch, { waitUntil: 'commit' });
   // font-display:swap: the heading is readable in the fallback font while Rubik is still on its way.
   await expect(page.locator('h1')).toBeVisible({ timeout: 2000 });
@@ -54,17 +56,42 @@ test('slow page files: words show before the font arrives, and the player works 
   expect(early.width, 'the heading has no text while the font loads').toBeGreaterThan(50);
   expect(early.logoSpace, 'the logo keeps its place while it loads, so nothing jumps').toBe(58);
 
-  // The customer presses play before watch.js has arrived.
+  // The player is the browser's own: it works before watch.js has arrived, and the customer presses play.
   await waitForMetadata(page);
   expect(await pressPlay(page, testInfo)).not.toBe('');
   await waitForTime(page, 0.5);
   expect((await server.state(clip.token)).hits.played, 'watch.js is still held back, so nothing can have been posted yet').toBe(0);
+
+  // Now the script arrives and finds a video that is already playing. That customer is
+  // watching: without the check at the end of watch.js the server was never told, and the
+  // office saw "not watched" for everyone on a slow connection who pressed play quickly.
+  letTheScriptThrough();
   await page.waitForLoadState('load', { timeout: 30_000 });
-  await page.waitForTimeout(1500);
-  expect((await videoState(page)).time, 'the video should have been playing all along').toBeGreaterThan(0.5);
-  const state = await server.state(clip.token);
-  checkGap(testInfo, 'play-before-script-is-not-counted', state.played === 1 ? '' : `the video is playing but the server recorded ${state.played} plays`,
-    'a play that started before watch.js loaded was never reported');
+  await expect.poll(async () => (await server.state(clip.token)).played, { message: 'a play that started before watch.js arrived was never reported' }).toBe(1);
+  const s = await videoState(page);
+  expect(s.error).toBe('');
+  expect(s.time, 'the video should have been playing all along').toBeGreaterThan(0.5);
+  await page.waitForTimeout(1200);
+  expect((await server.state(clip.token)).hits.played, 'and it must be told once, not once per event').toBe(1);
+});
+
+test.describe('a tall window (a tablet held upright)', () => {
+  // The first CI run saw the old player grow when the video's details arrived on an iPad in
+  // WebKit, pushing the score form down. The box is now fixed by the page's own CSS (the full
+  // column wide, 9:16 or 74% of the window tall, whichever is smaller), in every engine.
+  test.use({ viewport: { width: 810, height: 1080 } });
+  test('the player keeps its place and size while the video is on its way', async ({ page, server }) => {
+    const clip = await server.newVideo({ first_byte_ms: 3000 });
+    await page.goto(clip.watch, { waitUntil: 'domcontentloaded' });
+    expect((await videoState(page)).ready, 'the bucket has not sent a byte yet').toBe(0);
+    const before = { player: await page.locator('#v').boundingBox(), form: await page.locator('#score').boundingBox() };
+    await waitForMetadata(page, 30_000);
+    const after = { player: await page.locator('#v').boundingBox(), form: await page.locator('#score').boundingBox() };
+    expect(Math.abs(after.form.y - before.form.y), 'the score form moved when the video\'s details arrived').toBeLessThanOrEqual(4);
+    expect(Math.abs(after.player.width - before.player.width), 'the player changed width when the video\'s details arrived').toBeLessThanOrEqual(2);
+    expect(Math.abs(after.player.height - before.player.height), 'the player changed height when the video\'s details arrived').toBeLessThanOrEqual(2);
+    expect(before.player.height, 'before the video arrives the player must already be a tall box, not a 150 px band').toBeGreaterThan(300);
+  });
 });
 
 test('Chrome on a throttled connection (400 ms delay, 500 kbit/s): loads, plays', async ({ page, clip, problems }, testInfo) => {

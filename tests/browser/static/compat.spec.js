@@ -48,6 +48,13 @@ const USES = [
   { id: 'playsinline', title: 'playsinline (video plays in the page on an iPhone)', find: /playsinline/, since: { chrome: 1, safari: 1, ios_saf: 10, samsung: 1, firefox: 1 } },
   { id: 'fetch', title: 'fetch()', find: /\bfetch\(/, caniuse: 'fetch' },
   { id: 'referrer-policy', title: 'Referrer Policy', find: /name="referrer"/, caniuse: 'referrer-policy' },
+  // Added with the fix round of 2026-11-13 (the drawn stars, the old-engine player box, contrast themes):
+  { id: 'css-featurequeries', title: '@supports (CSS feature queries)', find: /@supports\s*\(/, caniuse: 'css-featurequeries' },
+  { id: 'forced-colors', title: '@media (forced-colors) and the system colours Canvas, CanvasText, Highlight', find: /forced-colors/, since: { chrome: 89, safari: 16, ios_saf: 16, samsung: 15, firefox: 89 } },
+  { id: 'svg-html5', title: 'Inline SVG in HTML (the stars)', find: /<svg\b/, caniuse: 'svg-html5' },
+  { id: 'wordwrap', title: 'overflow-wrap: break-word', find: /overflow-wrap\s*:/, caniuse: 'wordwrap' },
+  { id: 'css-sel3', title: 'CSS3 selectors (:not(), :checked, ~)', find: /:not\(|:checked/, caniuse: 'css-sel3' },
+  { id: 'outline', title: 'CSS outline and outline-offset (the focus rings)', find: /outline-offset\s*:/, caniuse: 'outline' },
 ];
 
 function versionOf(text) {

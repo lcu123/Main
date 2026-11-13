@@ -9,7 +9,7 @@
 // video as watched.
 
 const {
-  test, expect, videoState, waitForMetadata, pressPlay, waitForTime, sidewaysScroll, insideFirstScreen, shot, projectFacts,
+  test, expect, videoState, waitForMetadata, pressPlay, waitForTime, sidewaysScroll, insideFirstScreen, shot,
 } = require('../lib/harness');
 
 const URL_UNDER_TEST = process.env.LIVE_WATCH_URL || '';
@@ -25,8 +25,7 @@ test('LIVE: the real page opens with nothing wrong and fits the screen', async (
   expect(response.headers()['cache-control']).toBe('no-store');
   await expect(page.locator('h1')).toContainText('A video from');
   await waitForMetadata(page, 30_000);
-  const width = projectFacts(testInfo).width;
-  if (width >= 326) expect.soft(await sidewaysScroll(page), 'the page scrolls sideways').toEqual([]);
+  expect.soft(await sidewaysScroll(page), 'the page scrolls sideways').toEqual([]);
   expect.soft(await insideFirstScreen(page, 'header.top h1', 'the heading')).toBe('');
   await shot(page, testInfo, 'LIVE');
   expect(posts, 'opening the page must post nothing').toEqual([]);

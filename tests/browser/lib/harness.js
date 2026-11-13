@@ -35,6 +35,12 @@ const test = base.test.extend({
       /** What the server and the bucket recorded for one link. */
       state: (token) => control('/state?token=' + token),
       expire: (token) => control('/expire?token=' + token, { method: 'POST' }),
+      /** The office takes the video down, now. */
+      pull: (token) => control('/pull?token=' + token, { method: 'POST' }),
+      /** The bucket stops sending this video in mid-answer (a dropped signal), or lets it flow again. Needs throttle=. */
+      stall: (token, on = true) => control(`/stall?token=${token}&on=${on ? 1 : 0}`, { method: 'POST' }),
+      /** An address of this test's own for which the REAL rate limiter is on (see serve.py). Send it as X-Forwarded-For. */
+      limitedAddress: () => `198.18.${1 + Math.floor(Math.random() * 250)}.${1 + Math.floor(Math.random() * 250)}`,
       emailUrl: (token) => `${CONTROL}/email?token=${token}`,
     });
   },
@@ -189,6 +195,10 @@ function videoState(page) {
       time: v.currentTime, duration: v.duration, width: v.videoWidth, height: v.videoHeight,
       ready: v.readyState, network: v.networkState, error: v.error ? `${v.error.code} ${v.error.message || ''}`.trim() : '',
       buffered, noteShown: !document.getElementById('verr').hidden,
+      // '' | 'failed' ("The video did not load. Press here to try again.") | 'trying' ("Trying again...",
+      // while a try by hand runs) | 'slow' ("Your signal is weak...")
+      note: document.getElementById('verr').hidden ? '' : (/did not load/.test(document.getElementById('verr').textContent) ? 'failed'
+        : (/Trying again/.test(document.getElementById('verr').textContent) ? 'trying' : 'slow')),
       canPlay: v.canPlayType('video/mp4; codecs="avc1.640028, mp4a.40.2"'),
     };
   });
@@ -243,27 +253,55 @@ function playButtonSpots(box, engine) {
 async function toggle(page, testInfo, want, { allowScript = true, as = '' } = {}) {
   const { engine } = projectFacts(testInfo);
   const input = as || projectFacts(testInfo).input;
-  const done = () => (want === 'play' ? isPlaying(page) : isPaused(page));
   const video = page.locator('#v');
   await video.scrollIntoViewIfNeeded();
+  // "It took": the player has changed its mind about being paused. After the END of the clip
+  // an engine may need a moment to go back to the start, and `ended` stays true meanwhile; a
+  // second tap in that moment would pause it again (that race failed one run in CI on
+  // WebKit). So a tap is only repeated somewhere else when the first one changed nothing.
+  const took = async (wait = 900) => {
+    const deadline = Date.now() + wait;
+    for (;;) {
+      const s = await videoState(page);
+      if (s && (want === 'play' ? !s.paused : s.paused)) return true;
+      if (Date.now() > deadline) return false;
+      await page.waitForTimeout(100);
+    }
+  };
+  // "It is done": really playing (not paused, not sitting at the end), or really paused.
+  const done = async (wait = 8000) => {
+    const deadline = Date.now() + wait;
+    for (;;) {
+      const s = await videoState(page);
+      if (s && (want === 'play' ? (!s.paused && !s.ended) : s.paused)) return true;
+      // It was started and something stopped it again (an error, another hand): not done.
+      if (s && want === 'play' && s.paused && !s.seeking) return false;
+      if (Date.now() > deadline) return false;
+      await page.waitForTimeout(100);
+    }
+  };
 
   if (input === 'dpad') {
     await focusByArrows(page, '#v');
     await page.keyboard.press('Enter');
-    if (await done()) return 'remote: OK on the player';
+    if (await took() && await done()) return 'remote: OK on the player';
   } else {
     const box = await video.boundingBox();
     for (const spot of playButtonSpots(box, engine)) {
       if (input === 'touch') await page.touchscreen.tap(spot.x, spot.y);
       else await page.mouse.click(spot.x, spot.y);
-      if (await done()) return `${input === 'touch' ? 'tap' : 'click'}: ${spot.name}`;
+      if (await took()) {
+        if (await done()) return `${input === 'touch' ? 'tap' : 'click'}: ${spot.name}`;
+        break; // it took and then stopped: pressing more places would only toggle it back and forth
+      }
     }
-    if (input === 'mouse') {
+    if (input === 'mouse' && !(await took(0))) {
       await video.focus();
       await page.keyboard.press('Space');
-      if (await done()) return 'keyboard: space bar on the player';
+      if (await took() && await done()) return 'keyboard: space bar on the player';
     }
   }
+  if (await done(0)) return 'a press that took late';
   if (!allowScript) return '';
   await page.evaluate((w) => {
     const v = document.getElementById('v');
@@ -271,7 +309,7 @@ async function toggle(page, testInfo, want, { allowScript = true, as = '' } = {}
     v.pause();
     return undefined;
   }, want);
-  return (await done()) ? 'script' : '';
+  return (await done(4000)) ? 'script' : '';
 }
 
 const pressPlay = (page, testInfo, options) => toggle(page, testInfo, 'play', options);
@@ -283,6 +321,77 @@ async function waitForTime(page, seconds, timeout = 20_000) {
     const s = await videoState(page);
     return s.error ? `error ${s.error}` : (s.time >= seconds || s.ended ? 'there' : `at ${s.time.toFixed(2)} s, readyState ${s.ready}`);
   }, { message: `the video did not play past ${seconds} s`, timeout }).toBe('there');
+}
+
+/**
+ * Keep a list of everything the yellow note under the player says from now on, with the
+ * second it said it: a note that shows for a moment and goes again is still something the
+ * customer saw. Call after the page has loaded; read with notesShown().
+ */
+async function watchNote(page) {
+  await page.evaluate(() => {
+    if (window.__notes) return;
+    window.__notes = [];
+    const box = document.getElementById('verr');
+    const start = Date.now();
+    const look = () => {
+      const now = box.hidden ? '' : box.textContent.trim();
+      const last = window.__notes.length ? window.__notes[window.__notes.length - 1].text : '';
+      if (now !== last) window.__notes.push({ at: (Date.now() - start) / 1000, text: now });
+    };
+    new MutationObserver(look).observe(box, { attributes: true, childList: true, characterData: true, subtree: true });
+    look();
+    // And count how often the page loads the video's source afresh from now on.
+    window.__reloads = 0;
+    document.getElementById('v').addEventListener('loadstart', () => { window.__reloads += 1; });
+  });
+}
+
+/**
+ * How many times the page has loaded the video's source afresh since watchNote(). This is the
+ * page's own doing (watch.js asking for a new link), whatever the engine: Firefox and Safari
+ * ask /w/<token>/video again for every piece of the file by themselves, so the server's count
+ * of requests says nothing about it there.
+ */
+function sourceReloads(page) {
+  return page.evaluate(() => window.__reloads || 0);
+}
+
+/** Every text the note has shown since watchNote(), in order (the empty string is "hidden"). */
+function notesShown(page) {
+  return page.evaluate(() => (window.__notes || []).filter((n) => n.text).map((n) => n.text));
+}
+
+/**
+ * The player's box and the picture inside it. The <video> element is as wide as the column so
+ * that the browser's own control bar has room for its buttons; the picture (9:16) sits in the
+ * middle of it, letterboxed by the browser. `wrong` lists whatever would squash or crop it.
+ */
+function pictureInPlayer(page) {
+  return page.evaluate(() => {
+    const v = document.getElementById('v');
+    const r = v.getBoundingClientRect();
+    const frame = v.parentElement.getBoundingClientRect();
+    const fit = getComputedStyle(v).objectFit;
+    const wrong = [];
+    if (!['contain', 'scale-down'].includes(fit)) wrong.push(`object-fit is "${fit}": the picture would be ${fit === 'cover' ? 'cropped' : 'stretched'} to fill the box`);
+    if (!v.videoWidth || !v.videoHeight) wrong.push('the video has no picture size yet');
+    const shape = v.videoWidth / v.videoHeight;
+    if (v.videoWidth && Math.abs(shape - 9 / 16) > 0.01) wrong.push(`the clip is ${v.videoWidth}x${v.videoHeight}, not 9:16`);
+    // The picture as the browser draws it: as big as fits in the box, shape kept.
+    const scale = Math.min(r.width / (v.videoWidth || 9), r.height / (v.videoHeight || 16));
+    const picture = { width: (v.videoWidth || 9) * scale, height: (v.videoHeight || 16) * scale };
+    if (picture.width > r.width + 0.5 || picture.height > r.height + 0.5) wrong.push('the picture does not fit inside the player');
+    if (Math.abs(r.width - frame.width) > 1 || Math.abs(r.left - frame.left) > 1) wrong.push(`the player is ${Math.round(r.width)} px wide in a ${Math.round(frame.width)} px column: its control bar loses that room`);
+    if (Math.abs(r.height - frame.height) > 1) wrong.push(`the player (${Math.round(r.height)} px) and its black frame (${Math.round(frame.height)} px) are not the same height`);
+    return {
+      box: { x: r.left, y: r.top, width: r.width, height: r.height },
+      column: frame.width,
+      picture: { width: Math.round(picture.width), height: Math.round(picture.height) },
+      fit,
+      wrong,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -300,6 +409,29 @@ function focusedIs(page, selector) {
     if (active.tagName === 'LABEL' && target.id && active.htmlFor === target.id) return true;
     return false;
   }, selector);
+}
+
+/**
+ * The key that moves the focus to the NEXT control for a keyboard user of this browser.
+ * Safari on a Mac moves only between text boxes with a plain Tab unless the user has turned on
+ * "Press Tab to highlight each item on a webpage"; Option+Tab is the key that reaches every
+ * control (buttons, links, radio buttons), and it is what a Safari keyboard user presses. That
+ * is Safari's long-standing default, not something the page decides. WebKit on Linux and
+ * every other engine use the plain Tab.
+ */
+function tabKey(testInfo, { back = false } = {}) {
+  const option = projectFacts(testInfo).engine === 'webkit' && process.platform === 'darwin';
+  return `${option ? 'Alt+' : ''}${back ? 'Shift+' : ''}Tab`;
+}
+
+/** Tab (or Shift+Tab) until `selector` has the focus. Returns how many presses it took. */
+async function tabTo(page, testInfo, selector, { max = 30, back = false } = {}) {
+  const key = tabKey(testInfo, { back });
+  for (let presses = 1; presses <= max; presses += 1) {
+    await page.keyboard.press(key);
+    if (await focusedIs(page, selector)) return presses;
+  }
+  throw new Error(`${key} never reached ${selector} in ${max} presses`);
 }
 
 /** A TV remote: press arrows until the focus is on `selector`. Fails if it cannot be reached. */
@@ -451,6 +583,8 @@ async function shot(page, testInfo, suffix = '') {
 
 const { PNG } = require('pngjs');
 
+const colourDistance = (p, q) => Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) + Math.abs(p[2] - q[2]);
+
 /** A picture of the area around one element, as { width, height, data } (RGBA). */
 async function pixelsAround(page, selector, pad = 8) {
   const target = page.locator(selector).first();
@@ -490,6 +624,38 @@ function twoColours(png) {
   return [background, ink];
 }
 
+/** The colour of a small square of the page around (x, y) in CSS px: the middle value of each channel. */
+async function colourAt(page, x, y, half = 2) {
+  const png = PNG.sync.read(await page.screenshot({ clip: { x: x - half, y: y - half, width: 2 * half, height: 2 * half }, animations: 'disabled', caret: 'hide' }));
+  const channel = (offset) => {
+    const values = [];
+    for (let i = offset; i < png.data.length; i += 4) values.push(png.data[i]);
+    values.sort((a, b) => a - b);
+    return values[values.length >> 1];
+  };
+  return [channel(0), channel(1), channel(2)];
+}
+
+/**
+ * The colour of a line drawn on a picture: the most common colour that is clearly neither of
+ * `not` (the fill and the card behind it). null when there is no such line.
+ */
+function lineColour(png, not, least = 90) {
+  const counts = new Map();
+  for (let i = 0; i < png.data.length; i += 4) {
+    const c = [png.data[i], png.data[i + 1], png.data[i + 2]];
+    if (not.some((n) => colourDistance(c, n) < least)) continue;
+    const key = ((c[0] >> 3) << 10) | ((c[1] >> 3) << 5) | (c[2] >> 3);
+    const seen = counts.get(key) || { n: 0, sum: [0, 0, 0] };
+    seen.n += 1; seen.sum[0] += c[0]; seen.sum[1] += c[1]; seen.sum[2] += c[2];
+    counts.set(key, seen);
+  }
+  const best = [...counts.values()].sort((a, b) => b.n - a.n)[0];
+  // A few stray blended pixels are not a line: ask for at least half a percent of the picture.
+  if (!best || best.n < (png.data.length / 4) * 0.005) return null;
+  return best.sum.map((v) => Math.round(v / best.n));
+}
+
 function luminance([r, g, b]) {
   const f = (c) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
   return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
@@ -501,13 +667,13 @@ function contrast(a, b) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-const colourDistance = (p, q) => Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) + Math.abs(p[2] - q[2]);
 
 module.exports = {
-  pixelsAround, pixelsChanged, twoColours, contrast, colourDistance, knownToFail, gapVerdict,
+  pixelsAround, pixelsChanged, twoColours, contrast, colourDistance, colourAt, lineColour, knownToFail, gapVerdict,
   test, expect, control, CONTROL, PORT,
   projectFacts, gapFor, checkGap,
   videoState, waitForMetadata, pressPlay, pressPause, waitForTime, isPlaying, isPaused,
-  press, focusByArrows, focusedIs,
+  watchNote, notesShown, sourceReloads, pictureInPlayer,
+  press, focusByArrows, focusedIs, tabKey, tabTo,
   sidewaysScroll, tapTargets, textSizes, insideFirstScreen, shot,
 };

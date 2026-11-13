@@ -8,6 +8,6 @@
 <h1>{{ title or "This video is no longer available." }}</h1>
 <p>{{ message or "If you think this is a mistake, please call our office." }}</p>
 {% if office_phone %}
-<a class="btn" href="tel:{{ office_phone }}">Call our office</a>
+<a class="btn" href="tel:{{ office_phone }}">Call our office <span class="nb">{{ office_phone | phone }}</span></a>
 {% endif %}
 {% endblock %}

@@ -8,6 +8,7 @@
 <body style="margin:0;padding:0;background:#F6F1FB;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F6F1FB;">
   <tr><td align="center" style="padding:24px 12px;">
+    <!--[if mso]><table role="presentation" width="520" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#ffffff;border-radius:16px;">
       <tr><td align="center" style="padding:28px 24px 8px;">
         <img src="{{ base_url }}/static/logo.png" width="96" height="97" alt="{{ brand }}" style="display:block;border:0;">
@@ -26,7 +27,14 @@
       </td></tr>
       {% endif %}
       <tr><td align="center" style="padding:22px 28px 8px;">
-        <a href="{{ link }}" style="display:block;background:#6E20B9;color:#ffffff;text-decoration:none;border-radius:14px;padding:18px 20px;font:700 22px/1.2 Arial,Helvetica,sans-serif;">&#9654;&nbsp; Watch your video</a>
+        <!-- The link is the whole button everywhere. Classic Outlook ignores padding on a
+             link, so the cell around it carries the colour and Outlook's own padding. The
+             triangle is U+25BA, which no phone turns into a colour emoji. -->
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+          <td align="center" bgcolor="#6E20B9" style="border-radius:14px;mso-padding-alt:18px 20px;">
+            <a href="{{ link }}" style="display:block;background:#6E20B9;color:#ffffff;text-decoration:none;border-radius:14px;padding:18px 20px;font:700 22px/1.2 Arial,Helvetica,sans-serif;">&#9658;&nbsp; Watch your video</a>
+          </td>
+        </tr></table>
       </td></tr>
       <tr><td style="padding:14px 28px 28px;font:400 15px/1.5 Arial,Helvetica,sans-serif;color:#5b4a70;" align="center">
         Questions? Just reply to this email{% if office_phone %} or call <a href="tel:{{ office_phone }}" style="color:#5600C6;">{{ office_phone | phone }}</a>{% endif %}.
@@ -36,6 +44,7 @@
       {{ brand }} sent this because we just serviced your property.
       <a href="{{ unsubscribe }}" style="color:#4a3b5e;">Stop these video emails</a>.
     </p>
+    <!--[if mso]></td></tr></table><![endif]-->
   </td></tr>
 </table>
 </body>

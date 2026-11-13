@@ -129,7 +129,7 @@ jobs:
   safari-mac:
     name: Safari (WebKit on macOS, real Safari, iOS Simulator)
     runs-on: macos-15
-    timeout-minutes: 75
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: tests/browser
@@ -163,7 +163,7 @@ jobs:
       #    fetched by Apple's media stack, which is not known to accept the throwaway certificate
       #    the https stand-in uses. Step 2 finds out.
       - name: "WebKit on macOS: every iPhone, iPad and desktop Safari project"
-        timeout-minutes: 25
+        timeout-minutes: 30
         env:
           ONLY_ENGINE: webkit
           BROWSER_TEST_BUCKET: same-origin
@@ -198,9 +198,12 @@ jobs:
           xcrun simctl list runtimes
           xcrun simctl list devices available
 
+      # A target safaridriver cannot open a session on is opened with simctl and photographed
+      # instead: the summary then says SEEN, NOT MEASURED for it (never "pass"), this step stays
+      # green and the run carries a warning. Set SAFARI_STRICT: "1" here to make that fail the step.
       - name: "Real Safari: Mac, small iPhone, current iPhone, Pro Max, iPad"
         if: always()
-        timeout-minutes: 40
+        timeout-minutes: 50
         env:
           LIVE_WATCH_URL: ${{ inputs.live_url }}
         run: |

@@ -7,7 +7,7 @@
 
 const {
   test, expect, checkGap, projectFacts,
-  videoState, waitForMetadata, pressPlay, pressPause, waitForTime, press, textSizes,
+  videoState, waitForMetadata, pressPlay, pressPause, waitForTime, press, textSizes, pictureInPlayer, insideFirstScreen,
 } = require('../lib/harness');
 
 test('with the remote in pointer mode: click the player, it plays; pick a star, send', async ({ page, clip, server }, testInfo) => {
@@ -89,13 +89,17 @@ test('from the sofa: the words are big enough to read at 3 metres', async ({ pag
     'text is too small to read from the sofa');
 });
 
-test('from the sofa: the video takes up most of the screen height', async ({ page, clip }, testInfo) => {
+test('from the sofa: the picture takes up most of the screen height', async ({ page, clip }, testInfo) => {
   await page.goto(clip.watch);
   await waitForMetadata(page);
-  const { height } = projectFacts(testInfo);
-  const box = await page.locator('#v').boundingBox();
-  const share = box.height / height;
-  testInfo.annotations.push({ type: 'player size', description: `${Math.round(box.width)}x${Math.round(box.height)} px, ${(share * 100).toFixed(0)}% of the screen height` });
-  checkGap(testInfo, 'tv-4k-player-is-small', share >= 0.6 ? '' : `the player is ${(share * 100).toFixed(0)}% of the screen height`, 'the player is small on the TV');
+  const { width, height } = projectFacts(testInfo);
+  const player = await pictureInPlayer(page);
+  const share = player.picture.height / height;
+  testInfo.annotations.push({ type: 'player size', description: `${Math.round(player.box.width)}x${Math.round(player.box.height)} px box, ${player.picture.width}x${player.picture.height} px picture: ${(share * 100).toFixed(0)}% of the screen height` });
+  expect(player.wrong, 'the picture is squashed or cropped, or the player does not fill its column').toEqual([]);
+  // 74% of the window on every TV size. A browser that reports the full 3840x2160 used to get
+  // a 560 px column and a picture 43% of the screen tall; the column now widens with the window.
+  expect(share, `the picture is only ${(share * 100).toFixed(0)}% of the screen height in a ${width}x${height} window`).toBeGreaterThanOrEqual(0.7);
+  expect(await insideFirstScreen(page, '#v', 'the player'), 'the player must be whole on the first screen: a remote scrolls badly').toBe('');
   expect((await videoState(page)).error).toBe('');
 });

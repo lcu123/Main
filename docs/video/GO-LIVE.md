@@ -99,6 +99,31 @@ on and off and none lost; one ride-along day where every video lands on the
 right customer; your own account gets the email, plays the video, leaves a
 score, and the score shows in FieldRoutes.
 
+### Five checks only a real phone and a real TV can make
+
+The simulator and the browser tests cannot see these. Each takes a few minutes
+with the first real video a tech records. None needs any code.
+
+1. **The file itself.** After the first real videos arrive, look at the office
+   page. There should be no flag reading "Video may not play for every
+   customer". The server reads each file as it lands and raises that flag by
+   itself if a phone ever sends a format (HEVC) that many Windows and older
+   Android browsers show as a black picture.
+2. **Leave it open.** Open a watch link on an iPhone and in the Gmail app on an
+   Android phone, leave the page 16 minutes, then press play. It should play.
+   (Chrome keeps an old link and the page repairs it by itself; this confirms
+   the repair on real phones.)
+3. **A TV.** Open a watch link in a smart TV's own browser and press OK on the
+   player. Then AirPlay it from an iPhone and Cast it from Chrome. The picture
+   should be upright each time. If it lies on its side on any of them, tell
+   Claude which: the phone app can turn the picture before it uploads.
+4. **Classic Outlook on Windows.** Open the video email there. The button
+   should be a purple bar with white words.
+5. **Weak signal.** Play a video on one bar of signal. It may stop and start;
+   it should say so ("Your signal is weak...") and carry on by itself. If real
+   videos stutter for many customers, the recording quality can be lowered a
+   little; that is your call, after seeing real footage.
+
 ## 8. Submit to Apple — owner
 
 Follow [`APP-REVIEW.md`](APP-REVIEW.md). It lists the usual reasons Apple

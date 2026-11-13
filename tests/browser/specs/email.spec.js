@@ -26,6 +26,25 @@ test('the email shows one big button, fits the screen, and the button opens the 
   expect(html).not.toMatch(/<script|<style|<link/i);
   expect(Buffer.byteLength(html)).toBeLessThan(102_000);
 
+  // The triangle on the button is U+25BA. U+25B6, the "play" sign, is drawn as a colour emoji
+  // by iPhones and Android phones: a blue square in the middle of the purple button.
+  expect(await button.textContent()).toContain('\u25BA');
+  expect(html, 'the button must not carry U+25B6, which phones turn into an emoji').not.toMatch(/&#9654;|\u25B6/);
+
+  // Classic Outlook (Word's engine; no test machine runs it) ignores padding on a link and
+  // max-width on a table. What can be checked here is that the two things it needs are in
+  // the message: the colour and Outlook's own padding on the CELL round the link, and a
+  // fixed-width table just for Outlook, inside conditional comments every other app skips.
+  const cell = button.locator('xpath=ancestor::td[1]');
+  await expect(cell).toHaveAttribute('bgcolor', '#6E20B9');
+  expect(await cell.getAttribute('style'), 'the cell needs mso-padding-alt, or Outlook draws a button with no room round its words').toMatch(/mso-padding-alt:\s*18px 20px/);
+  expect(html, 'the fixed-width table for Outlook is missing').toMatch(/<!--\[if mso\]><table[^>]*width="520"/);
+  expect((html.match(/<!--\[if mso\]>/g) || []).length, 'each Outlook-only opening needs its closing').toBe(2);
+  expect(html).toMatch(/<!--\[if mso\]><\/td><\/tr><\/table><!\[endif\]-->/);
+  // The whole coloured cell is as tall as the link in it: no dead strip a finger could hit without opening the video.
+  const cellBox = await cell.boundingBox();
+  expect(Math.abs(cellBox.height - box.height), 'the link should fill its coloured cell').toBeLessThanOrEqual(2);
+
   await button.click();
   await expect(page).toHaveURL(server.info.watch);
   await waitForMetadata(page);

@@ -195,6 +195,7 @@ async def audit(
 FLAG_WORDS = {
     "no_video": "Stop finished with no video",
     "file_changed": "Video file changed or missing",
+    "bad_format": "Video may not play for every customer",
     "stuck_upload": "Video stuck on the phone",
     "wrong_house": "May be the wrong house",
     "not_my_home": "Customer said: not my home",

@@ -43,7 +43,10 @@ PAGE_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Content-Security-Policy": (
-        "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self'; "
+        # blob: in img-src is for Safari's own player, which draws some of its icons (the
+        # AirPlay and picture-in-picture cards) from blob: addresses; only this page's own
+        # script could ever make one, and script-src is 'self'.
+        "default-src 'none'; img-src 'self' data: blob:; style-src 'unsafe-inline'; font-src 'self'; "
         "script-src 'self'; media-src 'self' https:; connect-src 'self'; form-action 'self'; "
         "frame-ancestors 'none'; base-uri 'none'"
     ),
@@ -87,14 +90,21 @@ def routes(ctx: Ctx) -> list[Any]:
     def gone(request: Request, status: int = 410) -> HTMLResponse:
         return page(ctx, "gone.html", status=status)
 
-    async def find(request: Request, *, limit: int = 120) -> Any | None:
-        """The video behind this link, or None. Guessing tokens gets slow fast."""
+    async def find(request: Request, *, limit: int = 120, key: str = "watch") -> Any | None:
+        """The video behind this link, or None. Guessing tokens gets slow fast.
+
+        Page opens and the player's own requests are counted apart (`key`), so a player
+        that asks for the video many times cannot use up the allowance for opening the
+        page: a household or an office behind one address shares these numbers."""
         ip = client_ip(request)
-        if not ctx.limiter.allow(f"watch:{ip}", limit, 60):
-            raise ApiError(429, "slow_down", "Too many tries. Wait a minute.")
+        wait = ctx.limiter.retry_after(f"{key}:{ip}", limit, 60)
+        if wait:
+            raise ApiError(429, "slow_down", "Too many tries. Wait a minute.", retry_after=wait)
         video = await videos.by_token(ctx, request.path_params["token"])
-        if video is None and not ctx.limiter.allow(f"watch-miss:{ip}", 20, 600):
-            raise ApiError(429, "slow_down", "Too many tries. Wait a few minutes.")
+        if video is None:
+            wait = ctx.limiter.retry_after(f"watch-miss:{ip}", 20, 600)
+            if wait:
+                raise ApiError(429, "slow_down", "Too many tries. Wait a few minutes.", retry_after=wait)
         return video
 
     def guarded(handler: Any) -> Any:
@@ -103,7 +113,22 @@ def routes(ctx: Ctx) -> list[Any]:
                 return await handler(request)
             except ApiError as exc:
                 if exc.status == 429:
-                    return page(ctx, "gone.html", status=429, message="Too many tries. Please wait a minute and try again.")
+                    # Not "no longer available": the video is fine, this address is just asking
+                    # fast. It is the address that is counted, not the link: a neighbour behind
+                    # the same connection may never have opened theirs.
+                    wait = int(exc.extra.get("retry_after") or 60)
+                    minutes = max(1, (wait + 29) // 60)
+                    resp = page(
+                        ctx,
+                        "gone.html",
+                        status=429,
+                        title="Please wait a minute" if minutes <= 1 else "Please wait a few minutes",
+                        message="Too many visits have come from your internet connection. Wait "
+                        + ("a minute" if minutes <= 1 else f"{minutes} minutes")
+                        + ", then open your link again.",
+                    )
+                    resp.headers["Retry-After"] = str(wait)
+                    return resp
                 return page(ctx, "gone.html", status=exc.status, message=exc.message)
 
         return endpoint
@@ -120,12 +145,22 @@ def routes(ctx: Ctx) -> list[Any]:
             score=score,
             thanks=request.query_params.get("thanks") == "1",
             recorded=ctx.local(video.recorded_at),
+            # A little under the life of the storage link the player is sent to. Past it,
+            # watch.js asks for a new link as soon as the player is stuck.
+            link_life=max(1, ctx.cfg.watch_url_seconds * 9 // 10),
         )
 
     async def stream(request: Request) -> Response:
-        """The player's source. Redirects to a fresh signed bucket URL on every request,
-        so the bucket stays private and a page left open for an hour still plays."""
-        video = await find(request, limit=600)
+        """The player's source. Redirects to a fresh signed bucket URL on every request, so
+        the bucket stays private.
+
+        Safari and Firefox come back here for more of the file and so always hold a fresh
+        link. Chromium (Chrome, Edge, Samsung Internet, Android mail apps) remembers where
+        the redirect pointed and keeps using that link, which dies after
+        `watch_url_seconds`; watch.js notices the failure and asks here again. The life is
+        kept short on purpose: a pulled video's file stays in the bucket, and the short
+        link is what stops it being watched."""
+        video = await find(request, limit=600, key="stream")
         if not videos.is_watchable(video) or not await videos.file_unchanged(ctx, video):
             return PlainTextResponse("This video is no longer available.", status_code=410, headers=PAGE_HEADERS)
         url = ctx.storage.get_url(video.object_key, ctx.cfg.watch_url_seconds)
@@ -153,6 +188,10 @@ def routes(ctx: Ctx) -> list[Any]:
 
     async def not_my_home(request: Request) -> Response:
         video = await find(request)
+        if request.method != "POST":
+            # Someone reopened or reloaded the address the form posts to. A GET must never
+            # take a video down (link scanners send GETs): just show them the link's page.
+            return RedirectResponse(f"/w/{request.path_params['token']}", status_code=303)
         if videos.is_watchable(video):
             await videos.not_my_home(ctx, video)
         return page(ctx, "gone.html", status=200, title="Thank you",
@@ -162,8 +201,10 @@ def routes(ctx: Ctx) -> list[Any]:
         video = await find(request)
         if video is None:
             return gone(request, 404)
-        if request.method == "POST":
-            await videos.opt_out(ctx, video)
+        if request.method == "POST" or await videos.has_opted_out(ctx, video):
+            if request.method == "POST":
+                await videos.opt_out(ctx, video)
+            # Also what a customer sees on opening the link again later: not the question twice.
             return page(ctx, "gone.html", title="Done", message="You will not get video emails from us anymore.")
         return page(ctx, "unsubscribe.html", video=video)
 
@@ -229,7 +270,7 @@ def routes(ctx: Ctx) -> list[Any]:
         Route("/w/{token}/video", guarded(stream)),
         Route("/w/{token}/played", guarded(played), methods=["POST"]),
         Route("/w/{token}/score", guarded(score), methods=["POST"]),
-        Route("/w/{token}/not-my-home", guarded(not_my_home), methods=["POST"]),
+        Route("/w/{token}/not-my-home", guarded(not_my_home), methods=["GET", "POST"]),
         Route("/u/{token}", guarded(unsubscribe), methods=["GET", "POST"]),
         Route("/hooks/resend", resend_hook, methods=["POST"]),
         Mount("/static", CachedStatic(directory=str(STATIC_DIR)), name="static"),

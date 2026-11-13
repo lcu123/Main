@@ -9,8 +9,9 @@
 //          webkit   = Safari on iPhone, iPad and Mac, and EVERY browser and mail app on iOS
 //          firefox  = Firefox
 // input    touch = taps, mouse = clicks, dpad = a TV remote: arrow keys and OK only
-// extras   'deep' = also runs the slower specs (script off, expiring links, slow link, a file
-//          that is not faststart, colour schemes, zoom, the email); 'tv' = also runs tv.spec.js
+// extras   'deep' = also runs the slower specs (script off, expiring links, a video that will
+//          not load, slow link, a file that is not faststart, colour schemes, zoom, the email);
+//          'tv' = also runs tv.spec.js
 const TABLE = [
   // Desktop: the three engines.
   ['Desktop Chrome',               'chromium', 'Desktop Chrome',               'mouse', 'deep'],
@@ -93,7 +94,7 @@ const missing = Object.keys(have).filter((engine) => !have[engine]);
 
 // Everything every row runs, and what the 'deep' and 'tv' rows add.
 const CORE = ['watch.spec.js', 'other-pages.spec.js'];
-const DEEP = ['noscript.spec.js', 'expiring-links.spec.js', 'slow-link.spec.js',
+const DEEP = ['noscript.spec.js', 'expiring-links.spec.js', 'recovery.spec.js', 'slow-link.spec.js',
   'non-faststart.spec.js', 'page-weight.spec.js', 'colour-schemes.spec.js', 'email.spec.js', 'old-engines.spec.js'];
 const DESK = ['keyboard.spec.js', 'zoom-reflow.spec.js'];
 const TV = ['keyboard.spec.js', 'tv.spec.js', 'old-engines.spec.js'];

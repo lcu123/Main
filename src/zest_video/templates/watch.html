@@ -1,20 +1,50 @@
 {% extends "_base.html" %}
 {% block title %}Your service video · {{ brand }}{% endblock %}
 {% block style %}
-.player{background:#000;border-radius:16px;overflow:hidden;display:flex;justify-content:center}
-.player video{display:block;width:auto;max-width:100%;height:auto;max-height:74vh;aspect-ratio:9/16;background:#000}
-#verr{margin-top:12px}
-.stars{display:flex;flex-direction:row-reverse;justify-content:center;gap:4px;margin:6px 0 14px}
+/* On a very tall screen (a 4K TV at full scale) the column widens so the player can keep
+   growing. This page only: the text pages keep their reading width. */
+.wrap{max-width:max(560px,46vh)}
+/* The player. Engines without aspect-ratio (iPhones before iOS 15, TVs before 2021) get a
+   box of fixed height, so the page does not jump when the video's size arrives; newer ones
+   get the 9:16 box. Either way the box is the full width of the column, so the browser's
+   own control bar has room for its buttons when the phone is on its side or the page is
+   zoomed; the picture sits in the middle of it. */
+.player{background:#000;border-radius:16px;overflow:hidden}
+.player video{display:block;width:100%;height:74vh;background:#000}
+@supports (aspect-ratio:1/1){.player video{height:auto;aspect-ratio:9/16;max-height:74vh;max-height:max(74vh,240px)}}
+.player video:focus{outline:5px solid #FFF515;outline-offset:-5px}
+.player video:focus:not(:focus-visible){outline:0}
+#verr{display:block;width:100%;margin-top:12px;border:0;text-align:left;font:inherit;font-weight:600;cursor:pointer}
+#verr[hidden]{display:none}
+#verr:focus{outline:4px solid #932FFB;outline-offset:3px}
+#verr:focus:not(:focus-visible){outline:0}
+/* The space after the brace matters: a brace and a hash together open a template comment. */
+@media (forced-colors:active){ #verr{border:3px solid ButtonText} }
+/* The stars. Drawn, not typed: a typed star comes from whatever symbol font the device has,
+   in a width nobody controls. Hollow means not picked and filled means picked, so the
+   difference does not rest on colour: an unpicked star has no fill at all, so it stays
+   hollow when a phone darkens the page by itself. They share the row, so five always fit.
+   Written 5 to 1 and laid out right to left, which lets "this one and those before it" be
+   filled with no script. */
+.stars{display:flex;flex-direction:row-reverse;justify-content:center;margin:6px 0 14px}
 .stars input{position:absolute;opacity:0;width:1px;height:1px}
-.stars label{font-size:54px;line-height:1;color:#cdbfe0;cursor:pointer;padding:2px 3px}
-.stars input:checked~label,.stars label:hover,.stars label:hover~label{color:#F5B800}
-.stars input:focus-visible+label{outline:3px solid var(--bright);border-radius:8px}
+.stars label{flex:0 1 66px;min-width:0;min-height:44px;padding:4px 3px;color:transparent;cursor:pointer}
+.stars svg{display:block;width:100%;height:auto;fill:currentColor;stroke:#5600C6;stroke-width:1.6;stroke-linejoin:round}
+.stars input:checked~label,.stars label:hover,.stars label:hover~label{color:#5600C6}
+.stars input:focus+label{outline:3px solid #932FFB;border-radius:8px}
+.stars input:focus:not(:focus-visible)+label{outline:0}
+/* Read out, not shown: the name of each star. */
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media (forced-colors:active){.stars label{color:Canvas}.stars svg{stroke:CanvasText}.stars input:checked~label,.stars label:hover,.stars label:hover~label{color:Highlight}}
 textarea{width:100%;min-height:96px;border:2px solid var(--line);border-radius:12px;padding:12px;font:400 19px/1.4 Rubik,system-ui,sans-serif;margin-bottom:14px}
 textarea:focus{outline:3px solid var(--bright);border-color:var(--bright)}
 details{margin-top:22px;font-size:17px}
-details summary{cursor:pointer;color:#5b4a70;padding:8px 0}
+details summary{cursor:pointer;color:#5b4a70;padding:12px 0}
+details[open] summary{margin-bottom:8px}
 details .btn{margin-top:10px}
 .gap{margin-top:14px}
+/* Script switched off: this link is then the only way to start the video in some browsers. */
+noscript a{display:inline-block;padding:11px 0;min-height:44px}
 {% endblock %}
 {% block body %}
 <header class="top">
@@ -24,12 +54,16 @@ details .btn{margin-top:10px}
 </header>
 
 <div class="player">
-  <video id="v" controls playsinline preload="metadata" src="/w/{{ video.token }}/video#t=0.1"
-         data-played="/w/{{ video.token }}/played">
+  <video id="v" controls playsinline preload="metadata" width="720" height="1280" src="/w/{{ video.token }}/video#t=0.1"
+         data-played="/w/{{ video.token }}/played" data-life="{{ link_life }}">
     Your browser cannot play this video.
   </video>
 </div>
-<div id="verr" class="note" hidden>The video did not load. Check your signal and tap play again.</div>
+{# role="status": a screen reader says the note when it appears and when its words change. #}
+<div role="status"><button type="button" id="verr" class="note" hidden
+        data-slow="Your signal is weak or has dropped. The video carries on by itself when it is back."
+        data-trying="Trying again...">The video did not load. Press here to try again.</button></div>
+<noscript><p class="gap"><a href="/w/{{ video.token }}/video">Open the video by itself</a></p></noscript>
 
 <div class="card" id="score">
 {% if score %}
@@ -40,7 +74,7 @@ details .btn{margin-top:10px}
     <div class="stars" role="radiogroup" aria-label="Stars">
       {% for n in [5, 4, 3, 2, 1] %}
       <input type="radio" name="stars" id="s{{ n }}" value="{{ n }}" required>
-      <label for="s{{ n }}" aria-label="{{ n }} star{{ "s" if n > 1 }}">★</label>
+      <label for="s{{ n }}"><svg viewBox="0 0 24 24" width="48" height="48" aria-hidden="true" focusable="false"><path d="M12 1.6l3.2 6.6 7.2 1-5.2 5.1 1.2 7.2L12 18.1l-6.4 3.4 1.2-7.2L1.6 9.2l7.2-1z"/></svg><span class="vh">{{ n }} star{{ "s" if n > 1 }}</span></label>
       {% endfor %}
     </div>
     <textarea name="comment" maxlength="1000" placeholder="Anything you want us to know? (optional)" aria-label="Comment"></textarea>
@@ -50,7 +84,7 @@ details .btn{margin-top:10px}
 </div>
 
 {% if office_phone %}
-<a class="btn ghost gap" href="tel:{{ office_phone }}">Call our office</a>
+<a class="btn ghost gap" href="tel:{{ office_phone }}">Call our office <span class="nb">{{ office_phone | phone }}</span></a>
 {% endif %}
 
 <details>
