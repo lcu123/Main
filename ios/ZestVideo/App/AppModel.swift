@@ -847,7 +847,9 @@ final class AppModel: ObservableObject {
         }
         let outcome = TwoKeys.signals(
             transcript: transcript, fix: draft.location, recordedAt: draft.recordedAt,
-            stop: stop, all: stops, farMeters: config.farMeters
+            stop: stop, all: stops, farMeters: config.farMeters,
+            // "This is Sam with Zest" must not point at a customer called Sam.
+            techName: tech?.firstName
         )
         // Only keys that can be read for this stop count towards the two.
         let verdict = TwoKeys.verdict(outcome.signals, stop: stop)

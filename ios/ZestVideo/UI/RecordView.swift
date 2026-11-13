@@ -272,37 +272,46 @@ struct RecordView: View {
         return VStack(spacing: 12) {
             RecordingPill(steady: reduceMotion || app.seeds.frozenElapsed != nil)
             PromptCard(
-                startedAt: startedAt, maxSeconds: maxSeconds, prompts: app.config.prompts,
+                startedAt: startedAt, maxSeconds: maxSeconds,
+                // "Hi {name}" becomes "Hi Jane": the name is all he has to say.
+                prompts: PromptText.fill(app.config.prompts, name: app.target?.greeting),
                 frozenElapsed: app.seeds.frozenElapsed
             )
 
-            Spacer(minLength: 4)
+            // The ring takes the record button's place and size, in the
+            // middle of the room that is left under the words to say. Only
+            // when a very long name makes those words taller than usual is
+            // it a little smaller, so that nothing is squeezed or cut off.
+            GeometryReader { room in
+                let wordsHeight = (Theme.size(.bodyBold) * 2.5 + 16) * typeScale
+                let side = max(120, min(diameter, room.size.height - wordsHeight - 12))
+                VStack(spacing: 12) {
+                    // Tapping the ring ends the clip early (after the first
+                    // three seconds).
+                    Button(action: capturePressed) {
+                        CountdownRing(
+                            startedAt: startedAt, maxSeconds: maxSeconds, diameter: side,
+                            lineWidth: min(Theme.ringStroke, side * 0.12), frozenElapsed: app.seeds.frozenElapsed
+                        )
+                        .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Stops by itself. Double tap to finish early.")
+                    .accessibilityIdentifier("countdown-ring")
 
-            // The ring takes the record button's place and size. Tapping
-            // it ends the clip early (after the first three seconds).
-            Button(action: capturePressed) {
-                CountdownRing(
-                    startedAt: startedAt, maxSeconds: maxSeconds, diameter: diameter,
-                    lineWidth: Theme.ringStroke, frozenElapsed: app.seeds.frozenElapsed
-                )
-                .contentShape(Circle())
+                    Text("Stops by itself. Tap to finish early.")
+                        .zestFont(.bodyBold)
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.7)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.black.opacity(0.65)))
+                        .accessibilityHidden(true)
+                }
+                .frame(width: room.size.width, height: room.size.height)
             }
-            .buttonStyle(.plain)
-            .accessibilityHint("Stops by itself. Double tap to finish early.")
-            .accessibilityIdentifier("countdown-ring")
-
-            Text("Stops by itself. Tap to finish early.")
-                .zestFont(.bodyBold)
-                .foregroundColor(.white)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.7)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.black.opacity(0.65)))
-                .accessibilityHidden(true)
-
-            Spacer(minLength: 4)
         }
         .padding(.horizontal, Theme.gutter + 6)
         .padding(.top, 18)
@@ -374,6 +383,11 @@ private struct RecordingPill: View {
 }
 
 /// The four things to say, one at a time, each for its share of the clip.
+///
+/// The card is as tall as its tallest line for the whole clip, so the ring
+/// under it does not jump when the words change. A long name ("Hi Greater
+/// Riverbend Homeowners Association") wraps to three lines and shrinks; it
+/// is never cut off.
 private struct PromptCard: View {
     let startedAt: Date
     let maxSeconds: Double
@@ -388,18 +402,33 @@ private struct PromptCard: View {
                 Text("\(index + 1) of \(prompts.count)")
                     .zestFont(.bodyBold)
                     .foregroundColor(Theme.ringYellow)
-                Text(prompts.isEmpty ? "" : prompts[index])
-                    .zestFont(.prompt)
-                    .foregroundColor(.white)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.6)
+                ZStack {
+                    // Every line, unseen, to hold the card's height steady.
+                    ForEach(Array(prompts.enumerated()), id: \.offset) { item in
+                        words(item.element)
+                            .hidden()
+                            .accessibilityHidden(true)
+                    }
+                    words(prompts.isEmpty ? "" : prompts[index])
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .background(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous).fill(Color.black.opacity(0.65)))
             .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("prompt-card")
         }
+    }
+
+    private func words(_ line: String) -> some View {
+        Text(line)
+            .zestFont(.prompt)
+            .foregroundColor(.white)
+            .multilineTextAlignment(.center)
+            .lineLimit(3)
+            .minimumScaleFactor(0.5)
+            // Its full height always: the ring below gives way instead.
+            .fixedSize(horizontal: false, vertical: true)
     }
 }

@@ -198,8 +198,9 @@ enum ScreenshotMode {
             shot.target = RecordTarget(stop: target)
             shot.recordPhase = .recording
             shot.seeds.standInPicture = true
-            // Held still 6.2 seconds in: the ring is part-drained around a 9.
-            shot.seeds.frozenElapsed = 6.2
+            // Held still 2.2 seconds in: the first thing to say ("Hi Jane")
+            // is up, and the ring has begun to drain around a 13.
+            shot.seeds.frozenElapsed = 2.2
             app.camera.setScreenshotState(status: .recording, recordingStartedAt: now)
         case .review:
             shot.route = .review
@@ -353,15 +354,15 @@ enum ScreenshotMode {
 
     private static let cleanCheck = CheckResult(
         signals: Signals(spoken: .match, gps: .match, checkIn: .unknown), clean: true, reasons: [],
-        better: nil, transcript: "This is Sam at the Smith home on Main Street."
+        better: nil, transcript: "Hi Jane. Here's what I did. Here's what I recommend. I closed the backyard gate."
     )
 
-    /// The tech picked one stop but said the neighbour's name.
+    /// The tech picked one stop but said "Hi" to the neighbour by name.
     private static func warningCheck(better: Stop) -> CheckResult {
         let signals = Signals(spoken: .mismatch, gps: .match, checkIn: .unknown)
         return CheckResult(
             signals: signals, clean: false, reasons: TwoKeys.verdict(signals).reasons,
-            better: better, transcript: "This is Sam at the neighbour's home."
+            better: better, transcript: PromptText.fill("Hi {name}. Here's what I did.", name: better.greetingName)
         )
     }
 

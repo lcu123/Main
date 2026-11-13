@@ -128,6 +128,8 @@ final class PerformanceUITests: ZestUITestCase {
         executionTimeAllowance = 600
         resetServer(route: "long")
         let customers = Array(301...310)
+        // One set of words for twelve customers, so no first name: the street,
+        // a silent backup, is what the spoken key goes by here.
         launchSignedIn(transcript: "this is the stop on Maple Row", metrics: true, firstStop: customers[0])
         pause(1.5)
 

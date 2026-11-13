@@ -68,7 +68,7 @@ final class ScreensUITests: ZestUITestCase {
         case "record":
             return Plan(anchor: "record-button", actions: ["record-button", "BACK"], showing: ["flip-button"])
         case "recording":
-            return Plan(anchor: "countdown-ring", actions: ["countdown-ring"], showing: ["recording-pill"])
+            return Plan(anchor: "countdown-ring", actions: ["countdown-ring"], showing: ["recording-pill", "prompt-card"])
         case "review":
             return Plan(anchor: "SAVE", actions: ["SAVE", "RECORD AGAIN"], showing: ["recommend-switch", "clip"])
         case "warning":
@@ -126,7 +126,7 @@ final class ScreensUITests: ZestUITestCase {
         // address, the 45-letter business, the 24-letter word. (CI takes
         // pictures of more; each check here costs a launch of the app.)
         for index in [2, 4, 9] {
-            for screen in ["record", "review", "stopvideo"] {
+            for screen in ["record", "recording", "review", "stopvideo"] {
                 problems += inspect(screen, odd: index, audits: [.textClipped])
             }
         }
@@ -168,11 +168,45 @@ final class ScreensUITests: ZestUITestCase {
 
         var problems: [String] = []
         problems += layoutProblems(plan, on: name)
+        if screen == "recording" {
+            problems += promptProblems(on: name, usualRoute: odd == nil)
+        }
         if Self.bigText {
             problems += textSizeProblems(on: name, screen: screen)
         }
         if Self.runAudit {
             problems += auditProblems(audits, on: name, screen: screen)
+        }
+        return problems
+    }
+
+    // MARK: The words to say
+
+    /// The picture is taken on the first of the four lines: "Hi" and the
+    /// customer's first name. The name must be in, whole, with no "{name}"
+    /// left showing; and the card must be inside the screen above the ring.
+    private func promptProblems(on name: String, usualRoute: Bool) -> [String] {
+        let card = element("prompt-card")
+        guard card.exists else { return [] }   // reported as missing by the layout check
+        var problems: [String] = []
+        let words = card.label
+        if words.contains("{") || words.contains("}") {
+            problems.append("\(name): the words to say still show the placeholder: \"\(words)\".")
+        }
+        if !words.contains("1 of 4") || !words.contains("Hi") {
+            problems.append("\(name): the first thing to say should be \"Hi\" and the name, 1 of 4; it reads \"\(words)\".")
+        }
+        if usualRoute, !words.contains("Hi Jane") {
+            problems.append("\(name): the first thing to say should be \"Hi Jane\"; it reads \"\(words)\".")
+        }
+        let ring = element("countdown-ring")
+        if ring.exists {
+            if card.frame.maxY > ring.frame.minY + 1.5 {
+                problems.append("\(name): the words to say run into the ring (words end at y \(Int(card.frame.maxY)), ring starts at y \(Int(ring.frame.minY))).")
+            }
+            if ring.frame.width < 118 {
+                problems.append("\(name): the ring is only \(Int(ring.frame.width)) points wide; it must stay at least 120.")
+            }
         }
         return problems
     }

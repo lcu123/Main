@@ -42,6 +42,10 @@ struct RecordTarget: Codable, Equatable {
     var cityLine: String
     var appointmentIds: [Int]
     var notOnMyList: Bool
+    /// What the tech calls the customer in "Hi {name}": the first name, or
+    /// a business's name. Nil for a video with no customer picked (and in a
+    /// recording saved by an older build), which reads as plain "Hi".
+    var greeting: String?
 
     init(stop: Stop) {
         customerId = stop.customerId
@@ -51,6 +55,7 @@ struct RecordTarget: Codable, Equatable {
         cityLine = stop.cityLine
         appointmentIds = stop.appointmentIds
         notOnMyList = false
+        greeting = stop.greetingName
     }
 
     private init() {
@@ -60,6 +65,7 @@ struct RecordTarget: Codable, Equatable {
         cityLine = ""
         appointmentIds = []
         notOnMyList = true
+        greeting = nil
     }
 
     static let notOnMyList = RecordTarget()

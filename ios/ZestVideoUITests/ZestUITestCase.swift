@@ -30,8 +30,9 @@ class ZestUITestCase: XCTestCase {
     static let mobile = "9165550100"
     static let code = "123456"
 
-    /// What the speech check "hears" unless a test says otherwise: right for stop 201.
-    static let smithWords = "Hi this is Sam at the Smith home on Main Street"
+    /// What the speech check "hears" unless a test says otherwise: the tech's
+    /// script, with the first name of the customer at stop 201. No street.
+    static let smithWords = "Hi Jane. Here's what I did. Here's what I recommend. I closed the backyard gate."
 
     /// Failure pictures and notes are also written here, where CI picks them up.
     static let failureFolder = ProcessInfo.processInfo.environment["ZEST_FAILURE_DIR"] ?? "/tmp/zest-ui-failures"

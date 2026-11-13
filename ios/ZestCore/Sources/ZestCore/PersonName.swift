@@ -118,6 +118,10 @@ public enum PromptText {
             for mark in [",", ".", "!", "?", ":", ";"] {
                 text = text.replacingOccurrences(of: " " + mark, with: mark)
             }
+            // "Thanks, {name}!" → "Thanks!", not "Thanks,!".
+            for mark in [".", "!", "?"] {
+                text = text.replacingOccurrences(of: "," + mark, with: mark)
+            }
             while let last = text.last, last == "," || last == ":" || last == ";" || last == " " {
                 text.removeLast()
             }

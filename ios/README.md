@@ -54,6 +54,18 @@ No third-party code. Apple frameworks only, system font, one bundled image
   (`StopRanker`), the spoken check (`SpokenMatcher`), the two-keys rule and
   the 10-minute undo window (`TwoKeys`, `HoldWindow`), the upload queue state
   machine (`QueueMachine`), the storage thresholds and the ring's clock maths.
+- **What the tech says** is four short lines, shown one at a time while the
+  camera rolls: "Hi {name}", "Here's what I did", "Here's what I recommend",
+  "I closed the backyard gate". The server sends them; the app puts the
+  customer's first name in place of `{name}` ("Hi Jane"; a business goes by
+  its name; with no name it is plain "Hi") in `PromptText`. He says the
+  name and never the street. The spoken check listens for the first name
+  (2 points) or the last name (3); the street and house number are no
+  longer asked for but still count if he happens to say them. Two customers
+  with the same first name tie, and a tie is not a warning. A first name
+  that is also an everyday word ("Will", "Rose") only counts right after
+  "Hi", a name of one or two letters never counts alone, and the tech's own
+  first name is not taken for a customer's.
 - **AppModel** is the one router. A screen is a value of `route`; there is no
   navigation stack to swipe back through.
 - **A video's life**: record to `.mov` → re-wrap as a fast-start `.mp4`
@@ -244,7 +256,8 @@ xcrun simctl launch --terminate-running-process booted com.zestlawnpest.video -Z
 
 Names: `login`, `code`, `today`, `today2` (the same list scrolled to the end),
 `confirm`, `far`, `record`, `recording`, `review`, `warning`, `saved`,
-`stopvideo`, `locked`, `queue`, `update`.
+`stopvideo`, `locked`, `queue`, `update`. (`recording` is held still on the
+first thing to say, "Hi Jane".)
 
 All of it sits behind `#if targetEnvironment(simulator)`
 (`App/ScreenshotMode.swift`, `UI/StandInPicture.swift`, and a few small hooks),

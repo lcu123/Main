@@ -143,10 +143,10 @@ final class RecordUITests: ZestUITestCase {
         XCTAssertEqual(video.completes, [200])
     }
 
-    /// The words name a different customer: one warning. SAVE ANYWAY sends
-    /// the video as it is, marked as an override.
+    /// The words name a different customer ("Hi Jane" at Robert Johnson's):
+    /// one warning. SAVE ANYWAY sends the video as it is, marked as an override.
     func testTwoKeysWarningSaveAnywaySendsOverride() {
-        launchSignedIn(transcript: "This is the Smith home")
+        launchSignedIn(transcript: "Hi Jane. Here's what I did.")
         openRecorder(for: Self.johnson)
         recordClip()
 
@@ -172,7 +172,7 @@ final class RecordUITests: ZestUITestCase {
     /// The same warning, but the tech picks the stop the words fit: the same
     /// clip goes to that customer, with no override.
     func testTwoKeysWarningPickTheRightStopRetargets() {
-        launchSignedIn(transcript: "This is the Smith home")
+        launchSignedIn(transcript: "Hi Jane. Here's what I did.")
         openRecorder(for: Self.johnson)
         recordClip()
 

@@ -183,6 +183,8 @@ final class NetworkUITests: ZestUITestCase {
         // Twelve houses in a row on Maple Row, customers 301 to 312.
         resetServer(route: "long")
         let customers = Array(301...312)
+        // One set of words for twelve customers, so no first name: the street,
+        // a silent backup, is what the spoken key goes by here.
         launchSignedIn(transcript: "this is the stop on Maple Row", firstStop: customers[0])
         XCTAssertEqual(routeHeader, "Sam. Sent 0 of 12. Waiting 0.")
 

@@ -50,7 +50,7 @@ enum SpeechChecker {
     }
 
     /// - Parameters:
-    ///   - hints: today's last names and street names, so they are spelled as on the route.
+    ///   - hints: today's first names, last names and street names, so they are spelled as on the route.
     ///   - timeout: give up (keeping any partial text) after this long.
     static func transcribe(fileURL: URL, hints: [String], timeout: TimeInterval = 6) async -> String? {
         #if targetEnvironment(simulator)
