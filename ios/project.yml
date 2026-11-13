@@ -65,7 +65,7 @@ targets:
           - tel
         NSCameraUsageDescription: Zest Video uses the camera to record a short video of the property after each visit.
         NSMicrophoneUsageDescription: Zest Video records your voice so the customer can hear what you did.
-        NSSpeechRecognitionUsageDescription: Zest Video listens for the customer's name or street in your video to check it goes to the right home. This happens on your phone.
+        NSSpeechRecognitionUsageDescription: Zest Video listens for the customer's name in your video to check it goes to the right home. This happens on your phone.
         NSLocationWhenInUseUsageDescription: Zest Video uses your location to show the stop you are at and to check the video goes to the right home.
         NSLocationAlwaysAndWhenInUseUsageDescription: Zest Video can remind you to record a video when you leave a stop.
 

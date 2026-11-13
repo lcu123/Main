@@ -54,7 +54,7 @@ enum Fixtures {
       "config": {
         "maxSeconds": 15, "holdMinutes": 10, "farMeters": 150, "minBuild": 1,
         "requireVideo": true, "recommendButton": true, "leaveReminders": true,
-        "prompts": ["Say the name or street", "What I did", "What I saw", "What I recommend"],
+        "prompts": ["Hi {name}", "Here's what I did", "Here's what I recommend", "I closed the backyard gate"],
         "officePhone": "+15555550100"
       },
       "stops": [

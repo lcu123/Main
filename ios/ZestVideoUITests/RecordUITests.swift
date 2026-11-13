@@ -152,7 +152,7 @@ final class RecordUITests: ZestUITestCase {
 
         tap(button("SAVE"), "SAVE")
         waitForTitle("Is this the right stop?")
-        waitForText("I did not hear this name or street.")
+        waitForText("I did not hear this customer's name.")
         waitForText("It sounded like Smith, Jane.")
         XCTAssertTrue(hasText("Johnson, Robert"), "The warning shows the stop that was picked.")
         XCTAssertTrue(server.state().videos.isEmpty, "Nothing is sent while the warning is up.")

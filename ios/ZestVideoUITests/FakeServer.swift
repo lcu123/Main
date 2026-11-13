@@ -36,9 +36,11 @@ struct FakeServer {
     /// - Returns: a device token the server has already signed in, so a test
     ///   can start the app signed in without typing a number and a code.
     ///   `nil` when the server did not answer.
+    /// - Parameter route: "usual" (five stops, one locked) or "long" (twelve
+    ///   stops side by side, customers 301 to 312, none locked).
     @discardableResult
-    func reset(test: String, config: [String: Any] = [:]) -> String? {
-        guard let reply = request("POST", "/__test/reset", json: ["test": test, "config": config]),
+    func reset(test: String, config: [String: Any] = [:], route: String = "usual") -> String? {
+        guard let reply = request("POST", "/__test/reset", json: ["test": test, "config": config, "route": route]),
               reply.status == 200 else { return nil }
         return reply.json["token"] as? String
     }
@@ -159,6 +161,12 @@ struct ServerState {
         ((raw["notes"] as? [[String: Any]]) ?? []).compactMap { $0["note"] as? String }
     }
 
+    /// The numbers the app posted for the performance tests, in order. Each
+    /// is one note: "metric route=today ms=812 memoryMB=41.3 videoFiles=0 ...".
+    var metrics: [AppMetric] {
+        notes.compactMap(AppMetric.init(note:))
+    }
+
     /// How many requests of this kind the app made.
     func count(_ method: String, _ pathPart: String, status: Int? = nil) -> Int {
         requests.filter { entry in
@@ -234,4 +242,33 @@ struct ServerVideo {
     var summary: String {
         "customer \(customerId.map(String.init) ?? "none") state=\(state) registers=\(registers) puts=\(puts) bytes=\(bytes)/\(sizeSent) completes=\(completes) deletes=\(deletes)"
     }
+}
+
+/// One line of numbers from the app (UI-test mode with `ZEST_TEST_METRICS=1`).
+struct AppMetric {
+    /// "route=today", "routeUsable".
+    let name: String
+    let values: [String: Double]
+
+    init?(note: String) {
+        let words = note.split(separator: " ").map(String.init)
+        guard words.count >= 2, words[0] == "metric" else { return nil }
+        name = words[1]
+        var values: [String: Double] = [:]
+        for word in words.dropFirst(2) {
+            let parts = word.split(separator: "=", maxSplits: 1).map(String.init)
+            if parts.count == 2, let number = Double(parts[1]) {
+                values[parts[0]] = number
+            }
+        }
+        self.values = values
+    }
+
+    /// Milliseconds since the app's own code started in that launch.
+    var milliseconds: Double { values["ms"] ?? -1 }
+    var memoryMB: Double { values["memoryMB"] ?? -1 }
+    var videoFiles: Int { Int(values["videoFiles"] ?? -1) }
+    var videoBytes: Int { Int(values["videoBytes"] ?? -1) }
+    var storedBytes: Int { Int(values["storedBytes"] ?? -1) }
+    var tempBytes: Int { Int(values["tempBytes"] ?? -1) }
 }

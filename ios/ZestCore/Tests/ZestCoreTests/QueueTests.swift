@@ -82,6 +82,36 @@ final class QueueTests: XCTestCase {
         XCTAssertEqual(item.progress, 0)
     }
 
+    /// A server that refuses every fresh address must not make the phone
+    /// spin: ask, upload, 403, ask, upload, 403, with no pause.
+    func testAnAddressRefusedAgainAndAgainStartsToWait() {
+        var item = run(Fixtures.item(), .registered(Fixtures.ticket), .uploadFinished(status: 403))
+        XCTAssertNil(item.notBefore, "the first refusal is just an address that ran out")
+        item = run(item, .registered(Fixtures.ticket), .uploadFinished(status: 403))
+        XCTAssertNil(item.notBefore, "and the second")
+        item = run(item, .registered(Fixtures.ticket), .uploadFinished(status: 403))
+        XCTAssertNotNil(item.notBefore, "the third time it waits before asking again")
+        XCTAssertEqual(item.phase, .queued, "and the video is still there to send")
+        XCTAssertTrue(item.needsFile)
+
+        // Once an upload goes through, the count starts again.
+        var fine = run(Fixtures.item(), .registered(Fixtures.ticket), .uploadFinished(status: 403), .registered(Fixtures.ticket), .uploadFinished(status: 403))
+        fine = run(fine, .registered(Fixtures.ticket), .uploadFinished(status: 200))
+        XCTAssertEqual(fine.phase, .uploaded)
+        XCTAssertNil(fine.refusedInARow)
+    }
+
+    /// A queue file written before `refusedInARow` existed still loads.
+    func testAnOlderQueueFileStillLoads() throws {
+        let item = Fixtures.item()
+        let data = try ZestJSON.encoder().encode([item])
+        var text = String(decoding: data, as: UTF8.self)
+        XCTAssertFalse(text.contains("refusedInARow"), "a nil count is simply not written")
+        text = text.replacingOccurrences(of: "\"refusedInARow\":null,", with: "")
+        let back = try ZestJSON.decoder().decode([QueueItem].self, from: Data(text.utf8))
+        XCTAssertEqual(back, [item])
+    }
+
     func testRefusedUploadBacksOff() {
         let item = run(Fixtures.item(), .registered(Fixtures.ticket), .uploadFinished(status: 500))
         XCTAssertEqual(item.phase, .queued)

@@ -30,6 +30,9 @@ import UserNotifications
 ///    server in the middle of a test.
 /// 6. Every upload task's start and end (with the error, if any) is posted
 ///    to the test server, so a failed test's report says why.
+/// 7. With `ZEST_TEST_METRICS=1` (the performance tests only) the app also
+///    posts a line of numbers a second after each screen change: its memory
+///    footprint, what it holds on disk, and the time since it started.
 ///
 /// `-ZestUITestReset 1` wipes everything the app has stored first, so a test
 /// starts from a clean install. With `ZEST_TEST_TOKEN` in the environment
@@ -44,6 +47,7 @@ enum UITestMode {
     static let transcriptVariable = "ZEST_TEST_TRANSCRIPT"
     static let tokenVariable = "ZEST_TEST_TOKEN"
     static let backgroundUploadsVariable = "ZEST_TEST_BACKGROUND_UPLOADS"
+    static let metricsVariable = "ZEST_TEST_METRICS"
 
     static var isOn: Bool { flag(argument) }
 
@@ -78,6 +82,86 @@ enum UITestMode {
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["note": text])
         request.timeoutInterval = 10
         URLSession.shared.dataTask(with: request).resume()
+    }
+
+    // MARK: Numbers for the performance tests
+
+    /// The performance tests asked for numbers.
+    static var wantsMetrics: Bool {
+        isOn && ProcessInfo.processInfo.environment[metricsVariable] == "1"
+    }
+
+    /// When the app's own code first ran in this launch. (The time iOS takes
+    /// to load the app before that is measured by the test, from outside.)
+    static let codeStarted = Date()
+
+    /// Called first thing, so `codeStarted` is as early as it can be.
+    static func markCodeStart() {
+        _ = codeStarted
+    }
+
+    /// The app's memory footprint in bytes: the figure iOS itself goes by
+    /// when it decides an app is using too much. 0 if it cannot be read.
+    static func footprintBytes() -> UInt64 {
+        #if canImport(Darwin)
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), rebound, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return 0 }
+        return UInt64(info.phys_footprint)
+        #else
+        return 0
+        #endif
+    }
+
+    /// Every byte under a folder, however deep.
+    static func bytes(under folder: URL) -> Int64 {
+        guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        var total: Int64 = 0
+        for case let url as URL in walker {
+            total += Files.size(of: url)
+        }
+        return total
+    }
+
+    /// Posts one line of numbers to the test server.
+    @MainActor
+    static func metric(_ name: String) {
+        guard wantsMetrics else { return }
+        let milliseconds = Int(Date().timeIntervalSince(codeStarted) * 1000)
+        let megabytes = (Double(footprintBytes()) / 1_048_576 * 10).rounded() / 10
+        let videoFiles = Files.fileNames(in: Files.videos).count
+        let videoBytes = Files.totalBytes(in: Files.videos)
+        let storedBytes = bytes(under: Files.root)
+        let tempBytes = bytes(under: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true))
+        note(
+            "metric \(name) ms=\(milliseconds) memoryMB=\(megabytes) videoFiles=\(videoFiles) videoBytes=\(videoBytes) "
+                + "storedBytes=\(storedBytes) tempBytes=\(tempBytes)"
+        )
+    }
+
+    /// A screen changed: take the numbers once the new one has settled.
+    @MainActor
+    static func routeChanged(to route: String) {
+        guard wantsMetrics else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            metric("route=\(route)")
+        }
+    }
+
+    @MainActor private static var saidRouteUsable = false
+
+    /// My Route came up with stops on it: say how long that took, once.
+    @MainActor
+    static func routeUsable(stops: Int) {
+        guard wantsMetrics, stops > 0, !saidRouteUsable else { return }
+        saidRouteUsable = true
+        metric("routeUsable stops=\(stops)")
     }
 
     private static func flag(_ name: String) -> Bool {

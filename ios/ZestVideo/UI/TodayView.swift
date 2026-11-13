@@ -57,6 +57,12 @@ struct TodayView: View {
                 }
             }
         }
+        #if targetEnvironment(simulator)
+        .onAppear {
+            // Performance tests only: say when the route could first be used.
+            UITestMode.routeUsable(stops: app.stops.count)
+        }
+        #endif
         .task {
             // Keep the list fresh while it is on screen. Stops with the view.
             while !Task.isCancelled {
@@ -291,17 +297,19 @@ struct StopCard: View {
                                 ActionText(headline)
                             }
                             MetaLines(parts: meta)
+                            // Three lines and a little shrinking: a long
+                            // business name must never end in "…".
                             Text(stop.listName)
                                 .zestFont(.rowName)
                                 .foregroundColor(Theme.ink)
-                                .lineLimit(2)
+                                .lineLimit(3)
                                 .minimumScaleFactor(0.7)
                                 .multilineTextAlignment(.leading)
                                 .fixedSize(horizontal: false, vertical: true)
                             Text(stop.address)
                                 .zestFont(.rowStreet)
                                 .foregroundColor(Theme.ink)
-                                .lineLimit(2)
+                                .lineLimit(3)
                                 .minimumScaleFactor(0.7)
                                 .multilineTextAlignment(.leading)
                                 .fixedSize(horizontal: false, vertical: true)

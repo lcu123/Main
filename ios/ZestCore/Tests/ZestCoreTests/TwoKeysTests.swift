@@ -25,7 +25,7 @@ final class TwoKeysTests: XCTestCase {
         XCTAssertEqual(v.matches, 1)
         XCTAssertEqual(v.mismatched, [.spoken])
         XCTAssertEqual(v.unknown, [.checkIn])
-        XCTAssertEqual(v.reasons, ["I did not hear this name or street."])
+        XCTAssertEqual(v.reasons, ["I did not hear this customer's name."])
         XCTAssertEqual(verdict(.mismatch, .mismatch, .mismatch).reasons.count, 3)
         XCTAssertEqual(verdict(.unknown, .unknown, .unknown).reasons, ["I could not check this is the right stop."])
     }

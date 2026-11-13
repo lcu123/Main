@@ -111,6 +111,7 @@ struct RowState: Equatable {
 final class AppModel: ObservableObject {
     static let shared: AppModel = {
         #if targetEnvironment(simulator)
+        UITestMode.markCodeStart()
         // UI-test reset: wipe the app's storage before any store reads it.
         UITestMode.resetIfAsked()
         #endif
@@ -137,7 +138,14 @@ final class AppModel: ObservableObject {
         case saving
     }
 
-    @Published var route: Route = .login
+    @Published var route: Route = .login {
+        didSet {
+            #if targetEnvironment(simulator)
+            // Performance tests only: numbers for each screen (see UITestMode).
+            UITestMode.routeChanged(to: String(describing: route))
+            #endif
+        }
+    }
     @Published private(set) var tech: TechInfo?
     @Published private(set) var today: TodayResponse?
     @Published private(set) var target: RecordTarget?

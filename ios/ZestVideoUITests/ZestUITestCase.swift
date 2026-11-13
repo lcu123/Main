@@ -38,7 +38,12 @@ class ZestUITestCase: XCTestCase {
 
     private var transcript: String?
     private var backgroundUploads = false
+    private var metrics = false
     private var reported = false
+
+    /// False for tests that open the app's screens with made-up data and
+    /// talk to no server at all (`ScreensUITests`).
+    class var needsServer: Bool { true }
     /// A device token the fake server signed in when it was reset.
     private var issuedToken: String?
 
@@ -59,13 +64,13 @@ class ZestUITestCase: XCTestCase {
     override func setUpWithError() throws {
         try super.setUpWithError()
         continueAfterFailure = false
-        XCTAssertTrue(
-            server.isUp,
-            "The fake server is not answering on \(server.baseURL). Start it first: python3 ios/Scripts/fake_server.py"
-        )
-        // Three-second clips keep the tests quick.
-        issuedToken = server.reset(test: shortName, config: ["maxSeconds": 3])
-        XCTAssertNotNil(issuedToken, "The fake server did not hand over a token when it was reset.")
+        if Self.needsServer {
+            XCTAssertTrue(
+                server.isUp,
+                "The fake server is not answering on \(server.baseURL). Start it first: python3 ios/Scripts/fake_server.py"
+            )
+            resetServer()
+        }
         setLocation(Self.near)
         // A system question ("Allow notifications?") must never hang a test.
         addUIInterruptionMonitor(withDescription: "A system question") { alert in
@@ -78,12 +83,20 @@ class ZestUITestCase: XCTestCase {
         try super.tearDownWithError()
     }
 
+    /// Clean server, new token. Called before every test; a test that wants
+    /// the long route (twelve stops in a row) calls it again before launching.
+    func resetServer(route: String = "usual", config: [String: Any] = ["maxSeconds": 3]) {
+        // Three-second clips keep the tests quick.
+        issuedToken = server.reset(test: shortName, config: config, route: route)
+        XCTAssertNotNil(issuedToken, "The fake server did not hand over a token when it was reset.")
+    }
+
     /// Every failure: say which test, why, what was showing and what the
     /// server saw; keep a picture.
     override func record(_ issue: XCTIssue) {
         if !reported {
             reported = true
-            let log = server.logText()
+            let log = Self.needsServer ? server.logText() : "(this test opens the app's screens with made-up data and uses no server)"
             let note = """
             ######## FAILED \(shortName)
             ######## \(issue.compactDescription)
@@ -119,6 +132,16 @@ class ZestUITestCase: XCTestCase {
         try? Data(text.utf8).write(to: folder.appendingPathComponent(name + ".txt"))
     }
 
+    /// Adds lines to a note kept with the run's results (one file can be
+    /// built up by many tests).
+    func appendNote(named name: String, _ text: String) {
+        let folder = URL(fileURLWithPath: Self.failureFolder, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent(name + ".txt")
+        let old = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        try? Data((old + text + "\n").utf8).write(to: file)
+    }
+
     // MARK: Launching, killing, backgrounding
 
     /// Launches the app in UI-test mode.
@@ -132,13 +155,16 @@ class ZestUITestCase: XCTestCase {
     ///     `nil` means it hears nothing (the spoken key is "unknown").
     ///   - backgroundUploads: use the real background URLSession for uploads
     ///     instead of the ordinary one the tests use by default.
+    ///   - metrics: have the app post its memory, disk and timing numbers
+    ///     (the performance tests).
     func launch(
         reset: Bool = true, signedIn: Bool = false, transcript: String? = ZestUITestCase.smithWords,
-        backgroundUploads: Bool = false
+        backgroundUploads: Bool = false, metrics: Bool = false
     ) {
         if reset {
             self.transcript = transcript
             self.backgroundUploads = backgroundUploads
+            self.metrics = metrics
         }
         var arguments = ["-ZestUITest", "1"]
         if reset {
@@ -151,6 +177,9 @@ class ZestUITestCase: XCTestCase {
         }
         if self.backgroundUploads {
             environment["ZEST_TEST_BACKGROUND_UPLOADS"] = "1"
+        }
+        if self.metrics {
+            environment["ZEST_TEST_METRICS"] = "1"
         }
         // The token is only ever handed over together with a reset: a
         // restart must show what the app itself kept.
@@ -409,12 +438,14 @@ class ZestUITestCase: XCTestCase {
     // MARK: The steps the tests share
 
     /// A clean app, already signed in (no typing), on My Route.
+    /// - Parameter firstStop: a stop that must be on the list (the long
+    ///   route has other customers than the usual one).
     func launchSignedIn(
-        transcript: String? = ZestUITestCase.smithWords, backgroundUploads: Bool = false,
-        file: StaticString = #filePath, line: UInt = #line
+        transcript: String? = ZestUITestCase.smithWords, backgroundUploads: Bool = false, metrics: Bool = false,
+        firstStop: Int = ZestUITestCase.smith, file: StaticString = #filePath, line: UInt = #line
     ) {
-        launch(signedIn: true, transcript: transcript, backgroundUploads: backgroundUploads)
-        waitForRoute(file: file, line: line)
+        launch(signedIn: true, transcript: transcript, backgroundUploads: backgroundUploads, metrics: metrics)
+        waitForRoute(firstStop: firstStop, file: file, line: line)
         XCTAssertEqual(server.state().logins, 0, "Started signed in: nothing was typed.", file: file, line: line)
     }
 
@@ -481,10 +512,10 @@ class ZestUITestCase: XCTestCase {
     }
 
     /// My Route is showing, with its stops loaded.
-    func waitForRoute(file: StaticString = #filePath, line: UInt = #line) {
+    func waitForRoute(firstStop: Int = ZestUITestCase.smith, file: StaticString = #filePath, line: UInt = #line) {
         waitFor(app.buttons["tab-route"], "My Route (its tab bar)", timeout: 40, file: file, line: line)
         answerLocationQuestion()
-        waitFor(stop(Self.smith), "the stops on My Route", timeout: 40, file: file, line: line)
+        waitFor(stop(firstStop), "the stops on My Route", timeout: 40, file: file, line: line)
     }
 
     /// Signing in is when the phone asks about location. Say yes.

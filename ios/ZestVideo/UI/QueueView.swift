@@ -58,7 +58,7 @@ struct QueueView: View {
                             Text(item.customerName)
                                 .zestFont(.rowName)
                                 .foregroundColor(Theme.ink)
-                                .lineLimit(2)
+                                .lineLimit(3)
                                 .minimumScaleFactor(0.7)
                                 .multilineTextAlignment(.leading)
                                 .fixedSize(horizontal: false, vertical: true)

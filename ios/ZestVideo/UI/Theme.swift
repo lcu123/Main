@@ -23,8 +23,10 @@ enum Theme {
     /// Anything that can be tapped: buttons, action words, the active box.
     static let blue = Color(hex: 0x217DE7)
     static let bluePressed = Color(hex: 0x1A64B9)
-    /// The back arrow and its round button.
-    static let cyan = Color(hex: 0x00A7E1)
+    /// The back arrow and its round button. The arrow is a deep cyan: the
+    /// lighter #00A7E1 it started as was only 2.3 to 1 against the pale
+    /// circle, too faint in bright sun. This one is 4.7 to 1.
+    static let cyan = Color(hex: 0x006E94)
     static let paleCyan = Color(hex: 0xCCEFF5)
     /// The selected tab.
     static let navy = Color(hex: 0x1A1353)

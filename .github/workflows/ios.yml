@@ -7,6 +7,12 @@ name: iOS
 #   ui-tests    end-to-end tests: the real app in the simulator against a fake
 #               server on the runner (artifacts "ui-tests-a", "ui-tests-b";
 #               "ui-tests-c" is informational and cannot fail the run)
+#   sizes       every screen on the smallest iPhone, a 6.1-inch iPhone, an iPad
+#               and at the largest text sizes: pictures (artifacts "screens-small",
+#               "screens-odd-names", "screens-mid", "screens-ipad",
+#               "screens-large-text") plus layout checks and Apple's accessibility audit
+#   performance informational: launch time, memory, disk and app size
+#               (artifact "performance", file performance.txt)
 #   testflight  manual only: archive and upload to App Store Connect
 
 on:
@@ -576,7 +582,7 @@ jobs:
             -parallel-testing-enabled NO \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 300 \
-            -maximum-test-execution-time-allowance 300 \
+            -maximum-test-execution-time-allowance 900 \
             $SIGNING \
             $ONLY 2>&1 | tee ui-artifacts/ui-test.log \
             | grep -E "^Test Case|^Test Suite '(All|Selected)|######## (FAILED|On screen)|^NOTE |error:|Executed [0-9]+ tests|\*\* TEST" || true
@@ -660,6 +666,354 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ui-tests-${{ matrix.slug }}
+          path: ios/ui-artifacts
+          if-no-files-found: warn
+
+  sizes:
+    # Every screen on other sizes of phone and of text. Each job takes the
+    # pictures (the app's screenshot mode, as in "screens" above) and then runs
+    # ScreensUITests on the same simulator: the main actions must be on the
+    # screen and tappable, nothing may overlap or run off the side, and Apple's
+    # accessibility audit must find nothing that is not on a short, explained
+    # list. ios/Scripts/screens_job.sh is what each job does.
+    name: Sizes (${{ matrix.name }})
+    if: github.event_name != 'pull_request'
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: smallest iPhone, awkward names
+            variant: small
+            first: screens-small
+            second: screens-odd-names
+          - name: 6.1-inch iPhone, iPad
+            variant: mid-ipad
+            first: screens-mid
+            second: screens-ipad
+          - name: largest text
+            variant: large-text
+            first: screens-large-text
+            second: ""
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Stand-in app icon if the real one is not committed yet
+        run: |
+          ICON="ZestVideo/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+          if [ ! -f "$ICON" ]; then
+            echo "::warning::icon-1024.png is missing; building with a plain purple stand-in."
+            python3 - "$ICON" <<'PY'
+          import struct, sys, zlib
+          size = 1024
+          row = b"\x00" + bytes((0x6E, 0x20, 0xB9)) * size
+          raw = row * size
+          def chunk(kind, data):
+              body = kind + data
+              return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+          png += chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+          open(sys.argv[1], "wb").write(png)
+          PY
+          fi
+      - name: Check the simulator picker against itself
+        run: python3 Scripts/pick_simulator.py --self-test
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Build the app and the UI tests
+        run: |
+          set -o pipefail
+          xcrun simctl list devices available
+          mkdir -p ui-artifacts
+          # One build serves every simulator this job uses.
+          UDID=$(python3 Scripts/pick_simulator.py big)
+          xcodebuild build-for-testing \
+            -project ZestVideo.xcodeproj \
+            -scheme ZestVideoUITests \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet 2>&1 | tee ui-artifacts/build.log
+
+      - name: Compile errors (summary)
+        if: failure()
+        run: |
+          echo "---- errors ----"
+          grep -n "error:" ui-artifacts/build.log | sort -u | head -200 || true
+
+      - name: Pictures and checks
+        run: bash Scripts/screens_job.sh "${{ matrix.variant }}"
+
+      - name: What failed
+        if: failure()
+        run: |
+          # One block per failed test: the screen, and every problem on it
+          # (what is missing, cut off, covered, too small, or flagged by
+          # Apple's audit, with the element it is about).
+          echo "==================== FAILED TESTS ===================="
+          grep -hE "^Test Case .* failed" ui-artifacts/*.log 2>/dev/null || echo "(no test reported a failure: see the logs)"
+          for note in ui-artifacts/failures/*/*.txt; do
+            [ -f "$note" ] || continue
+            case "$note" in *.info.txt) continue ;; esac
+            echo
+            echo "------------------------------------------------------------"
+            echo "pass: $(basename "$(dirname "$note")")"
+            cat "$note"
+            echo
+          done
+          echo
+          echo "==================== CRASH REPORTS ===================="
+          ls -1t ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -i zestvideo | head -5 || echo "none"
+
+      - name: Apple's accessibility audit, every issue
+        if: always()
+        run: |
+          # The whole table, pass or fail: FAILED lines fail the test, "known"
+          # lines are deliberate (the reason is given), "listed" lines are
+          # shown but do not fail yet.
+          found=0
+          for table in ui-artifacts/failures/*/accessibility-audit.*.info.txt; do
+            [ -f "$table" ] || continue
+            found=1
+            echo
+            echo "==================== $(basename "$(dirname "$table")") ===================="
+            sort -u "$table"
+          done
+          [ "$found" -eq 1 ] || echo "(no audit was run)"
+          # Small artifacts: failure pictures shrunk, no result bundles.
+          for picture in ui-artifacts/failures/*/*.png; do
+            [ -f "$picture" ] || continue
+            sips -Z 1400 -s format jpeg -s formatOptions 55 "$picture" --out "${picture%.png}.jpg" >/dev/null 2>&1 \
+              && rm -f "$picture"
+          done
+          du -sh out/* ui-artifacts 2>/dev/null || true
+
+      - name: Upload the pictures (${{ matrix.first }})
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.first }}
+          path: ios/out/${{ matrix.first }}
+          if-no-files-found: warn
+
+      - name: Upload the pictures (${{ matrix.second }})
+        if: always() && matrix.second != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.second }}
+          path: ios/out/${{ matrix.second }}
+          if-no-files-found: warn
+
+      - name: Upload the logs and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sizes-${{ matrix.variant }}-reports
+          path: ios/ui-artifacts
+          if-no-files-found: warn
+
+  performance:
+    # Speed and weight, for the record: how long the app takes to start, how
+    # much memory it uses on each screen and whether that climbs over ten
+    # videos, what it leaves on disk, and how big the app is. Informational:
+    # a shared CI Mac running a simulator is no phone, so this job never
+    # turns the run red. The table is printed in the log and uploaded as
+    # performance.txt.
+    name: Speed and weight (informational)
+    if: github.event_name != 'pull_request'
+    runs-on: macos-26
+    timeout-minutes: 45
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Stand-in app icon if the real one is not committed yet
+        run: |
+          ICON="ZestVideo/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+          if [ ! -f "$ICON" ]; then
+            echo "::warning::icon-1024.png is missing; building with a plain purple stand-in."
+            python3 - "$ICON" <<'PY'
+          import struct, sys, zlib
+          size = 1024
+          row = b"\x00" + bytes((0x6E, 0x20, 0xB9)) * size
+          raw = row * size
+          def chunk(kind, data):
+              body = kind + data
+              return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+          png += chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+          open(sys.argv[1], "wb").write(png)
+          PY
+          fi
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Build the app and the UI tests (simulator)
+        run: |
+          set -o pipefail
+          mkdir -p ui-artifacts/failures
+          UDID=$(python3 Scripts/pick_simulator.py mid)
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          xcodebuild build-for-testing \
+            -project ZestVideo.xcodeproj \
+            -scheme ZestVideoUITests \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet 2>&1 | tee ui-artifacts/build.log
+
+      - name: Let this test build talk plain HTTP to this Mac
+        run: |
+          # As in the "ui-tests" job: added to this run's own copy of the app
+          # only. The project has no such exception in any configuration.
+          PLIST="build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy \
+            -c "Add :NSAppTransportSecurity dict" \
+            -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$PLIST"
+          plutil -lint "$PLIST"
+
+      - name: Boot the simulator and start the fake server
+        run: |
+          APP="build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app"
+          BUNDLE=com.zestlawnpest.video
+          defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false || true
+          xcrun simctl boot "$SIM_UDID" || true
+          xcrun simctl bootstatus "$SIM_UDID" -b
+          xcrun simctl spawn "$SIM_UDID" defaults write com.apple.keyboard.preferences \
+            DidShowContinuousPathIntroduction -bool true || true
+          xcrun simctl install "$SIM_UDID" "$APP" || true
+          xcrun simctl privacy "$SIM_UDID" grant location "$BUNDLE" || true
+          xcrun simctl location "$SIM_UDID" set 38.67800,-121.17600 || true
+          nohup python3 -u Scripts/fake_server.py --port 8765 > ui-artifacts/server.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8765/__test/ping >/dev/null 2>&1; then break; fi
+            sleep 0.25
+          done
+          curl -fsS http://127.0.0.1:8765/__test/ping
+          echo
+
+      - name: Measure
+        run: |
+          set -o pipefail
+          export TEST_RUNNER_ZEST_FAILURE_DIR="$PWD/ui-artifacts/failures"
+          xcodebuild test-without-building \
+            -project ZestVideo.xcodeproj \
+            -scheme ZestVideoUITests \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build/DerivedData \
+            -resultBundlePath "$RUNNER_TEMP/Performance.xcresult" \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 600 \
+            -maximum-test-execution-time-allowance 900 \
+            CODE_SIGNING_ALLOWED=NO \
+            -only-testing:ZestVideoUITests/PerformanceUITests 2>&1 | tee ui-artifacts/ui-test.log \
+            | grep -E "^Test Case|######## (FAILED|On screen)|^NOTE |measured \[|error:|Executed [0-9]+ tests|\*\* TEST" || true
+          grep -q "\*\* TEST EXECUTE SUCCEEDED \*\*" ui-artifacts/ui-test.log
+
+      - name: Build the app as it would ship (Release, for a phone, unsigned)
+        if: always()
+        run: |
+          # Only to weigh it. This is also the first place a build for a real
+          # phone is compiled, so a failure here is worth knowing about.
+          set -o pipefail
+          xcodebuild build \
+            -project ZestVideo.xcodeproj \
+            -scheme ZestVideo \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/Release \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet 2>&1 | tee ui-artifacts/release-build.log || echo "::warning::The Release build for a phone failed; see release-build.log in the artifact."
+          grep -n "error:" ui-artifacts/release-build.log | sort -u | head -40 || true
+
+      - name: The table
+        if: always()
+        run: |
+          RELEASE_APP="build/Release/Build/Products/Release-iphoneos/ZestVideo.app"
+          {
+            echo "ZEST VIDEO: SPEED AND WEIGHT"
+            echo "Simulator numbers from a Debug build on a shared CI Mac. Only indicative: a real phone will differ."
+            echo "Commit ${GITHUB_SHA:-unknown}, $(date -u '+%Y-%m-%d %H:%M UTC'), $(xcodebuild -version | tr '\n' ' ')"
+            echo
+            for part in ui-artifacts/failures/performance.*.info.txt; do
+              [ -f "$part" ] || continue
+              cat "$part"
+              echo
+              echo
+            done
+            echo "APPLE'S OWN LAUNCH MEASURE (XCTApplicationLaunchMetric, cold launch to the first screen)"
+            MEASURED=$(grep -o "measured \[[^]]*\] average: [^,]*, relative standard deviation: [^,]*, values: \[[^]]*\]" ui-artifacts/ui-test.log 2>/dev/null | sort -u || true)
+            if [ -n "$MEASURED" ]; then
+              echo "$MEASURED" | sed 's/^/  /'
+            else
+              echo "  (not found in the log)"
+            fi
+            echo
+            echo "APP SIZE (Release build for a phone, unsigned, before the App Store's own packing)"
+            if [ -d "$RELEASE_APP" ]; then
+              TOTAL=$(du -sk "$RELEASE_APP" | cut -f1)
+              echo "  whole app: $TOTAL KB ($((TOTAL / 1024)).$(((TOTAL % 1024) * 10 / 1024)) MB)"
+              echo "  the five biggest files:"
+              find "$RELEASE_APP" -type f -exec stat -f '%z %N' {} + | sort -rn | head -5 \
+                | while read -r size path; do
+                    printf "    %8d KB  %s\n" "$((size / 1024))" "${path#"$RELEASE_APP"/}"
+                  done
+            else
+              echo "  (the Release build for a phone did not finish: see release-build.log)"
+            fi
+            echo
+            echo "FAILED CHECKS IN THIS RUN"
+            FAILED=$(grep -E "^Test Case .* failed" ui-artifacts/ui-test.log 2>/dev/null || true)
+            if [ -n "$FAILED" ]; then
+              echo "$FAILED" | sed 's/^/  /'
+            else
+              echo "  none"
+            fi
+          } > ui-artifacts/performance.txt
+          echo "==================== performance.txt ===================="
+          cat ui-artifacts/performance.txt
+          # Anything a failed test had to say (the assertion, the screen, the server's log).
+          for note in ui-artifacts/failures/*.txt; do
+            [ -f "$note" ] || continue
+            case "$note" in *.info.txt) continue ;; esac
+            echo
+            echo "------------------------------------------------------------"
+            cat "$note"
+          done
+          for picture in ui-artifacts/failures/*.png; do
+            [ -f "$picture" ] || continue
+            sips -Z 1400 -s format jpeg -s formatOptions 55 "$picture" --out "${picture%.png}.jpg" >/dev/null 2>&1 \
+              && rm -f "$picture"
+          done
+
+      - name: Upload performance.txt and the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance
           path: ios/ui-artifacts
           if-no-files-found: warn
 

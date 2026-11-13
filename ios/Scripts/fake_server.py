@@ -16,7 +16,10 @@ Test controls (all JSON):
 
   POST /__test/reset   {"test": "name", "config": {...}}   forget everything; the answer
                                                             carries a device token that is
-                                                            already signed in ("token")
+                                                            already signed in ("token").
+                                                            "route": "long" gives twelve
+                                                            stops side by side on one street
+                                                            and no locked stop.
   POST /__test/set     {"switch": value, ...}              change behaviour
   POST /__test/note    {"note": "text"}                    the APP says what it is doing
                                                             (each upload's start and end)
@@ -86,11 +89,18 @@ DEFAULT_CONFIG = {
     "requireVideo": True,
     "recommendButton": True,
     "leaveReminders": False,
-    "prompts": ["Say the name or street", "What I did", "What I saw", "What I recommend"],
+    "prompts": ["Hi {name}", "Here's what I did", "Here's what I recommend", "I closed the backyard gate"],
     "officePhone": "+19165550100",
 }
 
 LOCKED_VIDEO_ID = "00000000-0000-4000-8000-00000000f1ed"
+
+# Twelve made-up customers for the long route.
+LONG_ROUTE_NAMES = [
+    ("Ada", "Abbott"), ("Ben", "Barrow"), ("Cleo", "Castell"), ("Dev", "Dunmore"),
+    ("Edie", "Ellery"), ("Finn", "Fenwick"), ("Gia", "Garrow"), ("Hugo", "Hadley"),
+    ("Iris", "Ingram"), ("Joss", "Jessop"), ("Kit", "Kendrick"), ("Lena", "Lowell"),
+]
 
 
 def iso(moment):
@@ -108,9 +118,10 @@ class State:
         self.lock = threading.RLock()
         self.reset(None, None)
 
-    def reset(self, test, config):
+    def reset(self, test, config, route=None):
         with self.lock:
             self.test = test or ""
+            self.route = route if route in ("usual", "long") else "usual"
             self.started = utc_now()
             self.switches = dict(DEFAULT_SWITCHES)
             self.config = dict(DEFAULT_CONFIG)
@@ -130,9 +141,11 @@ class State:
             self.events = []
             self.push_tokens = []
             # One stop already has a video that went to its customer: locked.
-            self.videos[LOCKED_VIDEO_ID] = self._video(
-                LOCKED_VIDEO_ID, 205, state="sent",
-                recorded=self.started - datetime.timedelta(minutes=40), fixture=True)
+            # (Not on the long route, where every stop is still to be recorded.)
+            if self.route == "usual":
+                self.videos[LOCKED_VIDEO_ID] = self._video(
+                    LOCKED_VIDEO_ID, 205, state="sent",
+                    recorded=self.started - datetime.timedelta(minutes=40), fixture=True)
 
     def _video(self, video_id, customer_id, state, recorded, fixture=False):
         return {
@@ -164,6 +177,13 @@ class State:
             (203, "Maria Garcia", "Garcia", "48 Oak Ave", 270, 260, 4, False, False, "Fertilization"),
             (204, "Green Valley HOA", "", "5 Park Blvd", 2700, 2200, 5, False, False, "Irrigation"),
         ]
+        if self.route == "long":
+            # A long day: twelve houses in a row, 8 metres apart, none checked
+            # in. Customers 301 to 312, in route order.
+            rows = [
+                (301 + i, "%s %s" % (first, last), last, "%d Maple Row" % (101 + 2 * i), 0, 8 * i, i + 1, False, False, "Mowing")
+                for i, (first, last) in enumerate(LONG_ROUTE_NAMES)
+            ]
         out = []
         for customer, name, last, address, north, west, order, checked, done, service in rows:
             video = self.live_video(customer)
@@ -603,7 +623,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self.read_json() if self.command == "POST" else None
         if path == "/__test/reset" and self.command == "POST":
             body = body or {}
-            STATE.reset(body.get("test"), body.get("config"))
+            STATE.reset(body.get("test"), body.get("config"), body.get("route"))
             print("\n===== %s =====" % (STATE.test or "reset"), flush=True)
             return self.reply(200, {"ok": True, "token": STATE.issued_token}, record=False)
         if path == "/__test/note" and self.command == "POST":
@@ -827,6 +847,20 @@ def self_test():
     check(state["events"] == [{"type": "override"}], "events kept")
     log = call("GET", "/__test/log")[1].decode()
     check("POST   /v1/videos/v4/complete" in log and "video v4" in log, "log text")
+
+    # The long route: twelve stops in a row, none locked, and a locked stop
+    # does not come back with the next ordinary reset.
+    status, body = call("POST", "/__test/reset", {"test": "long", "route": "long"})
+    status, today = call("GET", "/v1/today", token=body["token"])
+    long_stops = today["stops"]
+    check([s["customerId"] for s in long_stops] == list(range(301, 313)), "twelve stops, 301 to 312")
+    check(all(s["video"] is None and s["checkIn"] is None for s in long_stops), "no videos, no check-ins")
+    check(long_stops[0]["address"] == "101 Maple Row" and long_stops[11]["address"] == "123 Maple Row", "one street")
+    check(abs(long_stops[11]["lng"] - long_stops[0]["lng"]) < 0.0012, "all within about 90 metres")
+    for index in range(12):
+        check(register(body["token"], "long-%02d" % index, customer=301 + index)[0] == 200, "register %d" % index)
+    state = call("GET", "/__test/state")[1]
+    check([v["customerId"] for v in state["videos"]] == list(range(301, 313)), "videos kept in the order they were registered")
 
     # Reset forgets everything except the locked fixture.
     call("POST", "/__test/reset", {"test": "again"})

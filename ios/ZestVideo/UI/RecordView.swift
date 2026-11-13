@@ -157,39 +157,46 @@ struct RecordView: View {
                 Banner(text: problem, tone: .attention)
             }
 
-            Spacer(minLength: 4)
+            // The one giant button and its words, in the middle of the room
+            // that is left between the name and BACK. It is as big as worked
+            // out above; only when a long name and address take more room
+            // than usual is it a little smaller, so that nothing is ever
+            // squeezed or pushed off the screen.
+            GeometryReader { room in
+                let wordsHeight = (Theme.size(.recordLabel) * 1.25 + 16) * typeScale
+                let side = max(120, min(diameter, room.size.height - wordsHeight - 12))
+                VStack(spacing: 12) {
+                    Button(action: capturePressed) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.white)
+                            Circle()
+                                .fill(Theme.recordRed)
+                                .padding(side * 0.06)
+                        }
+                        .frame(width: side, height: side)
+                        .shadow(color: .black.opacity(0.5), radius: 8, x: 0, y: 3)
+                        .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(camera.status != .ready || app.recordPhase != .idle)
+                    .opacity(camera.status == .ready ? 1 : 0.5)
+                    .accessibilityLabel("Record")
+                    .accessibilityHint("Starts a \(app.config.maxSeconds) second video. It stops by itself.")
+                    .accessibilityIdentifier("record-button")
 
-            // The one giant button, in the middle of the picture.
-            Button(action: capturePressed) {
-                ZStack {
-                    Circle()
-                        .fill(Color.white)
-                    Circle()
-                        .fill(Theme.recordRed)
-                        .padding(diameter * 0.06)
+                    Text(readyLabel)
+                        .zestFont(.recordLabel)
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
+                        .background(Capsule().fill(Color.black.opacity(0.65)))
+                        .accessibilityHidden(true)
                 }
-                .frame(width: diameter, height: diameter)
-                .shadow(color: .black.opacity(0.5), radius: 8, x: 0, y: 3)
-                .contentShape(Circle())
+                .frame(width: room.size.width, height: room.size.height)
             }
-            .buttonStyle(.plain)
-            .disabled(camera.status != .ready || app.recordPhase != .idle)
-            .opacity(camera.status == .ready ? 1 : 0.5)
-            .accessibilityLabel("Record")
-            .accessibilityHint("Starts a \(app.config.maxSeconds) second video. It stops by itself.")
-            .accessibilityIdentifier("record-button")
-
-            Text(readyLabel)
-                .zestFont(.recordLabel)
-                .foregroundColor(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-                .background(Capsule().fill(Color.black.opacity(0.65)))
-                .accessibilityHidden(true)
-
-            Spacer(minLength: 4)
 
             BigButton(title: "BACK", kind: .plain) {
                 app.backToToday()
@@ -216,6 +223,9 @@ struct RecordView: View {
                 }
             }
             .foregroundColor(.white)
+            // Always its full height: the record button below gives way, the
+            // name and street are never squeezed.
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, minHeight: withAddress ? 0 : Theme.buttonHeight, alignment: .leading)
             .padding(.horizontal, 14)
             .padding(.vertical, withAddress ? 14 : 4)

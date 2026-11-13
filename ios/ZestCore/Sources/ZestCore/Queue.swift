@@ -58,6 +58,14 @@ public struct QueueItem: Codable, Equatable, Identifiable, Sendable {
     public var sentAt: Date?
     /// Why the server refused it, in the server's own plain words.
     public var blockedMessage: String?
+    /// How many times in a row the upload address was refused (403).
+    /// `nil` in rows written before this was counted.
+    public var refusedInARow: Int?
+    /// True while the last try failed for want of an answer (no signal, a
+    /// timeout, a server error) rather than a "no" from the server. The
+    /// videos recorded after this one would fail the same way, so they wait
+    /// behind it and go in order when the signal is back.
+    public var waitingForSignal: Bool?
 
     public init(
         id: String, stopDate: String, customerId: Int?, customerName: String, appointmentIds: [Int],
@@ -211,10 +219,11 @@ public enum QueueMachine {
     public static func reduce(_ item: QueueItem, _ event: QueueEvent, now: Date = Date()) -> QueueItem {
         var next = item
 
-        func fail(_ message: String, retryAfter: TimeInterval? = nil) {
+        func fail(_ message: String, retryAfter: TimeInterval? = nil, forSignal: Bool = false) {
             next.attempts += 1
             next.lastError = message
             next.notBefore = now.addingTimeInterval(retryAfter ?? retryDelay(attempts: next.attempts))
+            next.waitingForSignal = forSignal ? true : nil
         }
         func clearURL() {
             next.uploadURL = nil
@@ -234,6 +243,7 @@ public enum QueueMachine {
             next.emailAt = emailAt ?? next.emailAt
             next.lastError = nil
             next.notBefore = nil
+            next.waitingForSignal = nil
             clearURL()
             if next.phase == .done { next.progress = 1 }
         }
@@ -281,6 +291,7 @@ public enum QueueMachine {
             next.serverState = .awaitingUpload
             next.lastError = nil
             next.notBefore = nil
+            next.waitingForSignal = nil
 
         case (.queued, .serverAlreadyHas(let state, let emailAt)),
              (.uploading, .serverAlreadyHas(let state, let emailAt)),
@@ -308,10 +319,20 @@ public enum QueueMachine {
                 next.progress = 1
                 next.lastError = nil
                 next.notBefore = nil
+                next.refusedInARow = nil
             } else if status == 403 {
                 // The signed URL ran out. Not a failure: just get a new one.
                 clearURL()
                 next.phase = .queued
+                // But a fresh address refused again and again is not "ran
+                // out": something is wrong at the other end. From the third
+                // time, wait between tries like any other failure, so the
+                // phone never spins asking and uploading without a pause.
+                let refusals = (item.refusedInARow ?? 0) + 1
+                next.refusedInARow = refusals
+                if refusals >= 3 {
+                    fail("The upload was refused (403).")
+                }
             } else {
                 clearURL()
                 next.phase = .queued
@@ -321,7 +342,7 @@ public enum QueueMachine {
         case (.uploading, .uploadFailed(let message)):
             // Keep the URL; the engine starts a new task when it may retry.
             next.progress = 0
-            fail(message)
+            fail(message, forSignal: true)
 
         case (.uploaded, .completed(let state, let emailAt)):
             finish(state: state, emailAt: emailAt)
@@ -334,7 +355,9 @@ public enum QueueMachine {
         case (.queued, .callFailed(let message, let retryAfter)),
              (.uploading, .callFailed(let message, let retryAfter)),
              (.uploaded, .callFailed(let message, let retryAfter)):
-            fail(message, retryAfter: retryAfter)
+            // No wait given: there was no answer at all (no signal, a
+            // timeout, a server error). A wait given: the server said no.
+            fail(message, retryAfter: retryAfter, forSignal: retryAfter == nil)
 
         case (.queued, .fileLost), (.uploading, .fileLost):
             clearURL()
@@ -359,6 +382,109 @@ public enum QueueMachine {
             return item
         }
         return next
+    }
+}
+
+/// Decides what the upload engine does next. Pure, so a whole day of
+/// videos can be played through in a test.
+///
+/// The rules, in order:
+/// - **Oldest first.** After a day with no signal the first stop's video
+///   goes first: its customer has waited longest.
+/// - **One register call at a time, and at most two uploads.** An upload
+///   address is only asked for when the video can start at once, so twelve
+///   waiting videos do not hold twelve addresses that run out while they
+///   queue behind each other on a weak signal.
+/// - **No signal holds the line.** While the oldest waiting video cannot
+///   reach the server, the ones recorded after it are not tried: they would
+///   fail the same way, and trying them out of turn would send them out of
+///   order when the signal comes back. Only that one video is retried.
+/// - **A "no" from the server does not.** A video the server refused waits
+///   its turn alone and never holds up the ones behind it.
+public enum UploadPlanner {
+    public enum Step: Equatable, Sendable {
+        /// Ask the server for an upload address.
+        case register(String)
+        /// Start the upload task (the video has a usable address).
+        case startUpload(String)
+        /// The file is up: ask the server to confirm it.
+        case complete(String)
+        /// Tell the server the tech deleted it.
+        case tellDeleted(String)
+    }
+
+    public struct Plan: Equatable, Sendable {
+        public var steps: [Step]
+        /// When the next video waiting out a failure may be tried again.
+        public var lookAgainAt: Date?
+
+        public init(steps: [Step] = [], lookAgainAt: Date? = nil) {
+            self.steps = steps
+            self.lookAgainAt = lookAgainAt
+        }
+    }
+
+    /// Uploads running at once. The session allows two connections; more
+    /// tasks than that would only sit and wait.
+    public static let maxUploads = 2
+
+    /// - Parameters:
+    ///   - items: the queue as it is on disk.
+    ///   - uploading: videos whose upload task is alive right now.
+    ///   - registering: videos with a register call in the air.
+    ///   - busy: videos with any call in the air (register, complete, delete).
+    public static func plan(
+        items: [QueueItem], uploading: Set<String>, registering: Set<String>, busy: Set<String>, now: Date
+    ) -> Plan {
+        var plan = Plan()
+        var slots = max(0, maxUploads - uploading.count - registering.count)
+        var mayRegister = registering.isEmpty
+
+        // Oldest first; videos recorded in the same second keep the queue's order.
+        let ordered = items.enumerated()
+            .sorted { $0.element.recordedAt != $1.element.recordedAt ? $0.element.recordedAt < $1.element.recordedAt : $0.offset < $1.offset }
+            .map { $0.element }
+
+        for item in ordered {
+            if busy.contains(item.id) || registering.contains(item.id) { continue }
+            if !item.mayRetry(now: now) {
+                if let wait = item.notBefore {
+                    plan.lookAgainAt = min(plan.lookAgainAt ?? wait, wait)
+                }
+                // An older video with no signal: nothing younger is asked for.
+                if item.waitingForSignal == true, item.phase == .queued || item.phase == .uploading {
+                    mayRegister = false
+                }
+                continue
+            }
+            switch item.phase {
+            case .queued:
+                if mayRegister && slots > 0 {
+                    plan.steps.append(.register(item.id))
+                    mayRegister = false
+                    slots -= 1
+                }
+            case .uploading:
+                if uploading.contains(item.id) { continue }
+                if item.needsFreshURL(now: now) {
+                    if mayRegister && slots > 0 {
+                        plan.steps.append(.register(item.id))
+                        mayRegister = false
+                        slots -= 1
+                    }
+                } else if slots > 0 {
+                    plan.steps.append(.startUpload(item.id))
+                    slots -= 1
+                }
+            case .uploaded:
+                plan.steps.append(.complete(item.id))
+            case .deleting:
+                plan.steps.append(.tellDeleted(item.id))
+            case .done, .blocked, .removed:
+                break
+            }
+        }
+        return plan
     }
 }
 

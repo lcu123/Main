@@ -608,11 +608,13 @@ struct StopHeadline: View {
                         chip
                     }
                 }
+                // Up to four lines: a 45-letter business name has to show
+                // whole on the smallest phone, in this very large type.
                 Text(name)
                     .zestFont(style == .small ? .heroStreet : .heroName)
                     .fontWeight(.semibold)
                     .foregroundColor(Theme.ink)
-                    .lineLimit(3)
+                    .lineLimit(4)
                     .minimumScaleFactor(0.6)
                     .fixedSize(horizontal: false, vertical: true)
                 if !address.isEmpty {

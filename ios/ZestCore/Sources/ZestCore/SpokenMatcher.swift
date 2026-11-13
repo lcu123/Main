@@ -9,13 +9,16 @@ import Foundation
 public enum SpokenMatcher {
     public struct Score: Equatable, Sendable {
         public var lastName = false
+        /// What the tech is asked to say: "Hi Jane".
+        public var firstName = false
         public var street = false
         public var houseNumber = false
 
-        /// Last name is the strongest signal; a street or a full house number
-        /// each count too. Zero means nothing of this stop was heard.
+        /// Last name is the strongest signal; the first name, a street or a
+        /// full house number each count too. Zero means nothing of this stop
+        /// was heard.
         public var value: Int {
-            (lastName ? 3 : 0) + (street ? 2 : 0) + (houseNumber ? 2 : 0)
+            (lastName ? 3 : 0) + (firstName ? 2 : 0) + (street ? 2 : 0) + (houseNumber ? 2 : 0)
         }
     }
 
@@ -29,7 +32,16 @@ public enum SpokenMatcher {
     // MARK: - Public API
 
     /// Scores the transcript against the chosen stop and against the rest of the list.
-    public static func evaluate(transcript: String?, target: Stop, all: [Stop]) -> Outcome {
+    ///
+    /// The tech is asked for one thing: the customer's first name ("Hi
+    /// Jane"). A last name counts for more; a street or a house number, if
+    /// he happens to say one, still counts. A tie with another stop is a
+    /// match (two Janes on one route must not warn); only a stop that fits
+    /// the words strictly better makes a mismatch.
+    ///
+    /// - Parameter techName: the tech's own first name. Said in "this is
+    ///   Sam", it must not point at a customer called Sam somewhere else.
+    public static func evaluate(transcript: String?, target: Stop, all: [Stop], techName: String? = nil) -> Outcome {
         guard let transcript else {
             return Outcome(result: .unknown, better: nil, target: Score())
         }
@@ -39,10 +51,11 @@ public enum SpokenMatcher {
             return Outcome(result: .unknown, better: nil, target: Score())
         }
 
+        let own = Set(tokens(techName ?? ""))
         let targetScore = score(heard, stop: target)
         let others = all
             .filter { $0.customerId != target.customerId }
-            .map { (stop: $0, score: score(heard, stop: $0)) }
+            .map { (stop: $0, score: score(heard, stop: $0, ignoringFirstNames: own)) }
         let bestValue = others.map { $0.score.value }.max() ?? 0
         let best = others.filter { $0.score.value == bestValue }
         let uniqueBest: Stop? = (best.count == 1 && bestValue >= 2) ? best[0].stop : nil
@@ -58,7 +71,9 @@ public enum SpokenMatcher {
     }
 
     /// Words to hand the speech recognizer so it spells names the way they are
-    /// written on the route: last names and street names.
+    /// written on the route: first names (what the tech is asked to say),
+    /// last names and street names. Names first: if the list has to be cut
+    /// short, the streets are what goes.
     public static func hints(for stops: [Stop]) -> [String] {
         var seen = Set<String>()
         var out: [String] = []
@@ -67,8 +82,18 @@ public enum SpokenMatcher {
             guard trimmed.count >= 2, seen.insert(trimmed.lowercased()).inserted else { return }
             out.append(trimmed)
         }
+        for stop in stops where !stop.lastName.trimmingCharacters(in: .whitespaces).isEmpty {
+            // "Mary Ann" as said, and each word of it.
+            let first = stop.greetingName
+            add(first)
+            for word in first.split(separator: " ") where word.contains(where: { $0.isLetter }) {
+                add(String(word))
+            }
+        }
         for stop in stops {
             add(stop.lastName)
+        }
+        for stop in stops {
             let parts = addressParts(stop.address)
             if !parts.streetDisplay.isEmpty { add(parts.streetDisplay) }
         }
@@ -96,6 +121,14 @@ public enum SpokenMatcher {
     ]
     static let unitWords: Set<String> = ["apt", "apartment", "unit", "ste", "suite", "bldg", "building", "lot", "spc", "space", "rm", "room"]
 
+    /// Words in a street name that are written short on the route and said
+    /// in full, or the other way round: "St Andrews Dr" is "Saint Andrews".
+    /// Both are matched as the short form. (Not used for last names.)
+    static let streetAliases: [String: String] = ["saint": "st", "mount": "mt", "fort": "ft", "highway": "hwy"]
+
+    /// How a PO box address starts, as normalized words.
+    static let poBoxLeads: [[String]] = [["po", "box"], ["p", "o", "box"], ["pobox"], ["post", "office", "box"]]
+
     public static func addressParts(_ address: String) -> AddressParts {
         // Keep the original words for display, normalized ones for matching.
         let rawWords = address
@@ -105,6 +138,16 @@ public enum SpokenMatcher {
         var pairs: [(raw: String, norm: String)] = rawWords.compactMap { raw in
             let norm = normalizeToken(raw)
             return norm.isEmpty ? nil : (raw, norm)
+        }
+
+        // "PO Box 1432" has no street. The box number is what tells it from
+        // every other PO box, so it stands in for the house number.
+        let norms = pairs.map { $0.norm }
+        for lead in poBoxLeads where norms.count > lead.count && Array(norms.prefix(lead.count)) == lead {
+            let number = String(norms[lead.count].prefix { $0.isNumber })
+            if !number.isEmpty {
+                return AddressParts(houseNumber: number, street: [], streetDisplay: "")
+            }
         }
 
         var house: String?
@@ -117,7 +160,9 @@ public enum SpokenMatcher {
         if let cut = pairs.firstIndex(where: { unitWords.contains($0.norm) }) {
             pairs = Array(pairs[..<cut])
         }
-        while pairs.count > 1, let last = pairs.last, last.norm.allSatisfy({ $0.isNumber }) {
+        // A unit written with no word in front of it ("... Blvd 14B", "... Rd 3").
+        // A numbered street ("5th") is a name, not a unit, and stays.
+        while pairs.count > 1, let last = pairs.last, let lead = last.norm.first, lead.isNumber, !isOrdinal(last.norm) {
             pairs.removeLast()
         }
         if pairs.count > 1, let last = pairs.last, directions.contains(last.norm) {
@@ -132,24 +177,34 @@ public enum SpokenMatcher {
 
         return AddressParts(
             houseNumber: house,
-            street: pairs.map { $0.norm },
+            street: pairs.map { streetAliases[$0.norm] ?? $0.norm },
             streetDisplay: pairs.map { $0.raw }.joined(separator: " ")
         )
     }
 
     // MARK: - Scoring
 
-    static func score(_ heard: Heard, stop: Stop) -> Score {
+    static func score(_ heard: Heard, stop: Stop, ignoringFirstNames ignored: Set<String> = []) -> Score {
         var score = Score()
 
         // Last name, or for a business the telling words of its name.
         let nameWords: [String]
-        if !stop.lastName.trimmingCharacters(in: .whitespaces).isEmpty {
+        let isPerson = !stop.lastName.trimmingCharacters(in: .whitespaces).isEmpty
+        if isPerson {
             nameWords = tokens(stop.lastName)
         } else {
             nameWords = tokens(stop.name).filter { !businessNoise.contains($0) }
         }
         score.lastName = heard.containsName(nameWords)
+
+        // First name: what the tech is asked to say. Any one of a person's
+        // first names will do ("Hi Mary" for Mary Ann, "Hi John" for John
+        // & Mary).
+        if isPerson {
+            score.firstName = firstNameWords(of: stop).contains { word in
+                !ignored.contains(word) && heard.containsFirstName(word)
+            }
+        }
 
         let parts = addressParts(stop.address)
         if !parts.street.isEmpty {
@@ -162,6 +217,32 @@ public enum SpokenMatcher {
         }
         return score
     }
+
+    /// A person's first names as words to listen for. Titles, "and", and
+    /// names of one or two letters are left out: "Al" or "Jo" would turn up
+    /// inside ordinary talk by accident.
+    static func firstNameWords(of stop: Stop) -> [String] {
+        tokens(stop.greetingName).filter { $0.count >= 3 && !firstNameNoise.contains($0) && !$0.allSatisfy { $0.isNumber } }
+    }
+
+    static let firstNameNoise: Set<String> = ["and", "mr", "mrs", "miss", "mister", "dr", "the", "family", "jr", "sr"]
+
+    /// First names that are also everyday words. "I will spray the rose
+    /// bushes in May" names nobody: these only count right after a greeting
+    /// ("Hi Rose", "Good morning Will").
+    static let everydayWordNames: Set<String> = [
+        "will", "may", "art", "rose", "mark", "bill", "grace", "hope", "joy", "guy", "pat", "rich", "sue", "don",
+        "june", "april", "august", "summer", "dawn", "faith", "chase", "hunter", "frank", "gene", "rob", "max",
+        "miles", "cliff", "dale", "glen", "lane", "skip", "chip", "bud", "dean", "penny", "ruby", "ivy", "holly",
+        "iris", "lily", "daisy", "olive", "amber", "sunny", "sandy", "rusty", "jack", "jay", "ray", "drew", "wade",
+        "reed", "page", "lance", "sage", "basil", "herb", "rod", "nick", "van", "lee", "bob", "tony", "misty",
+        "storm", "rocky", "sky", "star", "crystal", "ginger", "pepper", "angel", "major", "junior", "sonny", "dusty",
+    ]
+
+    /// Words a first name follows when it is being said to the customer.
+    static let greetings: Set<String> = [
+        "hi", "hello", "hey", "morning", "afternoon", "evening", "mr", "mister", "mrs", "ms", "miss", "dear", "thanks", "bye",
+    ]
 
     static let businessNoise: Set<String> = [
         "the", "inc", "llc", "corp", "co", "company", "and", "of", "ltd", "group", "hoa", "association",
@@ -182,6 +263,10 @@ public enum SpokenMatcher {
             if tokens.count > 1 {
                 for i in 0..<(tokens.count - 1) { words.insert(tokens[i] + tokens[i + 1]) }
             }
+            // "Saint" said aloud also counts as the "St" written on the route.
+            for token in tokens {
+                if let short = SpokenMatcher.streetAliases[token] { words.insert(short) }
+            }
             self.words = words
             self.numbers = SpokenMatcher.numberCandidates(tokens)
         }
@@ -193,6 +278,18 @@ public enum SpokenMatcher {
 
         func containsAll(_ wanted: [String]) -> Bool {
             !wanted.isEmpty && wanted.allSatisfy { contains($0) }
+        }
+
+        /// A first name, heard anywhere; or, for a name that is also an
+        /// everyday word, only straight after a greeting. Spelled exactly
+        /// (the recognizer is given the route's first names): a near miss
+        /// would turn "grand" into Grant.
+        func containsFirstName(_ word: String) -> Bool {
+            guard SpokenMatcher.everydayWordNames.contains(word) else { return words.contains(word) }
+            for index in tokens.indices.dropFirst() where tokens[index] == word {
+                if SpokenMatcher.greetings.contains(tokens[index - 1]) { return true }
+            }
+            return false
         }
 
         func containsName(_ nameWords: [String]) -> Bool {

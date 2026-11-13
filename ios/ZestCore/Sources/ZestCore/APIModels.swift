@@ -150,7 +150,9 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var prompts: [String]
     public var officePhone: String?
 
-    public static let defaultPrompts = ["Say the name or street", "What I did", "What I saw", "What I recommend"]
+    /// What the tech says, in order. "{name}" is the customer's first name
+    /// (see `PromptText`).
+    public static let defaultPrompts = ["Hi {name}", "Here's what I did", "Here's what I recommend", "I closed the backyard gate"]
 
     /// What the app uses before it has ever reached the server.
     public static let fallback = AppConfig(

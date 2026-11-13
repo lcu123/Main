@@ -23,7 +23,7 @@ public enum TwoKeys {
         /// One short line per problem, in plain words for the warning screen.
         public var reasons: [String] {
             var lines: [String] = []
-            if mismatched.contains(.spoken) { lines.append("I did not hear this name or street.") }
+            if mismatched.contains(.spoken) { lines.append("I did not hear this customer's name.") }
             if mismatched.contains(.gps) { lines.append("You were far from this address.") }
             if mismatched.contains(.checkIn) { lines.append("The time does not match your check-in.") }
             if lines.isEmpty { lines.append("I could not check this is the right stop.") }
@@ -99,10 +99,13 @@ public enum TwoKeys {
 
     /// All three signals for one stop. `transcript` is `nil` when
     /// speech-to-text did not run.
+    /// - Parameter techName: the tech's own first name. If he says it ("this
+    ///   is Sam") it is not taken for a customer called Sam at another stop.
     public static func signals(
-        transcript: String?, fix: VideoLocation?, recordedAt: Date, stop: Stop, all: [Stop], farMeters: Double
+        transcript: String?, fix: VideoLocation?, recordedAt: Date, stop: Stop, all: [Stop], farMeters: Double,
+        techName: String? = nil
     ) -> (signals: Signals, better: Stop?) {
-        let spoken = SpokenMatcher.evaluate(transcript: transcript, target: stop, all: all)
+        let spoken = SpokenMatcher.evaluate(transcript: transcript, target: stop, all: all, techName: techName)
         let signals = Signals(
             spoken: spoken.result,
             gps: gpsSignal(fix: fix, stop: stop, farMeters: farMeters),

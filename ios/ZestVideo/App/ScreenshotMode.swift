@@ -10,9 +10,17 @@ import ZestCore
 /// permission prompts, no camera. CI uses it to take pictures of the real
 /// screens (see the `screens` job in `.github/workflows/ios.yml`).
 ///
+/// `-ZestFixture odd` swaps the usual made-up route for one of awkward
+/// customers (apostrophes, accents, hyphens, a very long business name, all
+/// capitals, an emoji, a one-word name, a unit, a PO box), and
+/// `-ZestStop <n>` picks which of them the screen is about. That is how CI
+/// checks that long and unusual names wrap or shrink without being cut off.
+///
 /// Every name, address and number below is invented.
 enum ScreenshotMode {
     static let argument = "-ZestScreen"
+    static let fixtureArgument = "-ZestFixture"
+    static let stopArgument = "-ZestStop"
 
     enum Screen: String, CaseIterable {
         case login
@@ -35,9 +43,23 @@ enum ScreenshotMode {
 
     /// The screen asked for on the command line, if any.
     static var requested: Screen? {
+        value(after: argument).flatMap { Screen(rawValue: $0.lowercased()) }
+    }
+
+    /// The route of awkward customers was asked for.
+    static var wantsOddNames: Bool {
+        value(after: fixtureArgument)?.lowercased() == "odd"
+    }
+
+    /// Which customer of that route the screen is about (0 is the first).
+    static var stopIndex: Int {
+        max(0, value(after: stopArgument).flatMap { Int($0) } ?? 0)
+    }
+
+    private static func value(after name: String) -> String? {
         let arguments = ProcessInfo.processInfo.arguments
-        guard let index = arguments.firstIndex(of: argument), index + 1 < arguments.count else { return nil }
-        return Screen(rawValue: arguments[index + 1].lowercased())
+        guard let index = arguments.firstIndex(of: name), index + 1 < arguments.count else { return nil }
+        return arguments[index + 1]
     }
 
     /// A small file the app writes once the screen is up and the main thread
@@ -76,16 +98,71 @@ enum ScreenshotMode {
         var seeds = ScreenSeeds()
     }
 
+    /// Which made-up customer plays which part in the pictures.
+    struct Cast {
+        /// The whole route, in route order.
+        var stops: [Stop]
+        /// No video yet, and the closest: the stop being recorded.
+        var target: Stop
+        /// The stop the words fit better, on the warning screen.
+        var neighbour: Stop
+        /// Sent 40 minutes ago: gone to the customer.
+        var locked: Stop
+        /// Sent a few minutes ago: still inside its 10 minutes.
+        var changeable: Stop
+        /// Past its 10 minutes and still sending.
+        var sending: Stop
+        /// Past its 10 minutes and waiting for signal.
+        var waiting: Stop
+        /// Where the phone is: on the target's lawn.
+        var phone: VideoLocation
+    }
+
+    /// The usual eight customers.
+    static let usualCast = Cast(
+        stops: [tom, susan, jane, robert, maria, david, linda, hoa],
+        target: jane, neighbour: robert, locked: tom, changeable: susan, sending: david, waiting: linda,
+        phone: phoneFix
+    )
+
+    /// The awkward customers, with number `index` in the part the screen
+    /// shows largest: the stop with a video on the two video screens, the
+    /// stop being recorded everywhere else.
+    static func oddCast(for screen: Screen, index: Int) -> Cast {
+        let stops = oddStops
+        func at(_ offset: Int) -> Stop { stops[(index + offset) % stops.count] }
+        var cast = Cast(
+            stops: stops, target: at(0), neighbour: at(1), locked: at(2), changeable: at(3),
+            sending: at(4), waiting: at(5), phone: phoneFix
+        )
+        switch screen {
+        case .stopvideo:
+            cast.changeable = at(0)
+            cast.target = at(3)
+        case .locked:
+            cast.locked = at(0)
+            cast.target = at(2)
+        default:
+            break
+        }
+        if let lat = cast.target.lat, let lng = cast.target.lng {
+            cast.phone = VideoLocation(lat: lat + 0.00012, lng: lng, accuracyM: 8)
+        }
+        return cast
+    }
+
     @MainActor
     static func show(_ screen: Screen, in app: AppModel) {
         Files.remove(readyMarker)
         let now = Date()
-        let today = self.today(now: now)
+        let cast = wantsOddNames ? oddCast(for: screen, index: stopIndex) : usualCast
+        let target = cast.target
+        let today = self.today(now: now, stops: cast.stops)
         var shot = Shot(route: .today, today: today)
 
         // The same day's worth of videos sits behind every signed-in screen.
-        app.queue.loadScreenshotItems(items(now: now, day: today.date))
-        app.location.setScreenshotFix(phoneFix)
+        app.queue.loadScreenshotItems(items(now: now, day: today.date, cast: cast))
+        app.location.setScreenshotFix(cast.phone)
 
         switch screen {
         case .login:
@@ -106,19 +183,19 @@ enum ScreenshotMode {
             shot.seeds.scrollToEnd = true
         case .confirm:
             shot.route = .confirm
-            shot.target = RecordTarget(stop: jane)
+            shot.target = RecordTarget(stop: target)
         case .far:
             shot.route = .confirm
-            shot.target = RecordTarget(stop: jane)
+            shot.target = RecordTarget(stop: target)
             shot.seeds.confirmStage = .far
         case .record:
             shot.route = .record
-            shot.target = RecordTarget(stop: jane)
+            shot.target = RecordTarget(stop: target)
             shot.seeds.standInPicture = true
             app.camera.setScreenshotState(status: .ready, recordingStartedAt: nil)
         case .recording:
             shot.route = .record
-            shot.target = RecordTarget(stop: jane)
+            shot.target = RecordTarget(stop: target)
             shot.recordPhase = .recording
             shot.seeds.standInPicture = true
             // Held still 6.2 seconds in: the ring is part-drained around a 9.
@@ -126,29 +203,29 @@ enum ScreenshotMode {
             app.camera.setScreenshotState(status: .recording, recordingStartedAt: now)
         case .review:
             shot.route = .review
-            shot.draft = draft(now: now, day: today.date)
+            shot.draft = draft(now: now, day: today.date, cast: cast)
             shot.check = .done(cleanCheck)
             shot.seeds.standInPicture = true
         case .warning:
             shot.route = .review
-            shot.draft = draft(now: now, day: today.date)
-            shot.check = .done(warningCheck)
+            shot.draft = draft(now: now, day: today.date, cast: cast)
+            shot.check = .done(warningCheck(better: cast.neighbour))
             shot.seeds.reviewStage = .warning
             shot.seeds.standInPicture = true
         case .saved:
             shot.route = .review
-            shot.draft = draft(now: now, day: today.date)
+            shot.draft = draft(now: now, day: today.date, cast: cast)
             shot.check = .done(cleanCheck)
             shot.seeds.reviewStage = .saved
             shot.seeds.standInPicture = true
         case .stopvideo:
             // Recorded a few minutes ago: still inside the 10-minute window.
             shot.route = .stopVideo
-            shot.focus = .stop(susan.customerId)
+            shot.focus = .stop(cast.changeable.customerId)
         case .locked:
             // Recorded 40 minutes ago: it has gone to the customer.
             shot.route = .stopVideo
-            shot.focus = .stop(tom.customerId)
+            shot.focus = .stop(cast.locked.customerId)
         case .queue:
             shot.route = .queue
             fillHeldSpace(for: app.queue)
@@ -194,17 +271,43 @@ enum ScreenshotMode {
     /// The phone is standing on Jane Smith's lawn.
     static let phoneFix = VideoLocation(lat: 38.67812, lng: -121.17600, accuracyM: 8)
 
-    private static func today(now: Date) -> TodayResponse {
+    // The awkward customers. Every one is made up.
+    static let oddStops: [Stop] = {
+        let rows: [(String, String, String, String)] = [
+            ("Sean O'Brien", "O'Brien", "220 Saint Andrews Dr", "Mowing"),
+            ("José Peña", "Peña", "8 Cañada Verde Rd", "Pest Control"),
+            ("Anne-Marie McDonald-Smith", "McDonald-Smith", "1200 Long Winding Meadow Creek Boulevard Apt 14B", "Fertilization"),
+            ("Pieter van der Berg", "van der Berg", "77 5th Ave Unit 3", "Weed Control"),
+            // A business, 45 characters long.
+            ("Greater Riverbend Homeowners Association Inc.", "", "4500 Hwy 50", "Irrigation"),
+            ("MARGARET THORNWOOD-HIGHTOWER", "THORNWOOD-HIGHTOWER", "14 St Marys Ct", "Mowing"),
+            ("Kai 🌻 Rivers", "Rivers", "31 Mt Shasta Way", "Pest Control"),
+            ("Prince", "", "9 Elm St", "Mowing"),
+            ("Lee Wong", "Wong", "PO Box 1432", "Rodent Exclusion"),
+            // One word of 24 letters: it cannot wrap, only shrink.
+            ("Maximiliano Wolfeschlegelsteinhausen", "Wolfeschlegelsteinhausen", "14 Elm St", "Lawn Fertilization and Weed Control"),
+        ]
+        return rows.enumerated().map { index, row in
+            Stop(
+                customerId: 201 + index, name: row.0, lastName: row.1, address: row.2, cityLine: "Sampletown, CA 90000",
+                lat: 38.67800 + Double(index) * 0.0020, lng: -121.17600 - Double(index) * 0.0015,
+                appointmentIds: [(201 + index) * 10], services: [row.3],
+                order: index + 1, checkIn: nil, checkOut: nil, done: false, video: nil
+            )
+        }
+    }()
+
+    private static func today(now: Date, stops: [Stop]) -> TodayResponse {
         var config = AppConfig.fallback
         config.officePhone = "+19165550100"
         return TodayResponse(
             date: ZestDates.dayString(now), serverTime: now, tech: tech, config: config,
-            stops: [tom, susan, jane, robert, maria, david, linda, hoa], videos: []
+            stops: stops, videos: []
         )
     }
 
     /// Five videos, one in each state a video can be in.
-    private static func items(now: Date, day: String) -> [QueueItem] {
+    private static func items(now: Date, day: String, cast: Cast) -> [QueueItem] {
         func item(_ id: String, _ stop: Stop?, secondsAgo: TimeInterval) -> QueueItem {
             QueueItem(
                 id: id, stopDate: day, customerId: stop?.customerId, customerName: stop?.listName ?? "Not on my list",
@@ -221,30 +324,30 @@ enum ScreenshotMode {
 
         // Sent 40 minutes ago: locked.
         let sent = QueueMachine.reduce(
-            item("screenshot-sent", tom, secondsAgo: 40 * 60),
+            item("screenshot-sent", cast.locked, secondsAgo: 40 * 60),
             .serverAlreadyHas(state: .sent, emailAt: nil), now: now.addingTimeInterval(-39 * 60)
         )
         // Sent 200 seconds ago: 7 minutes left to change it.
         let changeable = QueueMachine.reduce(
-            item("screenshot-changeable", susan, secondsAgo: 200),
+            item("screenshot-changeable", cast.changeable, secondsAgo: 200),
             .serverAlreadyHas(state: .held, emailAt: now.addingTimeInterval(400)), now: now.addingTimeInterval(-150)
         )
         // Recorded 15 minutes ago and still going up: SENDING 40%.
-        var sending = QueueMachine.reduce(item("screenshot-sending", david, secondsAgo: 15 * 60), .registered(ticket), now: now)
+        var sending = QueueMachine.reduce(item("screenshot-sending", cast.sending, secondsAgo: 15 * 60), .registered(ticket), now: now)
         sending = QueueMachine.reduce(sending, .progress(0.4), now: now)
         // Recorded 25 minutes ago with no signal since: WAITING TO SEND.
-        let waiting = item("screenshot-waiting", linda, secondsAgo: 25 * 60)
+        let waiting = item("screenshot-waiting", cast.waiting, secondsAgo: 25 * 60)
         // A stop that was not on the list, recorded a minute ago.
         let offList = item("screenshot-offlist", nil, secondsAgo: 60)
 
         return [sent, changeable, sending, waiting, offList]
     }
 
-    private static func draft(now: Date, day: String) -> Draft {
+    private static func draft(now: Date, day: String, cast: Cast) -> Draft {
         Draft(
-            id: "screenshot-draft", target: RecordTarget(stop: jane), fileName: "screenshot-draft.mp4",
+            id: "screenshot-draft", target: RecordTarget(stop: cast.target), fileName: "screenshot-draft.mp4",
             stopDate: day, recordedAt: now.addingTimeInterval(-20), durationSec: 14.6, sizeBytes: 5_000_000,
-            location: phoneFix, createdAt: now
+            location: cast.phone, createdAt: now
         )
     }
 
@@ -253,14 +356,14 @@ enum ScreenshotMode {
         better: nil, transcript: "This is Sam at the Smith home on Main Street."
     )
 
-    /// The tech picked 123 Main St but said the neighbour's name.
-    private static let warningCheck: CheckResult = {
+    /// The tech picked one stop but said the neighbour's name.
+    private static func warningCheck(better: Stop) -> CheckResult {
         let signals = Signals(spoken: .mismatch, gps: .match, checkIn: .unknown)
         return CheckResult(
             signals: signals, clean: false, reasons: TwoKeys.verdict(signals).reasons,
-            better: robert, transcript: "This is Sam at the Johnson home."
+            better: better, transcript: "This is Sam at the neighbour's home."
         )
-    }()
+    }
 
     /// A blank 5 MB file for each unsent video, so "My Videos" shows a real
     /// figure for the space they would be holding.

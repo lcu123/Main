@@ -39,8 +39,9 @@ ios/
     Resources/           Assets (icon, colors), privacy manifest, entitlements.
   ZestVideoTests/        Unit tests that run on the simulator.
   ZestVideoUITests/      End-to-end tests: the real app, driven in the simulator.
-  Scripts/               fake_server.py (the UI tests' server), contact_sheet.py
-                         and is_blank.py (the screenshots).
+  Scripts/               fake_server.py (the UI tests' server); for the pictures:
+                         pick_simulator.py, take_screens.sh, screens_job.sh,
+                         contact_sheet.py and is_blank.py.
 ```
 
 No third-party code. Apple frameworks only, system font, one bundled image
@@ -141,7 +142,7 @@ issues the token when a test resets it), so only the sign-in tests type a
 number and a code. A test that kills the app starts it again *without* the
 reset: what the app kept is what is being tested.
 
-**What is covered** (41 tests):
+**What is covered** (61 tests):
 
 | Class | What it proves |
 | --- | --- |
@@ -149,14 +150,20 @@ reset: what the app kept is what is being tested.
 | `RouteUITests` | header counts, nearest stop first, both tabs, locked stop, WRONG STOP, the far-away warning |
 | `RecordUITests` | record → SAVE → one register, the whole file once, one complete; FLIP, BACK, ending early; RECORD AGAIN; the recommend switch; the two-keys warning both ways; change and delete inside ten minutes; not-on-my-list; double taps |
 | `KillUITests` | the app killed mid-recording, on review, mid-upload, before "complete" is answered, and right after SAVE: after it is started again there is exactly one video on the server |
-| `NetworkUITests` | 500s, no server, an expired upload address, "not uploaded", signed out by the server, update required, a stop locked by the server, starting with no signal |
+| `NetworkUITests` | 500s, no server, an expired upload address, "not uploaded", signed out by the server, update required, a stop locked by the server, starting with no signal; and a long day: twelve videos saved with no server, all arriving once and in order when it is back |
 | `BackgroundUploadUITests` | informational: what the simulator does with the real background upload session. Skipped, with the recorded error, if the upload never arrives |
+| `ScreensUITests` | every screen, opened with made-up data: its main actions are on the screen, tappable and not overlapping, nothing runs off the side, and Apple's accessibility audit (contrast, 44-point tap targets, clipped text, descriptions, Dynamic Type) finds nothing unexplained. Also the route of awkward names, where nothing may be cut off. Run by the `sizes` jobs on several simulators and text sizes |
+| `PerformanceUITests` | informational: launch time, time to My Route, memory on each screen and over ten videos, what is left on disk. Run by the `performance` job |
 
 Timing a tap to the tenth of a second is not something a UI test does well,
 so the "ring only ends the clip after three seconds" rule and "a kill at any
 step still ends with one sent video" are also checked as plain logic in
 ZestCore (`testRingTapOnlyEndsTheClipAfterThreeSeconds`,
-`testAKillAtAnyPointStillEndsWithOneSentVideo`).
+`testAKillAtAnyPointStillEndsWithOneSentVideo`). So is the long day with no
+signal (`UploadPlannerTests`): what the upload engine does next is decided
+by `UploadPlanner` in ZestCore (oldest video first, one register call at a
+time, two uploads at once, no signal holds the line) and the app only
+carries it out.
 
 **To run them on a Mac**, with the fake server in one terminal:
 
@@ -220,6 +227,8 @@ Those need a real phone.
 | `app` | macOS | generates the project, builds for an iPhone simulator, runs the unit tests |
 | `screens` | macOS | takes a picture of every screen in the simulator; download the `screens` artifact |
 | `ui-tests` | macOS, jobs `a` and `b` side by side (plus `c`, informational) | starts the fake server, runs the UI tests in the simulator; on a failure, the log names the test, the assertion and what the server saw |
+| `sizes` | macOS, three jobs side by side | pictures of every screen on the smallest iPhone (plus the awkward names), a 6.1-inch iPhone, an iPad, and at the largest text sizes; then `ScreensUITests` on each. Artifacts `screens-small`, `screens-odd-names`, `screens-mid`, `screens-ipad`, `screens-large-text` |
+| `performance` | macOS, informational | `PerformanceUITests`, plus the size of a Release build for a phone; prints a table and uploads it as `performance.txt` |
 | `testflight` | macOS, manual | archives and uploads to App Store Connect |
 
 ## Pictures of every screen
@@ -250,6 +259,38 @@ It does not guess how long a launch takes: in screenshot mode the app writes
 a small file once the screen is up, and the job waits for it. A picture that
 is still one flat colour (`Scripts/is_blank.py`) is taken again, and the job
 warns, with the app's last log lines, if it stays blank.
+
+### Other sizes, larger text, awkward names
+
+The `sizes` jobs take the same pictures on other simulators
+(`Scripts/screens_job.sh`, which uses `Scripts/take_screens.sh`):
+
+| Artifact | What |
+| --- | --- |
+| `screens-small` | the smallest iPhone the newest iOS runs (an SE if there is one; a simulator is made for it if none exists) |
+| `screens-odd-names` | the same phone, with a route of awkward customers |
+| `screens-mid` | a 6.1-inch iPhone |
+| `screens-ipad` | an iPad, where this iPhone-only app runs in an iPhone-sized window, as Apple's reviewer may see it |
+| `screens-large-text` | the big iPhone with the text size at the largest the app follows, and at the very largest accessibility size (which should look the same: the app stops growing there) |
+
+`Scripts/pick_simulator.py` chooses each simulator from what the Mac has, by
+its real screen size rather than its name.
+
+The awkward customers come from `-ZestFixture odd`, and `-ZestStop <n>` (0 to
+9) picks which of them the screen is about: an apostrophe, accents, a
+hyphen, "van der", a 45-letter business, all capitals, an emoji, one word, a
+PO box, and a 24-letter last name; a long address with a unit among them.
+
+```bash
+xcrun simctl launch --terminate-running-process booted com.zestlawnpest.video -ZestScreen confirm -ZestFixture odd -ZestStop 4
+```
+
+After the pictures, each job runs `ScreensUITests` on the same simulator.
+Its failures name the screen and the element. Every issue Apple's audit
+raises is also printed as a table in the step "Apple's accessibility audit,
+every issue": `FAILED` lines fail the test, `known` lines are deliberate and
+give the reason (words over the camera picture, which is a drawing here),
+and `listed` lines are shown but do not fail.
 
 ## Ship to TestFlight
 

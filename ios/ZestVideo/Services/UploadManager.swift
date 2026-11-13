@@ -31,6 +31,9 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
 
     /// Videos with a register/complete/delete call in the air.
     private var busy = Set<String>()
+    /// The ones of those that are register calls: each is about to become
+    /// an upload, so it counts towards the two that may run at once.
+    private var registering = Set<String>()
     /// Videos this launch has already given an upload task, and which task.
     private var started: [String: Int] = [:]
     /// Videos whose task this launch started but the system no longer lists,
@@ -120,53 +123,48 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
     private func advance(live: Set<String>) {
         guard api.token != nil else { return }
         let now = Date()
-        var soonest: Date?
 
-        for item in store.items {
-            if busy.contains(item.id) { continue }
-            if !item.mayRetry(now: now) {
-                if let wait = item.notBefore { soonest = min(soonest ?? wait, wait) }
+        // Which videos have an upload task alive.
+        var uploading = Set<String>()
+        for item in store.items where item.phase == .uploading {
+            if live.contains(item.id) {
+                missingSince[item.id] = nil
+                uploading.insert(item.id)
                 continue
             }
-            switch item.phase {
-            case .queued:
-                register(item)
-            case .uploading:
-                if live.contains(item.id) {
-                    missingSince[item.id] = nil
-                    continue
-                }
-                if let taskIdentifier = started[item.id] {
-                    // This launch started a task for it, and the system no
-                    // longer lists that task. Normally its result is on the
-                    // way. If nothing has come a good while later, the task
-                    // is lost: start again rather than wait for ever.
-                    guard let since = missingSince[item.id] else {
-                        missingSince[item.id] = now
-                        scheduleCheck(after: UploadManager.lostTaskSeconds + 1)
-                        continue
-                    }
-                    if now.timeIntervalSince(since) < UploadManager.lostTaskSeconds {
-                        scheduleCheck(after: UploadManager.lostTaskSeconds + 1)
-                        continue
-                    }
-                    started[item.id] = nil
-                    missingSince[item.id] = nil
-                    shownProgress[item.id] = nil
-                    trace("upload task \(taskIdentifier) for \(item.id) vanished with no result; starting again")
-                    onUploadProblem?(item.id, ["reason": "task vanished with no result", "session": sessionKind])
-                }
-                if item.needsFreshURL(now: now) {
-                    register(item)
-                } else {
-                    startUpload(item)
-                }
-            case .uploaded:
-                complete(item)
-            case .deleting:
-                tellServerDeleted(item)
-            case .done, .blocked, .removed:
-                break
+            guard let taskIdentifier = started[item.id] else { continue }
+            // This launch started a task for it, and the system no longer
+            // lists that task. Normally its result is on the way. If nothing
+            // has come a good while later, the task is lost: start again
+            // rather than wait for ever.
+            if let since = missingSince[item.id], now.timeIntervalSince(since) >= UploadManager.lostTaskSeconds {
+                started[item.id] = nil
+                missingSince[item.id] = nil
+                shownProgress[item.id] = nil
+                trace("upload task \(taskIdentifier) for \(item.id) vanished with no result; starting again")
+                onUploadProblem?(item.id, ["reason": "task vanished with no result", "session": sessionKind])
+                continue
+            }
+            if missingSince[item.id] == nil {
+                missingSince[item.id] = now
+            }
+            scheduleCheck(after: UploadManager.lostTaskSeconds + 1)
+            uploading.insert(item.id)
+        }
+
+        // What to do next is decided in ZestCore, where it is tested: oldest
+        // video first, one register call at a time, two uploads at once.
+        let plan = UploadPlanner.plan(items: store.items, uploading: uploading, registering: registering, busy: busy, now: now)
+        for step in plan.steps {
+            switch step {
+            case .register(let id):
+                if let item = store.item(id) { register(item) }
+            case .startUpload(let id):
+                if let item = store.item(id) { startUpload(item) }
+            case .complete(let id):
+                if let item = store.item(id) { complete(item) }
+            case .tellDeleted(let id):
+                if let item = store.item(id) { tellServerDeleted(item) }
             }
         }
 
@@ -176,7 +174,7 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
             cancelTasks { !known.contains($0) }
         }
 
-        if let soonest { scheduleRetry(at: soonest) }
+        if let soonest = plan.lookAgainAt { scheduleRetry(at: soonest) }
     }
 
     /// One timer for the next retry. Only fires while the app is running;
@@ -223,16 +221,22 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
             store.apply(.fileLost, to: item.id)
             onNotice?("A video was no longer on the phone. Please record it again.")
             onChange?()
+            // The next video in line must not wait behind this one.
+            pump()
             return
         }
         busy.insert(item.id)
+        registering.insert(item.id)
         store.apply(.registering, to: item.id)
         let request = item.registerRequest
         let background = beginBackgroundWork()
         Task { @MainActor in
             defer {
                 busy.remove(item.id)
+                registering.remove(item.id)
                 endBackgroundWork(background)
+                // Whatever the answer, the next video in line can be asked for.
+                pump()
             }
             do {
                 let answer = try await api.register(request)
@@ -272,6 +276,7 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
             trace("no upload started for \(item.id): its file is not on the phone")
             store.apply(.fileLost, to: item.id)
             onChange?()
+            pump()
             return
         }
         guard started[item.id] == nil else { return }
@@ -387,9 +392,13 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
     private func failed(_ id: String, _ error: APIError) {
         switch error {
         case .unauthorized:
-            // Keep the queue: it sends after the next sign-in.
+            // Keep the queue: it sends after the next sign-in. The wait
+            // stops the engine asking again at once; signing in clears it.
+            store.apply(.callFailed(error.message, retryAfter: 300), to: id)
             onUnauthorized?()
         case .updateRequired:
+            // The answer will be the same until the app is updated.
+            store.apply(.callFailed(error.message, retryAfter: 300), to: id)
             onUpdateRequired?()
         default:
             if error.isTransient {
@@ -448,6 +457,7 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
     /// UI-test reset only: cancel transfers left over from an earlier test.
     func cancelEverything() {
         started.removeAll()
+        registering.removeAll()
         missingSince.removeAll()
         shownProgress.removeAll()
         cancelTasks { _ in true }
