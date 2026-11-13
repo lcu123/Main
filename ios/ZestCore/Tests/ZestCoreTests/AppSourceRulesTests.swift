@@ -195,6 +195,30 @@ final class AppSourceRulesTests: XCTestCase {
         XCTAssertFalse(model.contains("frozenNow ="), "only screenshot mode may set it")
     }
 
+    /// On a route card, what comes from the customer's record (name,
+    /// street, town) takes a second line at its full size when it does not
+    /// fit on one. It is never held to one line and squeezed: on the
+    /// smallest iPhone that drew a 20-letter town at about 80% of its size,
+    /// and a longer one would have ended in "…".
+    func testNothingFromTheCustomersRecordIsHeldToOneLineOnARouteCard() throws {
+        let lines = try text("ZestVideo/UI/TodayView.swift").components(separatedBy: "\n")
+        var found = 0
+        for (index, line) in lines.enumerated() where line.contains("Text(stop.") {
+            found += 1
+            let what = line.trimmingCharacters(in: .whitespaces)
+            // Its modifiers: the lines that follow, up to the next view.
+            var modifiers: [String] = []
+            for next in lines[(index + 1)...] {
+                let trimmed = next.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix(".") else { break }
+                modifiers.append(trimmed)
+            }
+            XCTAssertFalse(modifiers.contains(".lineLimit(1)"), "\(what) is held to one line")
+            XCTAssertTrue(modifiers.contains(".fixedSize(horizontal: false, vertical: true)"), "\(what) must be free to grow down the card")
+        }
+        XCTAssertEqual(found, 3, "the name, the street and the town")
+    }
+
     /// No third-party code, and no sharing of a video out of the app.
     func testNoShareSheetAndNoThirdPartyImports() throws {
         let allowed: Set<String> = [

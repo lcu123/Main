@@ -155,7 +155,7 @@ Proven:
 - URL signing matches Amazon's published SigV4 example.
 - App: compiles and passes its unit tests on Xcode 16 and Xcode 26, and CI
   launches every screen in the iPhone simulator and photographs it.
-- App, end to end in the simulator: 41 UI tests tap through every screen and
+- App, end to end in the simulator: 84 UI tests tap through every screen and
   button against a fake server and check both the screen and what the server
   received. They cover sign-in by text code, the route list, record → "Save
   this video?" → SAVE, record again, delete inside the 10 minutes, the

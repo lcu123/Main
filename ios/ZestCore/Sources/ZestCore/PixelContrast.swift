@@ -108,6 +108,106 @@ public enum PixelContrast {
         )
     }
 
+    // MARK: Is a line of text whole?
+
+    /// How much clear background there is between the drawn text and each
+    /// edge of its picture, in pixels.
+    ///
+    /// A line that is cut off by something, or that spills out of the room
+    /// it was given, has ink running right up to an edge. A line that is
+    /// whole has clear background all the way along its top, its bottom and
+    /// its right-hand end. (Its first letter may sit against the left edge:
+    /// that is where the line starts.)
+    public struct Air: Equatable, Sendable {
+        public let top: Int
+        public let bottom: Int
+        public let left: Int
+        public let right: Int
+
+        public init(top: Int, bottom: Int, left: Int, right: Int) {
+            self.top = top
+            self.bottom = bottom
+            self.left = left
+            self.right = right
+        }
+
+        /// Nothing drawn touches the top, the bottom or the far end.
+        public var isWhole: Bool { top >= 1 && bottom >= 1 && right >= 1 }
+
+        /// "air above 10, below 8, at the end 12 px"
+        public var summary: String { "air above \(top), below \(bottom), at the end \(right) px" }
+    }
+
+    /// A pixel is ink when any of its three colours is further than this
+    /// from the background's (of 255). Above the faintest edge of a letter's
+    /// soft outline, well under any colour the app writes in.
+    public static let inkTolerance = 24
+
+    /// Finds the drawn part of a picture of one line of text and says how
+    /// far it is from each edge.
+    /// - Parameters:
+    ///   - rgb: red, green and blue for each pixel, row after row from the top.
+    ///   - width: pixels in a row.
+    /// - Returns: `nil` when there is no picture or nothing is drawn in it.
+    public static func air(rgb: [UInt8], width: Int) -> Air? {
+        guard width > 0, rgb.count >= width * 3 else { return nil }
+        let height = rgb.count / 3 / width
+        guard height > 0 else { return nil }
+
+        // The background: the most common colour round the rim of the
+        // picture. What a line sits on is what surrounds it, even when the
+        // line itself (a row of heavy capitals, a picture character) fills
+        // more of the picture than the background does.
+        var pixels = [Int](repeating: 0, count: 32_768)
+        var index = 0
+        func count(_ x: Int, _ y: Int) {
+            let at = (y * width + x) * 3
+            pixels[((Int(rgb[at]) >> 3) << 10) | ((Int(rgb[at + 1]) >> 3) << 5) | (Int(rgb[at + 2]) >> 3)] += 1
+        }
+        for x in 0..<width {
+            count(x, 0)
+            count(x, height - 1)
+        }
+        for y in 0..<height {
+            count(0, y)
+            count(width - 1, y)
+        }
+        var backgroundGroup = 0
+        for group in 0..<pixels.count where pixels[group] > pixels[backgroundGroup] {
+            backgroundGroup = group
+        }
+        // The middle of that group is near enough to its true colour here.
+        let red = ((backgroundGroup >> 10) & 31) * 8 + 4
+        let green = ((backgroundGroup >> 5) & 31) * 8 + 4
+        let blue = (backgroundGroup & 31) * 8 + 4
+
+        var top = height, bottom = -1, left = width, right = -1
+        index = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                let apart = max(abs(Int(rgb[index]) - red), abs(Int(rgb[index + 1]) - green), abs(Int(rgb[index + 2]) - blue))
+                index += 3
+                if apart > inkTolerance {
+                    if y < top { top = y }
+                    if y > bottom { bottom = y }
+                    if x < left { left = x }
+                    if x > right { right = x }
+                }
+            }
+        }
+        guard bottom >= 0 else { return nil }
+        return Air(top: top, bottom: height - 1 - bottom, left: left, right: width - 1 - right)
+    }
+
+    /// True when the words hold a picture character (an emoji). Such a
+    /// character comes from another font, which claims more height than it
+    /// draws in; Apple's audit takes that claim for clipped text.
+    public static func hasPictureCharacter(_ words: String) -> Bool {
+        words.unicodeScalars.contains { scalar in
+            scalar.properties.isEmojiPresentation || (scalar.properties.isEmoji && scalar.value > 0x238C)
+        }
+    }
+
     /// "#1A68C4"
     public static func hexText(_ colour: UInt32) -> String {
         let digits = String(colour & 0xFFFFFF, radix: 16, uppercase: true)

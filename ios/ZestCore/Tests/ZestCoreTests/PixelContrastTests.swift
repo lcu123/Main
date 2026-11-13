@@ -99,6 +99,89 @@ final class PixelContrastTests: XCTestCase {
         XCTAssertEqual(reading.words, 0x333333)
     }
 
+    // MARK: Is a line whole?
+
+    /// A picture `width` x `height` of the page grey, with a dark block of
+    /// "letters" drawn from (`x0`, `y0`) to (`x1`, `y1`) inclusive.
+    private func line(width: Int, height: Int, ink: (x0: Int, y0: Int, x1: Int, y1: Int)?, paper: UInt8 = 0xF5) -> [UInt8] {
+        var rgb = [UInt8](repeating: paper, count: width * height * 3)
+        if let ink {
+            for y in ink.y0...ink.y1 {
+                for x in ink.x0...ink.x1 {
+                    let at = (y * width + x) * 3
+                    rgb[at] = 0x33
+                    rgb[at + 1] = 0x33
+                    rgb[at + 2] = 0x33
+                }
+            }
+        }
+        return rgb
+    }
+
+    func testAWholeLineHasClearBackgroundRoundIt() throws {
+        // The name with a sunflower on the confirm screen, as CI's picture
+        // of the smallest iPhone shows it: 530 x 108 pixels, drawn from row
+        // 10 to row 99 and ending 12 pixels short of the far edge.
+        let air = try XCTUnwrap(PixelContrast.air(rgb: line(width: 530, height: 108, ink: (2, 10, 517, 99)), width: 530))
+        XCTAssertEqual(air, PixelContrast.Air(top: 10, bottom: 8, left: 2, right: 12))
+        XCTAssertTrue(air.isWhole)
+        XCTAssertEqual(air.summary, "air above 10, below 8, at the end 12 px")
+    }
+
+    func testALineCutAtAnEdgeIsNotWhole() throws {
+        // Cut along the bottom: the letters run to the last row.
+        var air = try XCTUnwrap(PixelContrast.air(rgb: line(width: 200, height: 40, ink: (4, 6, 150, 39)), width: 200))
+        XCTAssertEqual(air.bottom, 0)
+        XCTAssertFalse(air.isWhole)
+        // Cut along the top.
+        air = try XCTUnwrap(PixelContrast.air(rgb: line(width: 200, height: 40, ink: (4, 0, 150, 30)), width: 200))
+        XCTAssertFalse(air.isWhole)
+        // Running off the far end.
+        air = try XCTUnwrap(PixelContrast.air(rgb: line(width: 200, height: 40, ink: (4, 6, 199, 30)), width: 200))
+        XCTAssertEqual(air.right, 0)
+        XCTAssertFalse(air.isWhole)
+        // Starting hard against the left edge is where a line starts: fine.
+        air = try XCTUnwrap(PixelContrast.air(rgb: line(width: 200, height: 40, ink: (0, 6, 150, 30)), width: 200))
+        XCTAssertEqual(air.left, 0)
+        XCTAssertTrue(air.isWhole)
+    }
+
+    func testTheSoftEdgeOfALetterIsNotInkButAFaintColourIs() throws {
+        // A shade or two off the background (the blur at a letter's edge,
+        // a JPEG's noise) is not a letter...
+        var rgb = line(width: 100, height: 30, ink: (10, 8, 80, 20))
+        for x in 0..<100 {                       // the whole top row, 12 of 255 off
+            rgb[x * 3] = 0xE9
+            rgb[x * 3 + 1] = 0xE9
+            rgb[x * 3 + 2] = 0xE9
+        }
+        XCTAssertEqual(try XCTUnwrap(PixelContrast.air(rgb: rgb, width: 100)).top, 8)
+        // ...but the palest thing the app writes with (white on the main
+        // blue, grey on white) is far more than that off its background.
+        for x in 0..<100 {
+            rgb[x * 3] = 0x59
+            rgb[x * 3 + 1] = 0x59
+            rgb[x * 3 + 2] = 0x59
+        }
+        XCTAssertEqual(try XCTUnwrap(PixelContrast.air(rgb: rgb, width: 100)).top, 0)
+    }
+
+    func testAPictureWithNothingDrawnHasNoAir() {
+        XCTAssertNil(PixelContrast.air(rgb: line(width: 50, height: 20, ink: nil), width: 50))
+        XCTAssertNil(PixelContrast.air(rgb: [], width: 0))
+        XCTAssertNil(PixelContrast.air(rgb: [1, 2, 3], width: 5), "Fewer pixels than one row.")
+    }
+
+    func testWhichNamesHoldAPictureCharacter() {
+        XCTAssertTrue(PixelContrast.hasPictureCharacter("Rivers, Kai 🌻"))
+        XCTAssertTrue(PixelContrast.hasPictureCharacter("❤️ Home"))
+        XCTAssertFalse(PixelContrast.hasPictureCharacter("O'Brien, Sean"))
+        XCTAssertFalse(PixelContrast.hasPictureCharacter("Núñez-García, José"))
+        XCTAssertFalse(PixelContrast.hasPictureCharacter("SENT ✓"), "A tick is a letter-like mark from the text font, not a picture.")
+        XCTAssertFalse(PixelContrast.hasPictureCharacter("CHANGE VIDEO · 7 MIN LEFT"), "Digits are not pictures.")
+        XCTAssertFalse(PixelContrast.hasPictureCharacter("31 Mt Shasta Way #4"))
+    }
+
     func testTheNumbersAreWrittenPlainly() {
         XCTAssertEqual(PixelContrast.hexText(0x1A68C4), "#1A68C4")
         XCTAssertEqual(PixelContrast.hexText(0x000A0B), "#000A0B")

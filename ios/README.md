@@ -169,7 +169,7 @@ in that file).
 cd ios/ZestCore && swift test
 ```
 
-runs the logic tests anywhere, Linux included (247 tests). Among them are
+runs the logic tests anywhere, Linux included (253 tests). Among them are
 rules about the app's own source, checked by reading the files
 (`AppSourceRulesTests`): no photo-library key or call, no share sheet,
 Apple frameworks only, and every pair of colours the screens use has the
@@ -240,7 +240,7 @@ issues the token when a test resets it), so only the sign-in tests type a
 number and a code. A test that kills the app starts it again *without* the
 reset: what the app kept is what is being tested.
 
-**What is covered** (78 tests):
+**What is covered** (84 tests):
 
 | Class | What it proves |
 | --- | --- |
@@ -255,7 +255,8 @@ reset: what the app kept is what is being tested.
 | `WithoutLocationUITests` | location refused: the stops show in route order, a video is recorded and arrives once with the GPS key "unknown" and no location, and nothing crashes |
 | `TeamUITests` | one video per tech per property. The lead is not shown another tech's video, his own is taken with no 409, and RECORD AGAIN replaces only his own. The helper sees DONE BY TEAM, gets no RECORD AGAIN, DELETE or CALL OFFICE on the lead's video, records his own beside it, and deleting his own leaves the lead's alone and the stop reads DONE BY TEAM again. After a delete the app asks the server for the day again; for the lead the stop simply reopens |
 | `BackgroundUploadUITests` | informational: what the simulator does with the real background upload session. Skipped, with the recorded error, if the upload never arrives |
-| `ScreensUITests` | every screen (19), opened with made-up data: its main actions are on the screen, tappable and not overlapping, nothing runs off the side; the gloves rule (every main button at least 76 points tall and as wide as the screen less its gutters, the record button and ring at least 120 across, and after sign-in nothing to type, pick, slide or swipe); every page that is taller than its room scrolls every line of it clear of the bars (a single card taller than the room must be readable in two scrolls: its first line and its last each come into view); and Apple's accessibility audit (contrast, 44-point tap targets, clipped text, descriptions, Dynamic Type) finds nothing unexplained, each row judged where it can be seen whole (one half under the tab bar is scrolled clear and audited again), a contrast issue on a line of text settled by measuring that line's pixels, with the YES / NO switch looked at in both states. Also the route of awkward names, where nothing may be cut off. Run by the `sizes` jobs on several simulators and text sizes |
+| `ScreensUITests` | every screen (19), opened with made-up data: its main actions are on the screen, tappable and not overlapping, nothing runs off the side; the gloves rule (every main button at least 76 points tall and as wide as the screen less its gutters, the record button and ring at least 120 across, and after sign-in nothing to type, pick, slide or swipe); every page that is taller than its room scrolls every line of it clear of the bars (a single card taller than the room must be readable in two scrolls: its first line and its last each come into view); and Apple's accessibility audit (contrast, 44-point tap targets, clipped text, descriptions, Dynamic Type) finds nothing unexplained. The audit moves the page while it runs and flags rows it saw half under a bar, so a contrast issue on a line of text is settled by scrolling that line whole on to the screen and measuring its pixels, a tap target by its size once whole, and anything else flagged on a whole row fails. The YES / NO switch is looked at in both states. Run by the `sizes` jobs on several simulators and text sizes |
+| `OddNamesUITests` | the route of awkward customers (an apostrophe, accents, a hyphen, a 45-letter business, all capitals, an emoji, one word, a unit, a PO box, a 24-letter last name) on every screen that shows a name: nothing cut off, every action still there. Seven tests of a few minutes each (it was one, and on the smallest iPhone it was stopped at fifteen minutes a third short of done). Run on the smallest iPhone by the `sizes` job |
 | `PerformanceUITests` | informational: launch time, time to My Route, memory on each screen and over ten videos, what is left on disk. Run by the `performance` job |
 
 Timing a tap to the tenth of a second is not something a UI test does well,
@@ -408,11 +409,19 @@ raises is also printed as a table in the step "Apple's accessibility audit,
 every issue": `FAILED` lines fail the test, `known` lines give the reason
 they do not, and `listed` lines are shown but do not fail.
 
+**The audit moves the page while it runs.** Put at the end of My Route at
+the largest text, it comes back with the page a card and a half further
+up; on the warning screen it comes back with the page at its top, every
+time. (The table has a `moved` line whenever it happens.) So a row cannot
+be "scrolled clear of the bars and audited again": by the time the audit
+looks, the row is somewhere else, often half under a bar, and that is when
+it says "Contrast failed" about plain dark words on white. Nothing in the
+checks relies on the audit seeing a row where the test put it.
+
 **Contrast is settled by the pixels.** Apple's audit says "Contrast failed"
-with no numbers, and at some text sizes it says so about plain dark words on
-a pale page. So for every line of text it flags, the test takes a picture of
-just that line, where it is whole on the screen, and reads the two colours
-off it (`ZestCore/PixelContrast.swift`: the most common colour is what the
+with no numbers. So for every line of text it flags, the test scrolls the
+line whole on to the screen itself, takes a picture of just that line, and
+reads the two colours off it (`ZestCore/PixelContrast.swift`: the most common colour is what the
 words sit on; the colour that stands out most from it is the words). 4.5:1
 or better, inside the screen, no other text across it: the line is `known`,
 with the measured numbers. Fainter, cut off or covered: it fails, with the
@@ -424,6 +433,17 @@ job. To measure a rectangle of any screenshot by hand (points, not pixels):
 ```bash
 python3 ios/Scripts/measure_contrast.py --png 01-login.png --rect 18,225,397,41 --scale 3
 ```
+
+**"Text clipped" and emoji.** Apple's audit says "Text clipped" about a
+line with an emoji in it (the sunflower in one made-up customer's name),
+though the line is whole: the emoji comes from another font, which claims
+more height than it draws. For such a line the test measures the air round
+the drawn text in the line's own frame (`PixelContrast.air`): clear
+background above it, below it and at its end, or it fails. Those rows are
+in the same table and are read again by `measure_contrast.py`. The same
+audit was right about the town on a route card: held to one line, it was
+drawn at about 80% of its size on the smallest iPhone. It now takes a
+second line at full size.
 
 **The clock holds still in screenshot mode.** "7 MIN LEFT" on a card stays
 "7 MIN LEFT" for as long as the screen is open, so a check that takes two

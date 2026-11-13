@@ -33,8 +33,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE/.."
 
 APP="build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app"
+# One test per screen with the usual customers; and the awkward names, in
+# seven tests of a few minutes each.
 SUITE="ZestVideoUITests/ScreensUITests"
-ODD_TEST="$SUITE/testOddNamesAreNeverCutOff"
+ODD_SUITE="ZestVideoUITests/OddNamesUITests"
 ALL="login code today today2 confirm far record recording review warning saved stopvideo locked queue update team lowspace full olddraft"
 # The awkward names: the lists, then the screen with the largest type for
 # every customer, then the other screens for the four longest names.
@@ -165,7 +167,7 @@ watch_for_stalls() {
 why() {
   local log="$1"
   grep -E "exceeded execution time allowance" "$log" \
-    | sed -E "s/^Test Case '-\\[[A-Za-z]+\\.([A-Za-z]+) ([A-Za-z0-9_]+)\\]' exceeded execution time allowance of ([0-9a-z ]+)\\..*/######## TIMED OUT \\1.\\2: it ran for \\3 and was stopped. (STUCK lines above say where.)/" | sort -u
+    | sed -E "s/^Test Case '-\\[[A-Za-z]+\\.([A-Za-z]+) ([A-Za-z0-9_]+)\\]' exceeded execution time allowance of ([0-9a-z ]+)\\..*/######## TIMED OUT \\1.\\2: it ran for \\3 and was stopped. (If it sat still, a STUCK line above says where. If there is none, it was working and is simply too long for its allowance.)/" | sort -u
   grep -E "Failed to initialize for UI testing|encountered an error \\(|Restarting after unexpected exit|Timed out waiting for AX|Test runner never began|The test runner (exited|crashed|hung)|Unable to (boot|launch|install)|Application failed preflight|Crash: " "$log" \
     | sed -E 's/^[0-9: .+-]+ZestVideoUITests-Runner\[[0-9:]+\] //; s/^[[:space:]]+//' | sort -u | cut -c1-260 | sed 's/^/######## /'
 }
@@ -236,7 +238,7 @@ checks() {
   python3 Scripts/measure_contrast.py "ui-artifacts/failures/$label" || FAILED_PASSES="$FAILED_PASSES contrast:$label"
   # A simulator that has had a stuck test is not trusted for the next pass.
   if grep -qE "exceeded execution time allowance|Restarting after unexpected exit" "$log" || [ -s "ui-artifacts/$label.stuck.txt" ]; then
-    echo "A test was stuck in this pass: starting the simulator again before the next one."
+    echo "A test was stopped in this pass: starting the simulator again before the next one."
     restart "$udid"
   fi
 }
@@ -247,15 +249,15 @@ case "$VARIANT" in
     boot "$SMALL"
     pictures "$SMALL" screens-small $ALL
     pictures "$SMALL" screens-odd-names odd $ODD
-    checks small "$SMALL" small 0 1 0 "-only-testing:$SUITE" "-skip-testing:$ODD_TEST"
-    checks small-odd-names "$SMALL" small 0 1 0 "-only-testing:$ODD_TEST"
+    checks small "$SMALL" small 0 1 0 "-only-testing:$SUITE"
+    checks small-odd-names "$SMALL" small 0 1 0 "-only-testing:$ODD_SUITE"
     ;;
   mid-ipad)
     MID=$(pick mid) || exit 1
     boot "$MID"
     pictures "$MID" screens-mid $ALL
     # On 6.1 inches and up every main action must show without scrolling.
-    checks mid "$MID" mid 1 1 0 "-only-testing:$SUITE" "-skip-testing:$ODD_TEST"
+    checks mid "$MID" mid 1 1 0 "-only-testing:$SUITE"
     xcrun simctl shutdown "$MID" 2>/dev/null || true
 
     # The app is iPhone-only. On an iPad it runs in an iPhone-sized window,
@@ -263,7 +265,7 @@ case "$VARIANT" in
     IPAD=$(pick ipad) || exit 1
     boot "$IPAD"
     pictures "$IPAD" screens-ipad $ALL
-    checks ipad "$IPAD" ipad 0 0 0 "-only-testing:$SUITE" "-skip-testing:$ODD_TEST"
+    checks ipad "$IPAD" ipad 0 0 0 "-only-testing:$SUITE"
     ;;
   large-text)
     BIG=$(pick big) || exit 1
@@ -272,14 +274,14 @@ case "$VARIANT" in
     # pictures, then every check, Apple's audit included.
     text_size "$BIG" extra-extra-extra-large
     pictures "$BIG" screens-large-text $ALL
-    checks large-text "$BIG" large-text 0 1 1 "-only-testing:$SUITE" "-skip-testing:$ODD_TEST"
+    checks large-text "$BIG" large-text 0 1 1 "-only-testing:$SUITE"
     text_size "$BIG" large
     ;;
   big)
     BIG=$(pick big) || exit 1
     boot "$BIG"
     # The big phone as it comes: Apple's audit at the ordinary text size.
-    checks big "$BIG" big 1 1 0 "-only-testing:$SUITE" "-skip-testing:$ODD_TEST"
+    checks big "$BIG" big 1 1 0 "-only-testing:$SUITE"
 
     # The very largest accessibility size. The app stops growing one step
     # sooner, so these pictures should look like the large-text job's; the
@@ -288,7 +290,7 @@ case "$VARIANT" in
     # time on the same layout.
     text_size "$BIG" accessibility-extra-extra-extra-large
     pictures "$BIG" screens-largest-accessibility $ALL
-    checks largest-accessibility "$BIG" largest-accessibility 0 0 1 "-only-testing:$SUITE" "-skip-testing:$ODD_TEST"
+    checks largest-accessibility "$BIG" largest-accessibility 0 0 1 "-only-testing:$SUITE"
     text_size "$BIG" large
     ;;
   *)

@@ -320,11 +320,19 @@ struct StopCard: View {
                                 .multilineTextAlignment(.leading)
                                 .fixedSize(horizontal: false, vertical: true)
                             if !stop.cityLine.isEmpty {
+                                // At its full size, on a second line when
+                                // it has to be. On one line it was squeezed
+                                // to about 80% on the smallest phone for a
+                                // 20-letter town, and a 26-letter one
+                                // ("El Dorado Hills, CA 95762" is 25) would
+                                // have ended in "…".
                                 Text(stop.cityLine)
                                     .zestFont(.rowStreet)
                                     .foregroundColor(Theme.softInk)
-                                    .lineLimit(1)
+                                    .lineLimit(2)
                                     .minimumScaleFactor(0.7)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                         Spacer(minLength: 0)
