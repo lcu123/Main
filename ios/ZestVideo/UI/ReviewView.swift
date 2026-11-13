@@ -55,13 +55,17 @@ struct ReviewView: View {
     // MARK: Ask
 
     private var ask: some View {
-        Screen(bar: "Review", title: "Save this video?") {
+        // `squeeze`: the clip takes whatever height is left, so the name, the
+        // whole "I recommended something" row and both buttons always show
+        // on first view, on every phone, with nothing below the fold.
+        Screen(bar: "Review", title: "Save this video?", squeeze: true) {
             if let draft = app.draft {
                 Text(draft.target.name)
                     .zestFont(.rowName)
                     .foregroundColor(Theme.ink)
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             clip
             if app.config.recommendButton {
@@ -105,7 +109,8 @@ struct ReviewView: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .frame(height: Theme.clipHeight)
+            // As tall as the room allows, between these two limits.
+            .frame(minHeight: Theme.clipMinHeight, idealHeight: Theme.clipMinHeight, maxHeight: Theme.clipHeight)
             .clipShape(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous))
             .contentShape(Rectangle())
         }
@@ -126,10 +131,6 @@ struct ReviewView: View {
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    Text(recommend ? "YES" : "NO")
-                        .zestFont(.bodyBold)
-                        .foregroundColor(recommend ? Theme.blue : Theme.softInk)
-                        .lineLimit(1)
                     BigSwitch(isOn: recommend)
                 }
                 .padding(.horizontal, 16)
@@ -150,7 +151,8 @@ struct ReviewView: View {
         let result = currentResult
         return Screen(bar: "Check Stop", title: "Is this the right stop?") {
             if let draft = app.draft {
-                StopHeadline(name: draft.target.name, address: draft.target.address)
+                // The smaller card: the warning under it has to show too.
+                StopHeadline(name: draft.target.name, address: draft.target.address, style: .small)
             }
             ForEach(result?.reasons ?? [], id: \.self) { reason in
                 Banner(text: reason, tone: .attention)
@@ -307,21 +309,45 @@ struct PickStopView: View {
     }
 }
 
-/// A large on/off switch, drawn to match the rest of the app: blue when on.
-/// It only shows the state; the whole row it sits in is the button.
+/// A large on/off switch, drawn to match the rest of the app: blue with
+/// "YES" when on, grey with "NO" when off. It only shows the state; the whole
+/// row it sits in is the button.
 struct BigSwitch: View {
     let isOn: Bool
 
     var body: some View {
-        ZStack(alignment: isOn ? .trailing : .leading) {
+        let knob: CGFloat = 46
+        ZStack {
             Capsule()
                 .fill(isOn ? Theme.blue : Theme.hairline)
-            Circle()
-                .fill(Color.white)
-                .shadow(color: Color.black.opacity(0.25), radius: 2, x: 0, y: 1)
-                .padding(4)
+            HStack(spacing: 0) {
+                if isOn {
+                    word
+                    knobView(knob)
+                } else {
+                    knobView(knob)
+                    word
+                }
+            }
+            .padding(4)
         }
-        .frame(width: 92, height: 54)
+        .frame(width: 112, height: knob + 8)
         .accessibilityHidden(true)
+    }
+
+    private var word: some View {
+        Text(isOn ? "YES" : "NO")
+            .font(.system(size: Theme.size(.pill), weight: .bold))
+            .foregroundColor(isOn ? Color.white : Theme.ink)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .frame(maxWidth: .infinity)
+    }
+
+    private func knobView(_ size: CGFloat) -> some View {
+        Circle()
+            .fill(Color.white)
+            .shadow(color: Color.black.opacity(0.25), radius: 2, x: 0, y: 1)
+            .frame(width: size, height: size)
     }
 }

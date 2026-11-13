@@ -107,6 +107,8 @@ enum HomeTab: Equatable {
 struct Screen<Content: View, Footer: View>: View {
     /// The screen's short name, centred in the top bar.
     let bar: String
+    /// A second, blue line under the name in the top bar (the date on My Route).
+    var barDetail: String?
     /// Where the back arrow goes. The big BACK button at the bottom does the same.
     var onBack: (() -> Void)?
     /// The question, large, at the top of the page.
@@ -115,37 +117,36 @@ struct Screen<Content: View, Footer: View>: View {
     var tab: HomeTab?
     /// Open scrolled to the end. Only ever true in screenshot mode.
     var startAtBottom = false
+    /// The page holds something that can give way (the clip on the review
+    /// screen). It is laid out to fill exactly the room there is, so nothing
+    /// is hidden below the fold; it only scrolls if even the smallest
+    /// version will not fit.
+    var squeeze = false
     @ViewBuilder var content: () -> Content
     @ViewBuilder var footer: () -> Footer
 
     var body: some View {
         VStack(spacing: 0) {
-            TopBar(title: bar, onBack: onBack)
+            TopBar(title: bar, detail: barDetail, onBack: onBack)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    if let title {
-                        Text(title)
-                            .zestFont(.title)
-                            .foregroundColor(Theme.titleInk)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityAddTraits(.isHeader)
-                    }
-                    content()
-                    if Theme.compactHeight {
-                        VStack(spacing: 14) {
-                            footer()
-                        }
-                        .padding(.top, 10)
+            if squeeze {
+                GeometryReader { room in
+                    ScrollView {
+                        page
+                            .padding(.bottom, 12)
+                            // At least as tall as the room: whatever can
+                            // stretch fills it, and no more.
+                            .frame(minHeight: room.size.height, alignment: .top)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, Theme.gutter)
-                .padding(.top, 18)
-                // Spare room, so the last line clears the edge when scrolled.
-                .padding(.bottom, 32)
+            } else {
+                ScrollView {
+                    page
+                        // Spare room, so the last line clears the edge when scrolled.
+                        .padding(.bottom, 32)
+                }
+                .defaultScrollAnchor(startAtBottom ? .bottom : nil)
             }
-            .defaultScrollAnchor(startAtBottom ? .bottom : nil)
 
             if let tab {
                 TabBar(selected: tab)
@@ -167,17 +168,40 @@ struct Screen<Content: View, Footer: View>: View {
         }
         .background(Theme.page.ignoresSafeArea())
     }
+
+    /// The title, the content and (on a very short screen) the buttons.
+    private var page: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if let title {
+                Text(title)
+                    .zestFont(.title)
+                    .foregroundColor(Theme.titleInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
+            }
+            content()
+            if Theme.compactHeight {
+                VStack(spacing: 14) {
+                    footer()
+                }
+                .padding(.top, 10)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Theme.gutter)
+        .padding(.top, 14)
+    }
 }
 
 extension Screen where Footer == EmptyView {
     /// A screen with nothing pinned at the bottom but the tab bar.
     init(
-        bar: String, tab: HomeTab, startAtBottom: Bool = false,
+        bar: String, barDetail: String? = nil, tab: HomeTab, startAtBottom: Bool = false,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.init(
-            bar: bar, onBack: nil, title: nil, tab: tab, startAtBottom: startAtBottom,
-            content: content, footer: { EmptyView() }
+            bar: bar, barDetail: barDetail, onBack: nil, title: nil, tab: tab, startAtBottom: startAtBottom,
+            squeeze: false, content: content, footer: { EmptyView() }
         )
     }
 }
@@ -186,17 +210,29 @@ extension Screen where Footer == EmptyView {
 /// hairline under it, and (where there is a way back) a back arrow on the left.
 struct TopBar: View {
     let title: String
+    /// A second line in blue, e.g. the day: "Friday, Nov 13".
+    var detail: String?
     var onBack: (() -> Void)?
 
     var body: some View {
         ZStack {
-            Text(title)
-                .zestFont(.barTitle)
-                .foregroundColor(Theme.titleInk)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .padding(.horizontal, Theme.backTarget + 20)
-                .accessibilityAddTraits(.isHeader)
+            VStack(spacing: 0) {
+                Text(title)
+                    .zestFont(.barTitle)
+                    .foregroundColor(Theme.titleInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .accessibilityAddTraits(.isHeader)
+                if let detail {
+                    Text(detail)
+                        .zestFont(.label)
+                        .foregroundColor(Theme.blue)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+            }
+            .padding(.horizontal, Theme.backTarget + 20)
+            .padding(.vertical, 5)
 
             if let onBack {
                 HStack {
@@ -475,26 +511,47 @@ struct Banner: View {
 /// The customer's name and street on a white card, each under its small grey
 /// label, as large as they go: this is how the tech knows he has the right house.
 struct StopHeadline: View {
+    enum Style {
+        /// Name 52 pt, street 38 pt, roomy. The confirm screens.
+        case full
+        /// The same type, with less padding: screens with three buttons.
+        case tight
+        /// One label, name 38 pt, street 26 pt: where a warning needs the room.
+        case small
+    }
+
     let name: String
     let address: String
     var cityLine: String = ""
+    var style: Style = .full
+    /// The video's state, shown at the right of the CUSTOMER label.
+    var chip: StatusChip?
 
     var body: some View {
         Card {
-            VStack(alignment: .leading, spacing: 6) {
-                SmallLabel("Customer")
+            VStack(alignment: .leading, spacing: style == .small ? 4 : 6) {
+                HStack(alignment: .center, spacing: 10) {
+                    SmallLabel("Customer")
+                    Spacer(minLength: 0)
+                    if let chip {
+                        chip
+                    }
+                }
                 Text(name)
-                    .zestFont(.heroName)
+                    .zestFont(style == .small ? .heroStreet : .heroName)
+                    .fontWeight(.semibold)
                     .foregroundColor(Theme.ink)
                     .lineLimit(3)
                     .minimumScaleFactor(0.6)
                     .fixedSize(horizontal: false, vertical: true)
                 if !address.isEmpty {
-                    Hairline()
-                        .padding(.vertical, 10)
-                    SmallLabel("Address")
+                    if style != .small {
+                        Hairline()
+                            .padding(.vertical, style == .tight ? 6 : 10)
+                        SmallLabel("Address")
+                    }
                     Text(address)
-                        .zestFont(.heroStreet)
+                        .zestFont(style == .small ? .rowStreet : .heroStreet)
                         .foregroundColor(Theme.ink)
                         .lineLimit(3)
                         .minimumScaleFactor(0.6)
@@ -507,7 +564,7 @@ struct StopHeadline: View {
                     }
                 }
             }
-            .padding(20)
+            .padding(style == .full ? 20 : 14)
         }
         .accessibilityElement(children: .combine)
     }

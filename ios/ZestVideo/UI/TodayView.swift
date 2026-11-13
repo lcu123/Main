@@ -12,11 +12,18 @@ struct TodayView: View {
 
     var body: some View {
         let ranked = app.ranked
-        Screen(bar: "My Route", tab: .route, startAtBottom: app.seeds.scrollToEnd) {
+        Screen(
+            bar: "My Route",
+            barDetail: app.today.flatMap { ZestDates.longDay($0.date) },
+            tab: .route,
+            startAtBottom: app.seeds.scrollToEnd
+        ) {
             // A card says how many minutes are left to change a video, so
             // the list looks at the clock again every little while.
             TimelineView(.periodic(from: Date(), by: 20)) { context in
-                VStack(alignment: .leading, spacing: 18) {
+                // Small gaps at the top, so the first stop sits high on the
+                // screen; the stop cards keep their own, wider gaps.
+                VStack(alignment: .leading, spacing: 10) {
                     header
                     banners
 
@@ -25,22 +32,28 @@ struct TodayView: View {
                     } else {
                         if !ranked.suggested.isEmpty {
                             SmallLabel("Tap your stop")
-                            ForEach(Array(ranked.suggested.enumerated()), id: \.element.id) { index, entry in
-                                card(entry, headline: headline(for: entry.stop, first: index == 0, reason: ranked.reason),
-                                     highlighted: index == 0, now: context.date)
+                                .padding(.top, 2)
+                            VStack(spacing: 18) {
+                                ForEach(Array(ranked.suggested.enumerated()), id: \.element.id) { index, entry in
+                                    card(entry, headline: headline(for: entry.stop, first: index == 0, reason: ranked.reason),
+                                         highlighted: index == 0, now: context.date)
+                                }
                             }
                         }
                         if !ranked.rest.isEmpty {
                             SmallLabel("Rest of today")
-                                .padding(.top, 6)
-                            ForEach(ranked.rest) { entry in
-                                card(entry, headline: headline(for: entry.stop, first: false, reason: ranked.reason),
-                                     highlighted: false, now: context.date)
+                                .padding(.top, 12)
+                            VStack(spacing: 18) {
+                                ForEach(ranked.rest) { entry in
+                                    card(entry, headline: headline(for: entry.stop, first: false, reason: ranked.reason),
+                                         highlighted: false, now: context.date)
+                                }
                             }
                         }
                     }
 
                     notOnMyList
+                        .padding(.top, 8)
                 }
             }
         }
@@ -57,67 +70,90 @@ struct TodayView: View {
 
     // MARK: Header
 
-    /// The tech's own card: a round badge with his initial, his first name,
-    /// and the day's two numbers, with a blue bar along the bottom edge.
+    /// The tech's own card, kept low so the first stop shows high on the
+    /// screen: a round badge with his initial, his first name and the day's
+    /// two numbers on one row, and a blue bar along the bottom edge.
     private var header: some View {
         let name = app.tech?.firstName ?? ""
+        let shown = name.isEmpty ? "Today" : name
         let total = app.stops.count
-        return VStack(spacing: 12) {
-            if let day = app.today.flatMap({ ZestDates.longDay($0.date) }) {
-                Text(day)
-                    .zestFont(.action)
-                    .foregroundColor(Theme.blue)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .accessibilityAddTraits(.isHeader)
-            }
-            Card {
-                VStack(spacing: 0) {
-                    HStack(alignment: .center, spacing: 16) {
-                        ZStack {
-                            Circle()
-                                .fill(Theme.blue)
-                            Text(PersonName.initial(name))
-                                .font(.system(size: Theme.badgeSize * 0.5, weight: .bold))
-                                .foregroundColor(.white)
-                        }
-                        .frame(width: Theme.badgeSize, height: Theme.badgeSize)
-                        .accessibilityHidden(true)
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(name.isEmpty ? "Today" : name)
-                                .zestFont(.heroStreet)
-                                .foregroundColor(Theme.ink)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.6)
-                            HStack(alignment: .top, spacing: 12) {
-                                stat("Videos sent", "\(app.videosSentCount)/\(total)")
-                                stat("Waiting", "\(app.waitingCount)")
-                            }
-                        }
+        return Card {
+            VStack(spacing: 0) {
+                HStack(alignment: .center, spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(Theme.blue)
+                        Text(PersonName.initial(name))
+                            .font(.system(size: Theme.headerBadgeSize * 0.5, weight: .bold))
+                            .foregroundColor(.white)
                     }
-                    .padding(18)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(width: Theme.headerBadgeSize, height: Theme.headerBadgeSize)
+                    .accessibilityHidden(true)
 
-                    Rectangle()
-                        .fill(Theme.blue)
-                        .frame(height: 6)
+                    // The name beside the two numbers when it fits (a short
+                    // name at 32 pt, a longer one at 26 pt); a long name
+                    // goes on its own line above them. Never shrunk further.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .center, spacing: 12) {
+                            headerName(shown, role: .rowName)
+                            Spacer(minLength: 4)
+                            stats(total: total)
+                        }
+                        HStack(alignment: .center, spacing: 12) {
+                            headerName(shown, role: .bodyBold)
+                            Spacer(minLength: 4)
+                            stats(total: total)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            headerName(shown, role: .rowName)
+                            stats(total: total)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Rectangle()
+                    .fill(Theme.blue)
+                    .frame(height: 6)
             }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(name). Videos sent \(app.videosSentCount) of \(total). Waiting \(app.waitingCount).")
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(shown). Sent \(app.videosSentCount) of \(total). Waiting \(app.waitingCount).")
+    }
+
+    private func headerName(_ name: String, role: Theme.TextRole) -> some View {
+        Text(name)
+            .zestFont(role)
+            .foregroundColor(Theme.ink)
+            .lineLimit(1)
+            .fixedSize()
+    }
+
+    /// The day's two numbers, side by side, each under a one-line label so
+    /// the numbers sit on the same line.
+    private func stats(total: Int) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            stat("Sent", "\(app.videosSentCount)/\(total)")
+            stat("Waiting", "\(app.waitingCount)")
+        }
+        .fixedSize()
     }
 
     private func stat(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            SmallLabel(label)
+        VStack(alignment: .leading, spacing: 0) {
+            Text(label.uppercased())
+                .tracking(1)
+                .zestFont(.label)
+                .foregroundColor(Theme.softInk)
+                .lineLimit(1)
             Text(value)
                 .zestFont(.stat)
                 .foregroundColor(Theme.ink)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Cards
@@ -211,7 +247,6 @@ struct TodayView: View {
             }
         }
         .buttonStyle(.plain)
-        .padding(.top, 6)
         .accessibilityLabel("Stop not on my list")
     }
 }
@@ -239,9 +274,7 @@ struct StopCard: View {
                             if let headline {
                                 ActionText(headline)
                             }
-                            if let meta {
-                                SmallLabel(meta)
-                            }
+                            MetaLines(parts: meta)
                             Text(stop.listName)
                                 .zestFont(.rowName)
                                 .foregroundColor(Theme.ink)
@@ -279,8 +312,8 @@ struct StopCard: View {
         .accessibilityAddTraits(.isButton)
     }
 
-    /// The small grey line: how far away, and the first service. "50 FT AWAY • MOWING".
-    private var meta: String? {
+    /// The small grey facts: how far away, and the first service.
+    private var meta: [String] {
         var parts: [String] = []
         if let distanceMeters {
             parts.append(Geo.distanceText(meters: distanceMeters))
@@ -288,7 +321,34 @@ struct StopCard: View {
         if let service = stop.services.first, !service.isEmpty {
             parts.append(service)
         }
-        return parts.isEmpty ? nil : parts.joined(separator: " • ")
+        return parts
+    }
+}
+
+/// The small grey facts on a card. On one line with a dot between them when
+/// that fits ("50 FT AWAY • MOWING"); otherwise one clean line each, with no
+/// dot left hanging at the start or end of a line.
+struct MetaLines: View {
+    let parts: [String]
+
+    var body: some View {
+        if parts.count > 1 {
+            ViewThatFits(in: .horizontal) {
+                Text(parts.joined(separator: " • ").uppercased())
+                    .tracking(1)
+                    .zestFont(.label)
+                    .foregroundColor(Theme.softInk)
+                    .lineLimit(1)
+                    .fixedSize()
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(parts, id: \.self) { part in
+                        SmallLabel(part)
+                    }
+                }
+            }
+        } else if let only = parts.first {
+            SmallLabel(only)
+        }
     }
 }
 

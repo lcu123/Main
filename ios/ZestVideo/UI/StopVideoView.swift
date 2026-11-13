@@ -34,7 +34,7 @@ struct StopVideoView: View {
             }
         case .otherTech:
             Screen(bar: "Video", onBack: goBack) {
-                headline(summary)
+                headline(summary, chip: nil)
                 BodyText("Another tech already recorded this stop.", bold: true)
                 BodyText("If you record it again, your video takes its place.")
             } footer: {
@@ -43,8 +43,7 @@ struct StopVideoView: View {
             }
         case .waiting:
             Screen(bar: "Video", onBack: goBack) {
-                headline(summary)
-                StatusChip(text: summary.statusText, tone: .waiting)
+                headline(summary, chip: StatusChip(text: summary.statusText, tone: .waiting))
                 BodyText("This video is waiting to send.", bold: true)
                 BodyText("It sends by itself when there is signal. You do not need to do anything.")
             } footer: {
@@ -54,7 +53,7 @@ struct StopVideoView: View {
             locked(summary, message: UploadManager.lockedMessage)
         case .blocked(let message):
             Screen(bar: "Video", onBack: goBack) {
-                headline(summary)
+                headline(summary, chip: nil)
                 Banner(text: message, tone: .attention)
                 officeNumber
             } footer: {
@@ -72,10 +71,11 @@ struct StopVideoView: View {
 
     private func changeable(_ summary: VideoSummary, secondsLeft: Int) -> some View {
         Screen(bar: "Video", onBack: goBack) {
-            headline(summary)
-            StatusChip(text: summary.statusText, tone: summary.statusText.hasPrefix("SENT") ? .good : .waiting)
-            BodyText(HoldWindow.text(secondsLeft: secondsLeft), bold: true)
-            BodyText("After that it goes to the customer.")
+            headline(summary, chip: StatusChip(
+                text: summary.statusText, tone: summary.statusText.hasPrefix("SENT") ? .good : .waiting
+            ))
+            // One sentence, so all of it shows above the three buttons.
+            BodyText(HoldWindow.text(secondsLeft: secondsLeft) + " Then it goes to the customer.", bold: true)
         } footer: {
             BigButton(title: "RECORD AGAIN", kind: .primary) { app.recordAgain(summary) }
             BigButton(title: "DELETE VIDEO", kind: .dark) { confirmingDelete = true }
@@ -85,7 +85,7 @@ struct StopVideoView: View {
 
     private func deleteQuestion(_ summary: VideoSummary) -> some View {
         Screen(bar: "Delete Video", title: "Delete this video?") {
-            StopHeadline(name: summary.name, address: summary.address)
+            StopHeadline(name: summary.name, address: summary.address, style: .tight)
             BodyText("The customer will not get a video for this visit.")
         } footer: {
             BigButton(title: "YES, DELETE", kind: .dark, isBusy: busy) {
@@ -103,8 +103,7 @@ struct StopVideoView: View {
 
     private func locked(_ summary: VideoSummary, message: String) -> some View {
         Screen(bar: "Video", onBack: goBack) {
-            headline(summary)
-            StatusChip(text: "SENT ✓", tone: .good)
+            headline(summary, chip: StatusChip(text: "SENT ✓", tone: .good))
             BodyText(message, bold: true)
             officeNumber
         } footer: {
@@ -123,9 +122,11 @@ struct StopVideoView: View {
         }
     }
 
-    /// The name and street on their card, as large as on the confirm screen.
-    private func headline(_ summary: VideoSummary) -> some View {
-        StopHeadline(name: summary.name, address: summary.address)
+    /// The name and street on their card, in the same large type as the
+    /// confirm screen but with less padding, and the video's state on the
+    /// card itself: these screens have up to three buttons below.
+    private func headline(_ summary: VideoSummary, chip: StatusChip?) -> some View {
+        StopHeadline(name: summary.name, address: summary.address, style: .tight, chip: chip)
     }
 
     /// On a device that cannot place a call, the number in words instead.

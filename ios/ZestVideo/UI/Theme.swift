@@ -190,6 +190,8 @@ enum Theme {
     static let tabBarHeight: CGFloat = 76
     /// The round badge on the left of a stop's card.
     @MainActor static let badgeSize: CGFloat = max(64, (84 * scale).rounded())
+    /// The smaller badge with the tech's initial, in the header of My Route.
+    @MainActor static let headerBadgeSize: CGFloat = max(56, (64 * scale).rounded())
     /// The sign-in field.
     @MainActor static let fieldHeight: CGFloat = max(84, (100 * scale).rounded())
     /// The ring's stroke.
@@ -198,8 +200,11 @@ enum Theme {
     static let ringShare: CGFloat = 0.64
     /// The seconds-left number is this share of the ring's diameter.
     static let ringNumberShare: CGFloat = 0.43
-    /// The played-back clip on the review screen.
+    /// The played-back clip on the review screen: as tall as this when there
+    /// is room, and never shorter than `clipMinHeight`. It gives way so that
+    /// everything else on that screen shows without scrolling.
     @MainActor static let clipHeight: CGFloat = compactHeight ? 200 : (340 * scale).rounded()
+    @MainActor static let clipMinHeight: CGFloat = compactHeight ? 150 : 100
 }
 
 /// Applies one of the app's text sizes, and lets the phone's own text-size
