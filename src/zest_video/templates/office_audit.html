@@ -1,0 +1,28 @@
+{% extends "office_base.html" %}
+{% set nav = "audit" %}
+{% block title %}Audit trail{% endblock %}
+{% block body %}
+<h1>Audit trail</h1>
+<form class="inline" method="get" action="/office/audit" style="margin-bottom:12px">
+  <input name="video" value="{{ video_id }}" placeholder="Video ID" size="38">
+  <input name="action" value="{{ action }}" placeholder="Action (e.g. video_pulled)" size="26">
+  <button type="submit">Filter</button>
+  {% if video_id or action %}<a href="/office/audit">clear</a>{% endif %}
+</form>
+<div class="scroll"><table>
+  <tr><th>When</th><th>Who</th><th>What</th><th>Video</th><th>Customer</th><th>Detail</th></tr>
+  {% for e in rows %}
+  <tr>
+    <td><small>{{ e.at | day(tz) }}<br>{{ e.at | time(tz, "%-I:%M:%S %p") }}</small></td>
+    <td>{% if e.actor_type == "tech" %}{{ names.get(e.actor | int(0), "tech " ~ e.actor) }}{% else %}{{ e.actor }}{% endif %}<br><small>{{ e.actor_type }}</small></td>
+    <td>{{ e.action }}</td>
+    <td><small>{% if e.video_id %}<a href="/office/audit?video={{ e.video_id }}">{{ e.video_id[:8] }}…</a>{% endif %}</small></td>
+    <td><small>{{ e.customer_id or "" }}</small></td>
+    <td><small>{{ e.detail | tojson if e.detail else "" }}</small></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6">Nothing yet.</td></tr>
+  {% endfor %}
+</table></div>
+<p class="muted">Newest 500 shown.</p>
+{% endblock %}

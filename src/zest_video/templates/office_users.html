@@ -1,0 +1,38 @@
+{% extends "office_base.html" %}
+{% set nav = "users" %}
+{% block title %}Office users{% endblock %}
+{% block body %}
+<h1>Office users</h1>
+<p class="muted">People on this list sign in with a code emailed to them. Staff see the day, pull or move videos, clear flags and manage phones. Owners also get settings, stats, this page and the audit trail.</p>
+<table>
+  <tr><th>Email</th><th>Role</th><th></th></tr>
+  {% for u in users %}
+  <tr>
+    <td>{{ u.email }}{% if not u.active %} <span class="pill off">removed</span>{% endif %}</td>
+    <td>{{ u.role }}{% if u.email in fixed %} <small>(set on the server)</small>{% endif %}</td>
+    <td>
+      {% if u.email not in fixed and u.email != user.email %}
+      <form class="inline" method="post" action="/office/users">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="email" value="{{ u.email }}">
+        <select name="role" aria-label="Role">
+          <option value="staff" {{ "selected" if u.role == "staff" }}>staff</option>
+          <option value="owner" {{ "selected" if u.role == "owner" }}>owner</option>
+        </select>
+        <button class="ghost" type="submit">{{ "Save" if u.active else "Add back" }}</button>
+        {% if u.active %}<button class="danger" type="submit" name="remove" value="1">Remove</button>{% endif %}
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+
+<h2>Add someone</h2>
+<form class="inline" method="post" action="/office/users">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="email" name="email" placeholder="name@company.com" required>
+  <select name="role" aria-label="Role"><option value="staff">staff</option><option value="owner">owner</option></select>
+  <button type="submit">Add</button>
+</form>
+{% endblock %}

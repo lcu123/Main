@@ -1,0 +1,28 @@
+{% extends "office_base.html" %}
+{% set nav = "stats" %}
+{% block title %}Stats{% endblock %}
+{% block body %}
+<h1>Stats by tech · last {{ days }} days</h1>
+<p>
+  {% for d in [7, 30, 60, 90] %}
+  <a class="btn {{ '' if d == days else 'ghost' }}" href="/office/stats?days={{ d }}">{{ d }} days</a>
+  {% endfor %}
+</p>
+<div class="scroll"><table>
+  <tr><th>Tech</th><th>Stops finished</th><th>Videos</th><th>Stops missed</th><th>Emailed</th><th>Watch rate</th><th>Average score</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td><b>{{ r.name }}</b></td>
+    <td>{{ r.stops }}</td>
+    <td>{{ r.videos }}</td>
+    <td>{% if r.missed %}<span class="pill bad">{{ r.missed }}</span>{% else %}0{% endif %}</td>
+    <td>{{ r.sent }}</td>
+    <td>{% if r.watch_rate is not none %}{{ r.watch_rate }}%{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>{% if r.avg_stars is not none %}{{ r.avg_stars }}★ <small>({{ r.scores }})</small>{% else %}<span class="muted">—</span>{% endif %}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7">Nothing in this window yet.</td></tr>
+  {% endfor %}
+</table></div>
+<p class="muted">Stops missed counts finished stops with no video, leaving out services switched off in Settings. Watch rate is watched ÷ emailed.</p>
+{% endblock %}

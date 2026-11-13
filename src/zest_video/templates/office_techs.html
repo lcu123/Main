@@ -1,0 +1,51 @@
+{% extends "office_base.html" %}
+{% set nav = "techs" %}
+{% block title %}Techs and phones{% endblock %}
+{% block body %}
+<h1>Techs and phones</h1>
+<p class="muted">Techs come from FieldRoutes: every active employee whose type is Technician. A tech signs in by himself with the phone or email on his FieldRoutes record. Mark him inactive in FieldRoutes and his app locks within a day; cut off a phone here and it locks at once.</p>
+
+{% if code %}
+<div class="banner ok">
+  Code for {{ code_for or "the tech" }}: <span class="code">{{ code }}</span><br>
+  Read it to him. He types his phone or email in the app, then this code. It works once, for 15 minutes.
+</div>
+{% endif %}
+
+<form method="post" action="/office/techs/refresh" style="margin-bottom:14px">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <button class="ghost" type="submit">Refresh the list from FieldRoutes</button>
+</form>
+
+<div class="scroll"><table>
+  <tr><th>Tech</th><th>Signs in with</th><th>Phones signed in</th><th>Setup code</th></tr>
+  {% for t in techs %}
+  <tr>
+    <td><b>{{ t.fname }} {{ t.lname }}</b><br><small>#{{ t.id }} · {% if t.active %}active{% else %}<span class="pill off">inactive in FieldRoutes</span>{% endif %}</small></td>
+    <td><small>{% if t.email %}{{ mask(t.email) }}{% endif %}{% if t.email and t.phone %}<br>{% endif %}{% if t.phone %}•••-•••-{{ t.phone[-4:] }}{% endif %}{% if not t.email and not t.phone %}<span class="pill bad">no phone or email in FieldRoutes</span>{% endif %}</small></td>
+    <td>
+      {% for d in devices.get(t.id, []) %}
+      <form class="inline" method="post" action="/office/devices/{{ d.id }}/cut">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <span>{{ d.model or "iPhone" }} · iOS {{ d.os_version or "?" }} · build {{ d.app_build }}<br>
+          <small>last seen {{ d.last_seen_at | day(tz) }} {{ d.last_seen_at | time(tz) }}</small></span>
+        {% if d.revoked_at %}<span class="pill off">cut off</span>{% else %}<button class="danger" type="submit">Cut off</button>{% endif %}
+      </form><br>
+      {% else %}
+      <span class="muted">none yet</span>
+      {% endfor %}
+    </td>
+    <td>
+      {% if t.active %}
+      <form method="post" action="/office/techs/{{ t.id }}/code">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="ghost" type="submit">Make a code to read out</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4">No techs yet. Press “Refresh the list from FieldRoutes”.</td></tr>
+  {% endfor %}
+</table></div>
+{% endblock %}

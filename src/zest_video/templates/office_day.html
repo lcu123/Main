@@ -1,0 +1,117 @@
+{% extends "office_base.html" %}
+{% set nav = "day" %}
+{% block title %}{{ day | nice_date }}{% endblock %}
+
+{% macro actions(video, back) %}
+  {% if video.state != "awaiting_upload" and not video.object_deleted %}
+  <a class="btn ghost" href="/office/video/{{ video.id }}" target="_blank" rel="noopener">Watch</a>
+  {% endif %}
+  {% if video.state != "pulled" %}
+  <details class="act">
+    <summary>Pull</summary>
+    <form class="inline" method="post" action="/office/video/{{ video.id }}/pull">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}">
+      <input name="reason" placeholder="Why? (optional)" maxlength="200">
+      <button class="danger" type="submit">Pull it (kills the link)</button>
+    </form>
+  </details>
+  {% endif %}
+  {% if video.state != "awaiting_upload" and not video.object_deleted %}
+  <details class="act">
+    <summary>{{ "Pick the customer" if video.state == "unmatched" else "Move" }}</summary>
+    <form class="inline" method="post" action="/office/video/{{ video.id }}/move">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}">
+      <select name="customer_id" aria-label="Customer">
+        <option value="">Pick a stop with no video…</option>
+        {% for s in open_stops %}
+        <option value="{{ s.customer_id }}">{{ s.name }} — {{ s.address }}</option>
+        {% endfor %}
+      </select>
+      <span class="muted">or</span>
+      <input name="customer_id_other" inputmode="numeric" placeholder="FieldRoutes customer #" size="20">
+      <button type="submit">Move it there</button>
+    </form>
+    <div class="muted">The old link dies. The right customer gets the email in about a minute.</div>
+  </details>
+  {% endif %}
+{% endmacro %}
+
+{% block body %}
+{% set back = "/office?day=" ~ day %}
+<div class="daynav">
+  <a class="btn ghost" href="/office?day={{ prev_day }}">← Day before</a>
+  <h1 style="margin:0">{{ day | nice_date }}{% if day == today %} · today{% endif %}</h1>
+  <a class="btn ghost" href="/office?day={{ next_day }}">Day after →</a>
+  {% if day != today %}<a class="btn ghost" href="/office">Today</a>{% endif %}
+  <a class="btn ghost" href="/office?day={{ day }}&refresh=1">Refresh from FieldRoutes</a>
+</div>
+{% if stale %}<div class="banner err">{{ stale }}</div>{% endif %}
+
+<div class="stats">
+  <div class="stat"><b>{{ counts.stops }}</b>stops</div>
+  <div class="stat"><b>{{ counts.done }}</b>finished</div>
+  <div class="stat"><b>{{ counts.with_video }}</b>with a video</div>
+  <div class="stat"><b>{{ counts.missing }}</b>finished, no video</div>
+  <div class="stat"><b>{{ flags | length }}</b>open flags</div>
+</div>
+
+<h2>Flags{% if not flags %} <span class="muted" style="font-weight:400">· none open</span>{% endif %}</h2>
+{% for item in flags %}
+<div class="flag {{ 'soft' if item.flag.kind in ('recommend', 'no_email') }}">
+  <div>
+    <b>{{ item.words }}</b>
+    {{ item.flag.detail }}
+    <div class="muted">{{ item.flag.day | nice_date }}{% if item.tech %} · {{ item.tech }}{% endif %} · raised {{ item.flag.created_at | time(tz) }}
+      {% if item.flag.video_id %} · <a href="/office/video/{{ item.flag.video_id }}" target="_blank" rel="noopener">watch</a>{% endif %}
+      {% if item.flag.day != day %} · <a href="/office?day={{ item.flag.day }}">go to that day</a>{% endif %}
+    </div>
+  </div>
+  <form class="inline" method="post" action="/office/flag/{{ item.flag.id }}/clear">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}">
+    <input name="note" placeholder="Add a note (optional)" maxlength="300">
+    <button type="submit">Clear</button>
+  </form>
+</div>
+{% endfor %}
+
+{% if others %}
+<h2>Videos not tied to a stop</h2>
+<div class="scroll"><table>
+  <tr><th>Tech</th><th>What</th><th>Status</th><th>Actions</th></tr>
+  {% for row in others %}
+  <tr>
+    <td>{{ row.video.tech_first_name }}<br><small>{{ row.video.recorded_at | time(tz) }}</small></td>
+    <td>{% if row.video.customer_name %}{{ row.video.customer_name }}<br><small>{{ row.video.address }}</small>{% else %}Not on the list{% endif %}
+      {% if row.video.spoken_text %}<br><small>He said: “{{ row.video.spoken_text[:200] }}”</small>{% endif %}</td>
+    <td><span class="pill {{ row.tone }}">{{ row.label }}</span></td>
+    <td>{{ actions(row.video, back) }}</td>
+  </tr>
+  {% endfor %}
+</table></div>
+{% endif %}
+
+{% for name, rows in groups %}
+<h2>{{ name }} <span class="muted" style="font-weight:400">· {{ rows | length }} stop{{ "" if rows | length == 1 else "s" }}</span></h2>
+<div class="scroll"><table>
+  <tr><th style="width:30%">Customer</th><th>Service</th><th>Checked in</th><th>Video</th><th>Score</th><th style="width:30%">Actions</th></tr>
+  {% for row in rows %}
+  <tr>
+    <td>{{ row.stop.name }}<br><small>{{ row.stop.address }}, {{ row.stop.city_line }} · #{{ row.stop.customer_id }}</small></td>
+    <td><small>{{ row.stop.services | join(", ") }}</small></td>
+    <td><small>{% if row.stop.check_in %}{{ row.stop.check_in | time(tz) }}{% if row.stop.check_out %} – {{ row.stop.check_out | time(tz) }}{% endif %}{% else %}—{% endif %}</small></td>
+    <td><span class="pill {{ row.tone }}">{{ row.label }}</span>
+      {% if row.video %}
+        <br><small>{{ row.video.tech_first_name }} · {{ row.video.recorded_at | time(tz) }}
+        {% if row.video.override %} · sent past a warning{% endif %}
+        {% if row.video.time_check == "mismatch" %} · outside check-in time{% endif %}
+        {% if row.video.view_count %} · played {{ row.video.view_count }}×{% endif %}</small>
+      {% endif %}</td>
+    <td>{% if row.score %}{{ row.score.stars }}★{% if row.score.comment %}<br><small>“{{ row.score.comment[:160] }}”</small>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>{% if row.video %}{{ actions(row.video, back) }}{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table></div>
+{% else %}
+<div class="banner info">No stops on this day.</div>
+{% endfor %}
+{% endblock %}

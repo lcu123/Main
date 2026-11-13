@@ -1,0 +1,44 @@
+{% extends "_base.html" %}
+{% block title %}{% if kind == "privacy" %}Privacy · {% elif kind == "support" %}Support · {% endif %}{{ brand }}{% endblock %}
+{% block body %}
+<header class="top">
+  <img src="/static/logo.png?v={{ version }}" width="58" height="58" alt="{{ brand }}">
+  <p>{{ brand }}</p>
+</header>
+{% if kind == "privacy" %}
+<h1>Privacy</h1>
+<p>Zest Video is the app our technicians use to record a short video after a service visit. This page covers the app and the video page our customers open.</p>
+
+<h2>What the app collects</h2>
+<p><strong>Video and sound.</strong> One short clip per visit, recorded by the technician on purpose. It shows the property and the technician's own voice.</p>
+<p><strong>Location.</strong> The phone's location when a recording starts, to check the video is for the right address. If the technician turns on reminders, the phone also notices when he leaves a stop so it can remind him to record. Location is not tracked at any other time.</p>
+<p><strong>Speech.</strong> The phone turns the clip's speech into text, on the phone, to check the customer's name or street was said.</p>
+<p><strong>Sign-in details.</strong> The technician's work phone number or email, and a token that keeps that phone signed in.</p>
+
+<h2>How it is used</h2>
+<p>The video is sent to the customer whose property was serviced, by a private link. We use the location and speech only to make sure a video reaches the right customer. We do not sell this information, we do not use it for ads, and we do not track anyone across other apps or websites.</p>
+
+<h2>How long we keep it</h2>
+<p>Videos are stored privately and deleted after {{ retention_months }} months, or sooner if our office removes them. Videos leave the technician's phone as soon as they are uploaded and never go into the phone's photo library.</p>
+
+<h2>Customers</h2>
+<p>You do not need an account to watch your video. The link is private to you. If you leave a score or a comment, it goes to our office and is not posted publicly. Every video email has a link to stop these emails.</p>
+
+<h2>Your choices</h2>
+<p>To have a video removed, to stop video emails, or to ask what we hold about you, contact us{% if privacy_contact %} at <a href="mailto:{{ privacy_contact }}">{{ privacy_contact }}</a>{% endif %}{% if office_phone %}{% if privacy_contact %} or{% endif %} call <a href="tel:{{ office_phone }}">{{ office_phone | phone }}</a>{% endif %}. Technicians can sign out in the app at any time; our office removes access when someone leaves.</p>
+{% elif kind == "support" %}
+<h1>Support</h1>
+<p>Zest Video is for {{ brand }} technicians. Sign in with the mobile number or email on your work record and the 6-digit code we send you.</p>
+<h2>Technicians</h2>
+<p><strong>No code arrived?</strong> Check the number or email is the one on your work record, then ask for a new code.</p>
+<p><strong>A video says Waiting?</strong> It sends by itself when you have signal. Keep the app installed and open it once you are back in range.</p>
+<p><strong>Recorded the wrong house?</strong> For 10 minutes you can delete it or record again in the app. After that, call the office.</p>
+<h2>Customers</h2>
+<p>If your video will not play, check your connection and tap play again. If the video shows a property that is not yours, tap "This is not my home" under the video.</p>
+<p>Need help?{% if office_phone %} Call <a href="tel:{{ office_phone }}">{{ office_phone | phone }}</a>{% endif %}{% if privacy_contact %}{% if office_phone %} or{% endif %} email <a href="mailto:{{ privacy_contact }}">{{ privacy_contact }}</a>{% endif %}.</p>
+{% else %}
+<h1>Service videos</h1>
+<p>After a visit, your {{ brand }} technician records a short video: what was done, what was seen, and what is recommended. We email you a private link to watch it.</p>
+<p><a href="/privacy">Privacy</a> · <a href="/support">Support</a></p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,45 @@
+{% extends "office_base.html" %}
+{% set nav = "settings" %}
+{% block title %}Settings{% endblock %}
+{% block body %}
+<h1>Settings</h1>
+<form method="post" action="/office/settings">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% for key, default in defaults.items() %}
+  <div class="field">
+    {% if default is boolean %}
+    <label><input type="checkbox" name="{{ key }}" {{ "checked" if settings[key] }}> {{ help[key] }}</label>
+    {% elif key == "prompts" %}
+    <label for="{{ key }}">Recording prompts</label><small>{{ help[key] }}</small>
+    <textarea id="{{ key }}" name="{{ key }}" rows="5">{{ settings[key] | join("\n") }}</textarea>
+    {% elif key == "skip_service_ids" %}
+    <label for="{{ key }}">Services with no video</label><small>{{ help[key] }}</small>
+    <input id="{{ key }}" type="text" name="{{ key }}" value="{{ settings[key] | join(' ') }}">
+    {% elif default is number %}
+    <label for="{{ key }}">{{ key.replace("_", " ") | capitalize }}</label><small>{{ help[key] }}</small>
+    <input id="{{ key }}" type="number" name="{{ key }}" value="{{ settings[key] }}" style="max-width:140px">
+    {% elif key == "email_intro" %}
+    <label for="{{ key }}">Email wording</label><small>{{ help[key] }}</small>
+    <textarea id="{{ key }}" name="{{ key }}" rows="4">{{ settings[key] }}</textarea>
+    {% else %}
+    <label for="{{ key }}">{{ key.replace("_", " ") | capitalize }}</label><small>{{ help[key] }}</small>
+    <input id="{{ key }}" type="text" name="{{ key }}" value="{{ settings[key] }}">
+    {% endif %}
+  </div>
+  {% endfor %}
+  <button type="submit">Save settings</button>
+</form>
+
+<h2>Set on the server</h2>
+<p class="muted">These are deployment switches, changed in Railway, not here.</p>
+<table>
+  <tr><th>Switch</th><th>Now</th></tr>
+  <tr><td>Customer emails (<code>VIDEO_EMAIL_MODE</code>)</td><td><b>{{ cfg.email_mode }}</b>{% if cfg.email_mode == "test" %} → {{ cfg.email_test_to or "no test address" }}{% endif %}</td></tr>
+  <tr><td>Email sender</td><td>{{ cfg.mail_backend }}{% if cfg.mail_backend == "resend" %} · from {{ cfg.mail_from }}{% endif %}</td></tr>
+  <tr><td>Login codes by text</td><td>{{ "on" if cfg.quo_api_key and cfg.quo_from else "off (email only)" }}</td></tr>
+  <tr><td>Push nudges</td><td>{{ "on" if cfg.push_configured else "off (the phone still reminds itself)" }}</td></tr>
+  <tr><td>FieldRoutes writes (<code>FR_WRITES</code>)</td><td>{{ "on" if cfg.fr_writes else "off" }}{% if cfg.fr_write_customer_ids is not none %} · only customers {{ cfg.fr_write_customer_ids | sort | join(", ") }}{% endif %}</td></tr>
+  <tr><td>Video storage</td><td>{{ "connected" if cfg.storage_configured else "NOT SET UP" }}</td></tr>
+  <tr><td>App Review demo sign-in</td><td>{{ "on" if cfg.demo_enabled else "off" }}</td></tr>
+</table>
+{% endblock %}

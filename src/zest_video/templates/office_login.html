@@ -1,0 +1,25 @@
+{% extends "office_base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block body %}
+<div class="login">
+  <img src="/static/logo.png?v={{ version }}" width="72" height="73" alt="{{ brand }}">
+  <h1>Office sign-in</h1>
+  {% if error %}<div class="banner err">{{ error }}</div>{% endif %}
+  {% if step == "code" %}
+  <p>If <b>{{ email }}</b> is on the office list, we just emailed it a 6-digit code.</p>
+  <form method="post" action="/office/verify">
+    <input type="hidden" name="email" value="{{ email }}">
+    <label for="code">Code</label>
+    <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" maxlength="7" autofocus required>
+    <button type="submit">Sign in</button>
+  </form>
+  <p class="muted" style="margin-top:14px"><a href="/office/login">Use a different email</a></p>
+  {% else %}
+  <form method="post" action="/office/login">
+    <label for="email">Your work email</label>
+    <input id="email" name="email" type="email" autocomplete="email" autofocus required>
+    <button type="submit">Email me a code</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

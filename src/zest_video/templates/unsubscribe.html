@@ -1,0 +1,13 @@
+{% extends "_base.html" %}
+{% block title %}Stop video emails · {{ brand }}{% endblock %}
+{% block body %}
+<header class="top">
+  <img src="/static/logo.png?v={{ version }}" width="58" height="58" alt="{{ brand }}">
+  <p>{{ brand }}</p>
+</header>
+<h1>Stop video emails?</h1>
+<p>We will stop emailing you a video after each service. Your service does not change.</p>
+<form method="post" action="/u/{{ video.token }}">
+  <button class="btn" type="submit">Yes, stop the video emails</button>
+</form>
+{% endblock %}

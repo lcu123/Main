@@ -1,0 +1,13 @@
+{% extends "_base.html" %}
+{% block title %}{{ title or "Video not available" }} · {{ brand }}{% endblock %}
+{% block body %}
+<header class="top">
+  <img src="/static/logo.png?v={{ version }}" width="58" height="58" alt="{{ brand }}">
+  <p>{{ brand }}</p>
+</header>
+<h1>{{ title or "This video is no longer available." }}</h1>
+<p>{{ message or "If you think this is a mistake, please call our office." }}</p>
+{% if office_phone %}
+<a class="btn" href="tel:{{ office_phone }}">Call our office</a>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>{% block title %}Office{% endblock %} · {{ brand }} Video</title>
+<link rel="icon" href="/static/favicon.png?v={{ version }}">
+<style>
+@font-face{font-family:Rubik;src:url(/static/rubik.woff2) format("woff2");font-weight:300 900;font-display:swap}
+:root{--purple:#6E20B9;--violet:#5600C6;--bright:#932FFB;--yellow:#FFF515;--lime:#A7E84C;--ink:#14091F;--soft:#F6F1FB;--line:#E3D8F1;--muted:#5b4a70;--red:#C62828}
+*{box-sizing:border-box}
+body{margin:0;font-family:Rubik,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:16px;line-height:1.45;color:var(--ink);background:#FBF9FD}
+a{color:var(--violet)}
+nav.bar{background:var(--purple);color:#fff;display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px;padding:10px 18px}
+nav.bar img{width:38px;height:38px}
+nav.bar strong{font-size:18px;margin-right:8px}
+nav.bar a{color:#fff;text-decoration:none;font-weight:600;padding:6px 2px;border-bottom:3px solid transparent}
+nav.bar a.on{border-color:var(--yellow)}
+nav.bar form{margin-left:auto;display:flex;align-items:center;gap:10px}
+nav.bar small{opacity:.85}
+main{max-width:1180px;margin:0 auto;padding:18px}
+h1{font-size:26px;margin:6px 0 14px}
+h2{font-size:20px;margin:26px 0 10px}
+.banner{border-radius:10px;padding:10px 14px;margin:0 0 14px;font-weight:600}
+.banner.warn{background:var(--yellow);color:#000}
+.banner.ok{background:var(--lime);color:#000}
+.banner.err{background:#FDE7E7;color:#7a1010;border:1px solid #f3b7b7}
+.banner.info{background:var(--soft);color:var(--ink);font-weight:400}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:var(--soft);font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+tr:last-child td{border-bottom:0}
+td small,.muted{color:var(--muted)}
+.pill{display:inline-block;border-radius:999px;padding:3px 11px;font-weight:600;font-size:14px;white-space:nowrap}
+.pill.good{background:var(--lime);color:#000}
+.pill.wait{background:var(--yellow);color:#000}
+.pill.bad{background:var(--red);color:#fff}
+.pill.off{background:#ece6f3;color:var(--ink)}
+button,.btn{font:600 14px/1.2 Rubik,system-ui,sans-serif;border:0;border-radius:9px;padding:8px 13px;background:var(--purple);color:#fff;cursor:pointer;text-decoration:none;display:inline-block}
+button.ghost,.btn.ghost{background:#fff;color:var(--purple);border:2px solid var(--purple);padding:6px 11px}
+button.danger{background:var(--red)}
+input,select,textarea{font:400 15px/1.3 Rubik,system-ui,sans-serif;border:1.5px solid var(--line);border-radius:9px;padding:7px 9px;background:#fff;color:var(--ink);max-width:100%}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--bright);border-color:var(--bright)}
+form.inline{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;margin:2px 0}
+details.act{display:inline-block;margin:2px 6px 2px 0}
+details.act summary{list-style:none;cursor:pointer;font-weight:600;color:var(--violet);padding:4px 0}
+details.act summary::-webkit-details-marker{display:none}
+details.act[open]{display:block;background:var(--soft);border-radius:10px;padding:8px 10px;margin:6px 0}
+.flag{background:#fff;border:1px solid var(--line);border-left:6px solid var(--red);border-radius:10px;padding:10px 14px;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;justify-content:space-between}
+.flag.soft{border-left-color:var(--bright)}
+.flag b{display:block}
+.stats{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px}
+.stat{background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 16px;min-width:120px}
+.stat b{display:block;font-size:26px;line-height:1.1}
+.daynav{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.code{font:700 40px/1 "Courier New",monospace;letter-spacing:8px;color:var(--purple)}
+.field{margin-bottom:16px}
+.field label{display:block;font-weight:600;margin-bottom:3px}
+.field small{display:block;color:var(--muted);margin-bottom:5px}
+.field input[type=text],.field input[type=number],.field textarea{width:100%;max-width:560px}
+.login{max-width:420px;margin:8vh auto;background:#fff;border:1px solid var(--line);border-radius:16px;padding:26px}
+.login input{width:100%;font-size:18px;padding:11px;margin:6px 0 14px}
+.login button{width:100%;font-size:17px;padding:12px}
+.scroll{overflow-x:auto}
+</style>
+</head>
+<body>
+{% if user %}
+<nav class="bar">
+  <img src="/static/logo.png?v={{ version }}" alt="">
+  <strong>Video</strong>
+  <a href="/office" class="{{ 'on' if nav == 'day' }}">Today</a>
+  <a href="/office/techs" class="{{ 'on' if nav == 'techs' }}">Techs &amp; phones</a>
+  {% if user.owner %}
+  <a href="/office/stats" class="{{ 'on' if nav == 'stats' }}">Stats</a>
+  <a href="/office/settings" class="{{ 'on' if nav == 'settings' }}">Settings</a>
+  <a href="/office/users" class="{{ 'on' if nav == 'users' }}">Office users</a>
+  <a href="/office/audit" class="{{ 'on' if nav == 'audit' }}">Audit trail</a>
+  {% endif %}
+  <form method="post" action="/office/logout">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <small>{{ user.email }}</small>
+    <button class="ghost" type="submit">Sign out</button>
+  </form>
+</nav>
+{% endif %}
+<main>
+{% if user %}
+  {% if email_mode == "off" %}
+  <div class="banner warn">Customer emails are OFF. Videos are saved and links work, but no customer is emailed.</div>
+  {% elif email_mode == "test" %}
+  <div class="banner warn">TEST MODE. Every customer email goes to {{ email_test_to or "nobody (no test address set)" }} instead of the customer.</div>
+  {% endif %}
+{% endif %}
+{% if msg %}<div class="banner ok">{{ msg }}</div>{% endif %}
+{% if err %}<div class="banner err">{{ err }}</div>{% endif %}
+{% block body %}{% endblock %}
+</main>
+</body>
+</html>

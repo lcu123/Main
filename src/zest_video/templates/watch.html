@@ -1,0 +1,64 @@
+{% extends "_base.html" %}
+{% block title %}Your service video · {{ brand }}{% endblock %}
+{% block style %}
+.player{background:#000;border-radius:16px;overflow:hidden;display:flex;justify-content:center}
+.player video{display:block;width:auto;max-width:100%;height:auto;max-height:74vh;aspect-ratio:9/16;background:#000}
+#verr{margin-top:12px}
+.stars{display:flex;flex-direction:row-reverse;justify-content:center;gap:4px;margin:6px 0 14px}
+.stars input{position:absolute;opacity:0;width:1px;height:1px}
+.stars label{font-size:54px;line-height:1;color:#cdbfe0;cursor:pointer;padding:2px 3px}
+.stars input:checked~label,.stars label:hover,.stars label:hover~label{color:#F5B800}
+.stars input:focus-visible+label{outline:3px solid var(--bright);border-radius:8px}
+textarea{width:100%;min-height:96px;border:2px solid var(--line);border-radius:12px;padding:12px;font:400 19px/1.4 Rubik,system-ui,sans-serif;margin-bottom:14px}
+textarea:focus{outline:3px solid var(--bright);border-color:var(--bright)}
+details{margin-top:22px;font-size:17px}
+details summary{cursor:pointer;color:#5b4a70;padding:8px 0}
+details .btn{margin-top:10px}
+.gap{margin-top:14px}
+{% endblock %}
+{% block body %}
+<header class="top">
+  <img src="/static/logo.png?v={{ version }}" width="58" height="58" alt="{{ brand }}">
+  <p>A video from {{ video.tech_first_name or "your technician" }}{% if video.address %} at {{ video.address }}{% endif %}
+    <small>{{ recorded.strftime("%A, %B %-d") }}</small></p>
+</header>
+
+<div class="player">
+  <video id="v" controls playsinline preload="metadata" src="/w/{{ video.token }}/video#t=0.1"
+         data-played="/w/{{ video.token }}/played">
+    Your browser cannot play this video.
+  </video>
+</div>
+<div id="verr" class="note" hidden>The video did not load. Check your signal and tap play again.</div>
+
+<div class="card" id="score">
+{% if score %}
+  <div class="ok">{% if thanks %}Thank you! {% endif %}You gave us {{ score.stars }} of 5 stars.</div>
+{% else %}
+  <h2 style="margin-top:0;text-align:center">How did we do?</h2>
+  <form method="post" action="/w/{{ video.token }}/score">
+    <div class="stars" role="radiogroup" aria-label="Stars">
+      {% for n in [5, 4, 3, 2, 1] %}
+      <input type="radio" name="stars" id="s{{ n }}" value="{{ n }}" required>
+      <label for="s{{ n }}" aria-label="{{ n }} star{{ "s" if n > 1 }}">★</label>
+      {% endfor %}
+    </div>
+    <textarea name="comment" maxlength="1000" placeholder="Anything you want us to know? (optional)" aria-label="Comment"></textarea>
+    <button class="btn" type="submit">Send</button>
+  </form>
+{% endif %}
+</div>
+
+{% if office_phone %}
+<a class="btn ghost gap" href="tel:{{ office_phone }}">Call our office</a>
+{% endif %}
+
+<details>
+  <summary>This is not my home</summary>
+  <p>If this video shows a different property, tell us and we will take it down right away.</p>
+  <form method="post" action="/w/{{ video.token }}/not-my-home">
+    <button class="btn quiet" type="submit">Yes, this is not my home</button>
+  </form>
+</details>
+{% endblock %}
+{% block script %}<script src="/static/watch.js?v={{ version }}" defer></script>{% endblock %}

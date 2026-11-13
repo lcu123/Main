@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your service video</title>
+</head>
+<body style="margin:0;padding:0;background:#F6F1FB;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F6F1FB;">
+  <tr><td align="center" style="padding:24px 12px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#ffffff;border-radius:16px;">
+      <tr><td align="center" style="padding:28px 24px 8px;">
+        <img src="{{ base_url }}/static/logo.png" width="96" height="97" alt="{{ brand }}" style="display:block;border:0;">
+      </td></tr>
+      {% if test_note %}
+      <tr><td style="padding:8px 24px 0;">
+        <div style="background:#FFF515;color:#000000;border-radius:10px;padding:10px 12px;font:600 15px/1.4 Arial,Helvetica,sans-serif;">{{ test_note }}</div>
+      </td></tr>
+      {% endif %}
+      <tr><td style="padding:16px 28px 4px;font:400 19px/1.5 Arial,Helvetica,sans-serif;color:#14091F;">
+        {{ intro }}
+      </td></tr>
+      <tr><td align="center" style="padding:22px 28px 8px;">
+        <a href="{{ link }}" style="display:block;background:#6E20B9;color:#ffffff;text-decoration:none;border-radius:14px;padding:18px 20px;font:700 22px/1.2 Arial,Helvetica,sans-serif;">&#9654;&nbsp; Watch your video</a>
+      </td></tr>
+      <tr><td style="padding:14px 28px 28px;font:400 15px/1.5 Arial,Helvetica,sans-serif;color:#5b4a70;" align="center">
+        Questions? Just reply to this email{% if office_phone %} or call <a href="tel:{{ office_phone }}" style="color:#5600C6;">{{ office_phone | phone }}</a>{% endif %}.
+      </td></tr>
+    </table>
+    <p style="max-width:520px;margin:16px auto 0;font:400 13px/1.5 Arial,Helvetica,sans-serif;color:#7a6b8e;">
+      {{ brand }} sent this because we just serviced your property.
+      <a href="{{ unsubscribe }}" style="color:#7a6b8e;">Stop these video emails</a>.
+    </p>
+  </td></tr>
+</table>
+</body>
+</html>

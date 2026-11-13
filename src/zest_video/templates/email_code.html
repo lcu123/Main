@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your code</title>
+</head>
+<body style="margin:0;padding:0;background:#F6F1FB;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F6F1FB;">
+  <tr><td align="center" style="padding:24px 12px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:460px;background:#ffffff;border-radius:16px;">
+      <tr><td align="center" style="padding:28px 24px 0;">
+        <img src="{{ base_url }}/static/logo.png" width="80" height="81" alt="{{ brand }}" style="display:block;border:0;">
+      </td></tr>
+      <tr><td align="center" style="padding:18px 24px 0;font:400 19px/1.5 Arial,Helvetica,sans-serif;color:#14091F;">
+        {% if first_name %}Hi {{ first_name }}, your{% else %}Your{% endif %} code is
+      </td></tr>
+      <tr><td align="center" style="padding:10px 24px 6px;font:700 44px/1.1 'Courier New',Courier,monospace;letter-spacing:8px;color:#6E20B9;">
+        {{ code }}
+      </td></tr>
+      <tr><td align="center" style="padding:8px 24px 30px;font:400 16px/1.5 Arial,Helvetica,sans-serif;color:#5b4a70;">
+        It works once, for 15 minutes.<br>If you did not ask for it, ignore this email.
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>

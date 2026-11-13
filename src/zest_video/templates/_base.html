@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="referrer" content="no-referrer">
+<title>{% block title %}{{ brand }}{% endblock %}</title>
+<link rel="icon" href="/static/favicon.png?v={{ version }}">
+<link rel="preload" href="/static/rubik.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+@font-face{font-family:Rubik;src:url(/static/rubik.woff2) format("woff2");font-weight:300 900;font-display:swap}
+:root{--purple:#6E20B9;--violet:#5600C6;--bright:#932FFB;--yellow:#FFF515;--lime:#A7E84C;--mint:#6FE7C8;--ink:#14091F;--soft:#F6F1FB;--line:#E3D8F1}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;font-family:Rubik,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:19px;line-height:1.45;color:var(--ink);background:#fff}
+.wrap{max-width:560px;margin:0 auto;padding:14px 16px 40px}
+header.top{display:flex;align-items:center;gap:12px;padding:2px 0 12px}
+header.top img{width:58px;height:58px;flex:none}
+header.top p{margin:0;font-size:18px;font-weight:600;line-height:1.25}
+header.top small{display:block;font-size:15px;font-weight:400;color:#5b4a70;margin-top:2px}
+h1{font-size:26px;line-height:1.2;font-weight:700;margin:22px 0 10px}
+h2{font-size:22px;line-height:1.25;font-weight:700;margin:26px 0 10px}
+p{margin:0 0 14px}
+a{color:var(--violet)}
+.btn{display:block;width:100%;min-height:60px;padding:16px 18px;border:0;border-radius:14px;background:var(--purple);color:#fff;font:700 21px/1.2 Rubik,system-ui,sans-serif;text-align:center;text-decoration:none;cursor:pointer}
+.btn:active{background:var(--violet)}
+.btn.ghost{background:#fff;color:var(--purple);border:3px solid var(--purple)}
+.btn.quiet{background:var(--soft);color:var(--ink);font-weight:600;font-size:18px;min-height:52px}
+.card{background:var(--soft);border-radius:16px;padding:18px;margin-top:18px}
+.ok{background:var(--lime);color:#000;border-radius:14px;padding:16px;font-weight:600;font-size:20px;text-align:center}
+.note{background:var(--yellow);color:#000;border-radius:12px;padding:12px 14px;font-weight:600;margin-bottom:14px}
+footer{margin-top:34px;font-size:15px;color:#5b4a70;text-align:center}
+{% block style %}{% endblock %}
+</style>
+</head>
+<body>
+<div class="wrap">
+{% block body %}{% endblock %}
+<footer>{{ brand }}{% if office_phone %} · <a href="tel:{{ office_phone }}">{{ office_phone | phone }}</a>{% endif %}</footer>
+</div>
+{% block script %}{% endblock %}
+</body>
+</html>
