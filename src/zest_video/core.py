@@ -77,7 +77,9 @@ class Ctx:
     limiter: RateLimiter = field(default_factory=RateLimiter)
     sync_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_sync: dict[str, float] = field(default_factory=dict)  # day -> monotonic time
-    last_tech_sync: float = 0.0
+    # Monotonic clocks count from boot, so "never" must be -inf, not 0: on a machine that
+    # booted a minute ago, `monotonic() - 0` looks like a sync that just happened.
+    last_tech_sync: float = float("-inf")
     _settings: tuple[float, dict[str, Any]] | None = None
 
     def today(self) -> str:

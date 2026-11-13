@@ -148,6 +148,17 @@ async def test_a_tech_added_in_fieldroutes_this_morning_can_log_in_without_the_o
     assert (await env.http.get("/v1/today", headers=headers)).json()["tech"]["firstName"] == "New"
 
 
+async def test_the_first_login_works_on_a_machine_that_only_just_booted(env: Env, monkeypatch) -> None:
+    # CI caught this: a monotonic clock starts near zero at boot, and "seconds since the
+    # last tech sync" must not read as "just synced" before any sync has happened.
+    import time
+
+    monkeypatch.setattr(time, "monotonic", lambda: 4.0)
+    env.ctx.limiter.reset()
+    r = await env.http.post("/v1/auth/request-code", json={"contact": "sam@example.com"})
+    assert r.status_code == 200 and [m.to for m in env.mailer.sent] == ["sam@example.com"]
+
+
 async def test_inactive_in_fieldroutes_locks_the_app_and_logout_cuts_the_phone(env: Env) -> None:
     pat = await login(env)
     sam = await login(env, "sam@example.com")
