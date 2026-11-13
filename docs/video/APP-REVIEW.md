@@ -21,7 +21,7 @@ Apple renumbers now and then.
 | 10 | Declaring background abilities it does not use | 2.5.4 | None declared. Uploads use the system's background transfer service, which needs no declaration. |
 | 11 | An account you can create but cannot delete | 5.1.1(v) | Nobody creates an account in the app: sign-in is issued by the employer from FieldRoutes. The tech can sign out (removes that phone), and the privacy policy says how to have details deleted. Say so in the review notes. |
 | 12 | An app meant for one company, on the public store | 3.2 | Ask for **unlisted distribution**: the app passes normal review but only people with the link can find it. See below. |
-| 13 | Screenshots that do not show the real app | 2.3 | CI photographs the real app on a 6.9-inch iPhone simulator at App Store size (1320 × 2868). Use those. |
+| 13 | Screenshots that do not show the real app | 2.3 | CI photographs the real app on a 6.9-inch iPhone simulator at App Store size (1320 × 2868). The current set is in [`screens/`](screens/00-contact-sheet.png); upload a few of those (Today, Record, Recording, Save this video?, My videos). The picture behind the record screens is a drawn stand-in, because a simulator has no camera. |
 | 14 | Too thin to be an app ("could be a web page") | 4.2 | It needs the camera, background upload, on-device speech and location. A web page cannot do those, which is why the brief chose a native app. |
 | 15 | A third-party login with no "Sign in with Apple" | 4.8 | Does not apply: there is no social or third-party login. |
 | 16 | Digital goods sold outside in-app purchase | 3.1.1 | Does not apply: nothing is sold in the app. |

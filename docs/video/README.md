@@ -11,6 +11,7 @@ with a link to watch it. Built from the Visit Video build brief (Nov 12, 2026).
 | Owner's checklist | [`GO-LIVE.md`](GO-LIVE.md) | What is left before techs can use it. |
 | Apple submission | [`APP-REVIEW.md`](APP-REVIEW.md) | The usual rejection reasons, where we stand, and what to type in App Store Connect. |
 | Tech's one-page guide | [`TECH-GUIDE.md`](TECH-GUIDE.md) | Hand this to the techs. |
+| Pictures of the app | [`screens/`](screens/00-contact-sheet.png) | Every screen, photographed from the real app by CI at App Store size. |
 
 The server ships in the same Docker image as the FieldRoutes MCP server and
 runs as a second Railway service (`zest-video`, start command `zest-video`).
@@ -122,15 +123,18 @@ Proven:
   sign in, register, upload a real file to the real bucket by signed URL,
   confirm. The bucket refused an upload with the wrong content type.
 - URL signing matches Amazon's published SigV4 example.
-- App: compiles on Xcode 16 and Xcode 26. The logic package (stop ranking,
-  spoken-name matching, two-keys rule, queue state machine, 10-minute window)
-  has 84 tests.
+- App: compiles and passes its unit tests on Xcode 16 and Xcode 26, and CI
+  launches every screen in the iPhone simulator and photographs it. The logic
+  package (stop ranking, spoken-name matching, two-keys rule, queue state
+  machine, 10-minute window, phone-number formatting) has its own test suite
+  that also runs on Linux.
 
 Not proven until it runs on real phones with real accounts:
 
 - Recording, background upload and speech-to-text on a physical iPhone. The
-  brief's upload spike (airplane mode, Low Power Mode, app swiped closed,
-  restart) still has to be run on a device.
+  simulator has no camera, so the camera, the encoder and a real upload from
+  the app have never run. The brief's upload spike (airplane mode, Low Power
+  Mode, app swiped closed, restart) still has to be run on a device.
 - The TestFlight job (needs the Apple Developer account).
 - Sending through Resend, the bounce webhook's payload, texts through Quo and
   push through APNs. Each is built to the provider's documentation and has
