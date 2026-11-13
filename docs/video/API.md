@@ -82,7 +82,7 @@ today.
     "requireVideo": true,
     "recommendButton": true,
     "leaveReminders": false,
-    "prompts": ["Say the name or street", "What I did", "What I saw", "What I recommend"],
+    "prompts": ["Hi {name}", "Here's what I did", "Here's what I recommend", "I closed the backyard gate"],
     "officePhone": "+19165550100"
   },
   "stops": [
@@ -120,6 +120,10 @@ today.
 - `videos` lists this tech's own videos for the day. For the App Review account
   only (`tech.demo`), each uploaded video also carries `watchUrl`, the page a
   customer would see. A real tech's phone is never sent a customer link.
+- `config.prompts` is what the tech reads while recording, in order. The app
+  swaps the literal `{name}` for the stop's first name ("Hi John"), or the
+  business name when there is no person. The tech is asked to say the name
+  only; the spoken check still counts a street or house number if it hears one.
 - The phone holds only what is in this body. No phone numbers, emails, billing
   or notes are ever sent to it.
 

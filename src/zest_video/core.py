@@ -53,7 +53,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "email_subject": "Your service video from {tech}",
     "email_intro": "{tech} just finished at {address} and recorded a short video for you: "
     "what was done, what was seen, and what is recommended.",
-    "prompts": ["Say the name or street", "What I did", "What I saw", "What I recommend"],
+    "prompts": ["Hi {name}", "Here's what I did", "Here's what I recommend", "I closed the backyard gate"],
 }
 
 SETTING_LIMITS: dict[str, tuple[int, int]] = {

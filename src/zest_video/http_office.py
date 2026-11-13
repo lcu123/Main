@@ -64,7 +64,7 @@ SETTING_HELP = {
     "respect_fr_email_reminders": "Do not email customers whose email reminders are off in FieldRoutes.",
     "email_subject": "Email subject. {tech} becomes the tech's first name.",
     "email_intro": "First lines of the email. {tech} and {address} are filled in.",
-    "prompts": "What the tech reads while recording, one per line.",
+    "prompts": "What the tech reads while recording, one per line. {name} becomes the customer's first name.",
 }
 
 

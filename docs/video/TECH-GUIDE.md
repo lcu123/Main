@@ -17,10 +17,10 @@ You stay signed in after that.
 2. Check the name and address. Tap **THIS IS IT**.
 3. Tap the big red button. Or press a volume button.
 4. Talk for 15 seconds. The screen tells you what to say:
-   - Say the customer's **name or street**
-   - What I **did**
-   - What I **saw**
-   - What I **recommend**
+   - **Hi John** (the customer's name; the screen shows it)
+   - Here's what I **did**
+   - Here's what I **recommend**
+   - I **closed the backyard gate**
 5. It stops by itself. Tap **SAVE**.
 
 That is it. The video sends by itself. You can close the app and drive.
