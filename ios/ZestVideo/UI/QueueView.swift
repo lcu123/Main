@@ -78,6 +78,7 @@ struct QueueView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(item.customerName). \(item.displayText.capitalized). \(state.text.capitalized).")
         .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("video-row-" + (item.notOnMyList ? "offlist" : String(item.customerId ?? 0)))
     }
 
     /// The small print, on its own card at the very end.
@@ -86,6 +87,7 @@ struct QueueView: View {
             VStack(alignment: .leading, spacing: 10) {
                 SmallLabel("This phone")
                 BodyText("Zest Video is holding \(StorageGuard.sizeText(heldBytes)) on this phone.")
+                    .accessibilityIdentifier("held-space")
                 if queue.items.waitingCount > 0 {
                     BodyText("Waiting videos send by themselves when there is signal.", color: Theme.softInk)
                 }
@@ -125,7 +127,7 @@ struct QueueView: View {
     }
 
     private var signOutLink: some View {
-        TextLink(title: "Sign out", color: Theme.ink) {
+        TextLink(title: "Sign out", color: Theme.ink, identifier: "link-signout") {
             confirmingSignOut = true
         }
     }

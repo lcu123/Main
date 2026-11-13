@@ -37,6 +37,9 @@ struct RecordView: View {
                 live
             }
         }
+        // The second tap of a double tap (on THIS IS IT, or RECORD AGAIN)
+        // must not land on the record button.
+        .settleFirst()
         .statusBarHidden(true)
         .onAppear {
             // Keep the screen awake while the camera is up.
@@ -174,6 +177,7 @@ struct RecordView: View {
             .opacity(camera.status == .ready ? 1 : 0.5)
             .accessibilityLabel("Record")
             .accessibilityHint("Starts a \(app.config.maxSeconds) second video. It stops by itself.")
+            .accessibilityIdentifier("record-button")
 
             Text(readyLabel)
                 .zestFont(.recordLabel)
@@ -227,7 +231,10 @@ struct RecordView: View {
 
     private var flipButton: some View {
         Button {
-            camera.flip()
+            // One press, one flip.
+            if TapGate.pass() {
+                camera.flip()
+            }
         } label: {
             // White with blue words, like every other secondary button.
             Text("FLIP")
@@ -244,6 +251,7 @@ struct RecordView: View {
         .buttonStyle(.plain)
         .disabled(camera.status != .ready)
         .accessibilityLabel(camera.usingFrontCamera ? "Flip to back camera" : "Flip to front camera")
+        .accessibilityIdentifier("flip-button")
     }
 
     // MARK: While recording
@@ -271,6 +279,7 @@ struct RecordView: View {
             }
             .buttonStyle(.plain)
             .accessibilityHint("Stops by itself. Double tap to finish early.")
+            .accessibilityIdentifier("countdown-ring")
 
             Text("Stops by itself. Tap to finish early.")
                 .zestFont(.bodyBold)
@@ -350,6 +359,7 @@ private struct RecordingPill: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Recording")
+        .accessibilityIdentifier("recording-pill")
     }
 }
 

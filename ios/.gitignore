@@ -10,3 +10,6 @@ DerivedData/
 *.xcarchive
 *.ipa
 xcuserdata/
+
+# UI test logs and failure pictures
+ui-artifacts/

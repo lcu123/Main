@@ -118,7 +118,14 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
         Task { @MainActor in
+            let wasAllowed = self.isAllowed
             self.status = status
+            // Just allowed: get a fix now. Without this the list stayed in
+            // route order (not nearest first) until the next refresh, two
+            // minutes after the tech's very first sign-in.
+            if !wasAllowed && self.isAllowed {
+                self.refresh(precise: false)
+            }
         }
     }
 

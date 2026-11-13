@@ -27,8 +27,8 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
 
     /// Videos with a register/complete/delete call in the air.
     private var busy = Set<String>()
-    /// Videos this launch has already given an upload task.
-    private var started = Set<String>()
+    /// Videos this launch has already given an upload task, and which task.
+    private var started: [String: Int] = [:]
     /// Last progress pushed to the screen, to avoid a redraw per packet.
     private var shownProgress: [String: Double] = [:]
     private var backgroundCompletion: (() -> Void)?
@@ -40,6 +40,15 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
         configuration.isDiscretionary = false
         // Wake the app when an upload finishes so the server can be told.
         configuration.sessionSendsLaunchEvents = true
+        #if targetEnvironment(simulator)
+        // A UI test starts the app with launch arguments. Started by iOS
+        // itself for a finished upload, it would come up WITHOUT them: the
+        // ordinary app, pointed at the real server, in the middle of a test.
+        // So in UI-test mode iOS is not asked to start it; the test does.
+        if UITestMode.isOn {
+            configuration.sessionSendsLaunchEvents = false
+        }
+        #endif
         // Cellular is allowed, Low Data Mode included: do not wait for Wi-Fi.
         configuration.allowsCellularAccess = true
         configuration.allowsExpensiveNetworkAccess = true
@@ -93,7 +102,7 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
             case .queued:
                 register(item)
             case .uploading:
-                if live.contains(item.id) || started.contains(item.id) { continue }
+                if live.contains(item.id) || started[item.id] != nil { continue }
                 if item.needsFreshURL(now: now) {
                     register(item)
                 } else {
@@ -181,8 +190,7 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
             onChange?()
             return
         }
-        guard !started.contains(item.id) else { return }
-        started.insert(item.id)
+        guard started[item.id] == nil else { return }
 
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
@@ -192,6 +200,7 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
         // From the file on disk: the video is never loaded into memory.
         let task = session.uploadTask(with: request, fromFile: fileURL)
         task.taskDescription = item.id
+        started[item.id] = task.taskIdentifier
         task.resume()
     }
 
@@ -279,7 +288,7 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
     /// file, and (if the server may know about it) tells the server.
     func drop(_ id: String) {
         cancelTasks { $0 == id }
-        started.remove(id)
+        started[id] = nil
         shownProgress[id] = nil
         store.apply(.deletedByTech, to: id)
         onChange?()
@@ -314,6 +323,15 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
         _ = session
     }
 
+    #if targetEnvironment(simulator)
+    /// UI-test reset only: cancel transfers left over from an earlier test.
+    func cancelEverything() {
+        started.removeAll()
+        shownProgress.removeAll()
+        cancelTasks { _ in true }
+    }
+    #endif
+
     private func finishBackgroundEvents() {
         let handler = backgroundCompletion
         backgroundCompletion = nil
@@ -342,11 +360,20 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
         store.apply(.progress(fraction), to: id)
     }
 
-    private func uploadEnded(id: String, status: Int?, cancelled: Bool, errorText: String?) {
-        started.remove(id)
+    private func uploadEnded(id: String, taskIdentifier: Int, status: Int?, cancelled: Bool, errorText: String?) {
+        // An old task reporting late (one that iOS cancelled when the app was
+        // killed, say) must not be taken for the task that is running now.
+        if let current = started[id], current != taskIdentifier { return }
+        started[id] = nil
         shownProgress[id] = nil
-        guard store.item(id) != nil else { return }
-        if cancelled { return }
+        guard let item = store.item(id) else { return }
+        if cancelled {
+            // Not the tech's doing (his own delete removes or parks the row
+            // first): iOS dropped the transfer. Start it again; never leave
+            // the video sitting with no task.
+            if item.phase == .uploading { pump() }
+            return
+        }
 
         if let status {
             store.apply(.uploadFinished(status: status), to: id)
@@ -376,8 +403,9 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
         let status = error == nil ? (task.response as? HTTPURLResponse)?.statusCode : nil
         let cancelled = (error as NSError?)?.code == NSURLErrorCancelled
         let errorText = error?.localizedDescription
+        let taskIdentifier = task.taskIdentifier
         Task { @MainActor in
-            self.uploadEnded(id: id, status: status, cancelled: cancelled, errorText: errorText)
+            self.uploadEnded(id: id, taskIdentifier: taskIdentifier, status: status, cancelled: cancelled, errorText: errorText)
         }
     }
 

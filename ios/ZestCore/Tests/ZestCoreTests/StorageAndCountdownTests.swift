@@ -48,6 +48,17 @@ final class StorageAndCountdownTests: XCTestCase {
         XCTAssertFalse(Countdown.isFinalStretch(elapsed: 15, maxSeconds: 15))
     }
 
+    /// A tap on the ring in the first three seconds does nothing; after that
+    /// it ends the clip. (Model-level: a UI test cannot time a tap this finely.)
+    func testRingTapOnlyEndsTheClipAfterThreeSeconds() {
+        XCTAssertFalse(Countdown.canStopEarly(elapsed: 0))
+        XCTAssertFalse(Countdown.canStopEarly(elapsed: 0.4))
+        XCTAssertFalse(Countdown.canStopEarly(elapsed: 2.99))
+        XCTAssertTrue(Countdown.canStopEarly(elapsed: 3))
+        XCTAssertTrue(Countdown.canStopEarly(elapsed: 14.9))
+        XCTAssertFalse(Countdown.canStopEarly(elapsed: -5), "a clock that jumped back never ends a clip")
+    }
+
     func testPromptsShareTheClipEvenly() {
         XCTAssertEqual(Countdown.promptIndex(elapsed: 0, maxSeconds: 15, count: 4), 0)
         XCTAssertEqual(Countdown.promptIndex(elapsed: 3.7, maxSeconds: 15, count: 4), 0)

@@ -84,6 +84,21 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.zestlawnpest.video.tests
         GENERATE_INFOPLIST_FILE: YES
 
+  # End-to-end tests: XCUITest drives the real app in the simulator against
+  # the fake server in Scripts/fake_server.py. See README ("UI tests").
+  ZestVideoUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ZestVideoUITests
+    dependencies:
+      - target: ZestVideo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zestlawnpest.video.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: ZestVideo
+
 schemes:
   ZestVideo:
     build:
@@ -98,3 +113,17 @@ schemes:
         - ZestVideoTests
     archive:
       config: Release
+
+  # The UI tests have their own scheme, so the ordinary build and unit tests
+  # (scheme ZestVideo) never need the fake server.
+  ZestVideoUITests:
+    build:
+      targets:
+        ZestVideo: all
+        ZestVideoUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ZestVideoUITests

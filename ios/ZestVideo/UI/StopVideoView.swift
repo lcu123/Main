@@ -89,6 +89,7 @@ struct StopVideoView: View {
             BodyText("The customer will not get a video for this visit.")
         } footer: {
             BigButton(title: "YES, DELETE", kind: .dark, isBusy: busy) {
+                guard !busy else { return }
                 busy = true
                 Task {
                     await app.deleteVideo(summary)

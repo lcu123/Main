@@ -52,7 +52,7 @@ final class APIModelsTests: XCTestCase {
     func testConfigIsClampedToSafeValues() throws {
         let json = #"{"maxSeconds":0,"holdMinutes":-5,"farMeters":1,"prompts":[]}"#
         let config = try ZestJSON.decoder().decode(AppConfig.self, from: Data(json.utf8))
-        XCTAssertEqual(config.maxSeconds, 5)
+        XCTAssertEqual(config.maxSeconds, 3)
         XCTAssertEqual(config.holdMinutes, 0)
         XCTAssertEqual(config.farMeters, 25)
         XCTAssertEqual(config.prompts, AppConfig.defaultPrompts)

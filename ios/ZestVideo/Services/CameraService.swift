@@ -39,6 +39,14 @@ final class CameraService: NSObject, ObservableObject, AVCaptureFileOutputRecord
     private var configured = false
     private var onFinish: ((RecordedClip?) -> Void)?
 
+    #if targetEnvironment(simulator)
+    /// UI tests only (the simulator has no camera): a stand-in recorder.
+    /// See the extension at the end of this file.
+    private(set) var standIn = false
+    private var standInURL: URL?
+    private var standInTimer: DispatchWorkItem?
+    #endif
+
     static let targetBitRate = 2_500_000
 
     // MARK: Lifecycle (call on the main thread)
@@ -50,6 +58,12 @@ final class CameraService: NSObject, ObservableObject, AVCaptureFileOutputRecord
         case .starting, .ready, .recording: return
         default: break
         }
+        #if targetEnvironment(simulator)
+        if standIn {
+            status = .ready
+            return
+        }
+        #endif
         guard AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) != nil else {
             status = .noCamera
             return
@@ -79,6 +93,12 @@ final class CameraService: NSObject, ObservableObject, AVCaptureFileOutputRecord
 
     func flip() {
         guard status == .ready else { return }
+        #if targetEnvironment(simulator)
+        if standIn {
+            usingFrontCamera.toggle()
+            return
+        }
+        #endif
         queue.async {
             guard let current = self.videoInput else { return }
             let wanted: AVCaptureDevice.Position = current.device.position == .back ? .front : .back
@@ -110,6 +130,12 @@ final class CameraService: NSObject, ObservableObject, AVCaptureFileOutputRecord
             return
         }
         self.onFinish = onFinish
+        #if targetEnvironment(simulator)
+        if standIn {
+            startStandInRecording(to: url, maxSeconds: maxSeconds)
+            return
+        }
+        #endif
         queue.async {
             guard self.session.isRunning, !self.output.isRecording else {
                 self.deliver(nil)
@@ -125,6 +151,12 @@ final class CameraService: NSObject, ObservableObject, AVCaptureFileOutputRecord
     }
 
     func stopRecording() {
+        #if targetEnvironment(simulator)
+        if standIn {
+            finishStandInRecording()
+            return
+        }
+        #endif
         queue.async {
             if self.output.isRecording {
                 self.output.stopRecording()
@@ -256,6 +288,46 @@ final class CameraService: NSObject, ObservableObject, AVCaptureFileOutputRecord
 
 #if targetEnvironment(simulator)
 extension CameraService {
+    /// UI tests only. From now on this object records without a camera: it is
+    /// "ready" at once; on start it writes a real, playable video file to the
+    /// very path the camera would have used, straight away; and it ends by
+    /// itself at the time limit, or when stopped, through the same
+    /// `onFinish` hand-over as the real recorder. Everything downstream (the
+    /// re-wrap to .mp4, the draft, the queue, the upload) is the real code.
+    func useStandInRecorder() {
+        standIn = true
+    }
+
+    /// Main thread. The clip is on disk before this returns, so a kill at
+    /// any moment after "recording started" finds a file to recover.
+    fileprivate func startStandInRecording(to url: URL, maxSeconds: Int) {
+        Files.remove(url)
+        StandInClip.write(to: url)
+        standInURL = url
+        recordingStartedAt = Date()
+        status = .recording
+
+        let timer = DispatchWorkItem { [weak self] in
+            self?.finishStandInRecording()
+        }
+        standInTimer = timer
+        DispatchQueue.main.asyncAfter(deadline: .now() + Double(maxSeconds), execute: timer)
+    }
+
+    /// Main thread. The time limit was reached, or the ring was tapped.
+    fileprivate func finishStandInRecording() {
+        guard status == .recording, let url = standInURL else { return }
+        standInTimer?.cancel()
+        standInTimer = nil
+        standInURL = nil
+        let startedAt = recordingStartedAt ?? Date()
+        recordingStartedAt = nil
+        status = .ready
+        let handler = onFinish
+        onFinish = nil
+        handler?(Files.size(of: url) > 0 ? RecordedClip(url: url, startedAt: startedAt) : nil)
+    }
+
     /// Screenshot mode only: the simulator has no camera, so the record
     /// screens are shown by setting the state they would have on a phone.
     func setScreenshotState(status: Status, recordingStartedAt: Date?) {

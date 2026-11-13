@@ -66,4 +66,9 @@ public enum Countdown {
     /// Tapping the ring ends the clip early only after this long, so a double
     /// tap in gloves cannot cut it to nothing.
     public static let earliestStopSeconds: TimeInterval = 3
+
+    /// May a tap on the ring end the clip now?
+    public static func canStopEarly(elapsed: TimeInterval) -> Bool {
+        elapsed >= earliestStopSeconds
+    }
 }

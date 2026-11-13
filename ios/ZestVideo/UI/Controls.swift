@@ -49,6 +49,8 @@ struct BigButton: View {
         .buttonStyle(BigButtonStyle(kind: kind))
         .disabled(isBusy)
         .accessibilityLabel(title.capitalized)
+        // For UI tests: the button is found by the words on it.
+        .accessibilityIdentifier(title)
     }
 }
 
@@ -84,6 +86,69 @@ struct BigButtonStyle: ButtonStyle {
                     .strokeBorder(Theme.blue, lineWidth: kind == .plain ? 2 : 0)
             )
             .contentShape(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous))
+    }
+}
+
+// MARK: - Double taps
+
+/// A screen that has just appeared ignores touches for a moment.
+///
+/// A gloved thumb often taps twice. Without this, the second tap lands on
+/// whatever the first tap brought up. DELETE VIDEO is followed by YES,
+/// DELETE in exactly the same place, and THIS IS IT by YES, STILL RIGHT, so
+/// both questions could be answered by accident; on a small phone the record
+/// button can sit under THIS IS IT too. With this, the second tap of a
+/// double tap falls on a screen that is not listening yet.
+struct SettleFirst: ViewModifier {
+    /// Longer than a double tap, far shorter than reading the screen.
+    static let seconds: Double = 0.4
+
+    @State private var settled = false
+
+    func body(content: Content) -> some View {
+        content
+            // A clear sheet over the screen takes the touches for that
+            // moment. The screen under it is untouched, so the cursor can
+            // still be put in a text field as it appears.
+            .overlay {
+                if !settled {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture {}
+                        .ignoresSafeArea()
+                        .accessibilityHidden(true)
+                }
+            }
+            .onAppear {
+                settled = false
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: UInt64(SettleFirst.seconds * 1_000_000_000))
+                    settled = true
+                }
+            }
+    }
+}
+
+extension View {
+    /// Ignore touches for the first moment after this view appears.
+    func settleFirst() -> some View {
+        modifier(SettleFirst())
+    }
+}
+
+/// For a switch that stays on the same screen: one press must not count
+/// twice. Without this a double tap turns "I recommended something" on and
+/// straight off again, and the tech thinks it is on.
+@MainActor
+enum TapGate {
+    private static var lastTap = Date.distantPast
+
+    /// False for a tap that comes right behind another one.
+    static func pass() -> Bool {
+        let now = Date()
+        guard now.timeIntervalSince(lastTap) >= SettleFirst.seconds else { return false }
+        lastTap = now
+        return true
     }
 }
 
@@ -167,6 +232,8 @@ struct Screen<Content: View, Footer: View>: View {
             }
         }
         .background(Theme.page.ignoresSafeArea())
+        // The second tap of a double tap must not answer this screen.
+        .settleFirst()
     }
 
     /// The title, the content and (on a very short screen) the buttons.
@@ -178,6 +245,7 @@ struct Screen<Content: View, Footer: View>: View {
                     .foregroundColor(Theme.titleInk)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier("screen-title")
             }
             content()
             if Theme.compactHeight {
@@ -223,6 +291,7 @@ struct TopBar: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
                     .accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier("bar-title")
                 if let detail {
                     Text(detail)
                         .zestFont(.label)
@@ -246,6 +315,7 @@ struct TopBar: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Back")
+                    .accessibilityIdentifier("bar-back")
                     Spacer(minLength: 0)
                 }
                 .padding(.leading, 10)
@@ -311,6 +381,7 @@ struct TabBar: View {
         .buttonStyle(.plain)
         .accessibilityLabel(title)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityIdentifier(which == .route ? "tab-route" : "tab-videos")
     }
 }
 
@@ -574,6 +645,8 @@ struct StopHeadline: View {
 struct TextLink: View {
     let title: String
     var color: Color = Theme.blue
+    /// For UI tests.
+    var identifier: String = ""
     let action: () -> Void
 
     var body: some View {
@@ -588,6 +661,7 @@ struct TextLink: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier(identifier.isEmpty ? title : identifier)
     }
 }
 
@@ -597,11 +671,11 @@ struct LegalLinks: View {
 
     var body: some View {
         HStack(spacing: 28) {
-            TextLink(title: "Terms") {
+            TextLink(title: "Terms", identifier: "link-terms") {
                 app.openTerms()
             }
             .accessibilityHint("Opens in Safari")
-            TextLink(title: "Privacy") {
+            TextLink(title: "Privacy", identifier: "link-privacy") {
                 app.openPrivacy()
             }
             .accessibilityLabel("Privacy Policy")

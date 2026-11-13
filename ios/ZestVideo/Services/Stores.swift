@@ -75,6 +75,8 @@ struct PendingRecording: Codable, Equatable {
     var startedAt: Date
 
     var movieFileName: String { "recording-\(id).mov" }
+    /// The upload-ready file the recording is re-wrapped into.
+    var videoFileName: String { "\(id).mp4" }
 }
 
 /// A finished clip the tech has not saved yet.

@@ -53,6 +53,12 @@ enum SpeechChecker {
     ///   - hints: today's last names and street names, so they are spelled as on the route.
     ///   - timeout: give up (keeping any partial text) after this long.
     static func transcribe(fileURL: URL, hints: [String], timeout: TimeInterval = 6) async -> String? {
+        #if targetEnvironment(simulator)
+        if UITestMode.isOn {
+            // The words a UI test says were spoken, or nothing ("unknown").
+            return UITestMode.transcript
+        }
+        #endif
         guard await isAuthorized() else { return nil }
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
               recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else { return nil }

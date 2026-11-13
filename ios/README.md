@@ -38,7 +38,9 @@ ios/
     UI/                  Theme, big controls, the screens, the countdown ring.
     Resources/           Assets (icon, colors), privacy manifest, entitlements.
   ZestVideoTests/        Unit tests that run on the simulator.
-  Scripts/               contact_sheet.py, used by CI to tile the screenshots.
+  ZestVideoUITests/      End-to-end tests: the real app, driven in the simulator.
+  Scripts/               fake_server.py (the UI tests' server), contact_sheet.py
+                         and is_blank.py (the screenshots).
 ```
 
 No third-party code. Apple frameworks only, system font, one bundled image
@@ -95,6 +97,101 @@ cd ios/ZestCore && swift test
 runs the logic tests anywhere, Linux included. The app's own tests run in
 Xcode (⌘U) or in CI.
 
+## UI tests
+
+`ZestVideoUITests/` drives the real app in the simulator with XCUITest: real
+sign-in, real storage on disk, the real upload queue with its real background
+`URLSession`, real screens. Every test starts from a clean app and a clean
+server, and checks **both** what is on the screen and what the server got.
+
+**The server** is `Scripts/fake_server.py` (standard-library Python). It
+speaks `docs/video/API.md`, keeps everything in memory, and can be told to
+misbehave: answer 500, drop the connection, sign the phone out, ask for an
+update, expire an upload address, say "not uploaded", or answer slowly. The
+list of switches is at the top of the file. It checks itself with:
+
+```bash
+python3 ios/Scripts/fake_server.py --self-test
+```
+
+**The app's UI-test mode** (`App/UITestMode.swift`) is simulator-only, like
+screenshot mode: the whole file is behind `#if targetEnvironment(simulator)`.
+Launched with `-ZestUITest 1`, the app is the real app with four differences:
+
+1. It talks to the test server (`ZEST_TEST_SERVER` in the launch environment).
+2. The camera is a stand-in recorder (the simulator has none). It writes a
+   real, playable video file where the camera would have, and ends through
+   the same code as the real one. The re-wrap to `.mp4`, the draft, the queue
+   and the upload are all the real code.
+3. Speech-to-text does not run; a test supplies the words it "heard" with
+   `ZEST_TEST_TRANSCRIPT`.
+4. iOS is not asked to start the app by itself when a background upload
+   finishes (it would start without the launch arguments, as the ordinary app
+   pointed at the real server). The test starts it again; the upload carries
+   on in the system meanwhile.
+
+`-ZestUITestReset 1` wipes what the app has stored. A test that kills the app
+starts it again *without* that flag: what the app kept is what is being tested.
+
+**What is covered** (38 tests):
+
+| Class | What it proves |
+| --- | --- |
+| `SignInUITests` | wrong and right code, email instead and back, a new code, both ways back, Terms and Privacy, sign out with its question |
+| `RouteUITests` | header counts, nearest stop first, both tabs, loading state, locked stop, WRONG STOP, the far-away warning |
+| `RecordUITests` | record → SAVE → one register, the whole file once, one complete; FLIP, BACK, ending early; RECORD AGAIN; the recommend switch; the two-keys warning both ways; change and delete inside ten minutes; not-on-my-list; double taps |
+| `KillUITests` | the app killed mid-recording, on review, mid-upload, before "complete" is answered, and right after SAVE: the video is never lost and never sent twice |
+| `NetworkUITests` | 500s, no server, an expired upload address, "not uploaded", signed out by the server, update required, a stop locked by the server, starting with no signal |
+
+Timing a tap to the tenth of a second is not something a UI test does well,
+so the "ring only ends the clip after three seconds" rule and "a kill at any
+step still ends with one sent video" are also checked as plain logic in
+ZestCore (`testRingTapOnlyEndsTheClipAfterThreeSeconds`,
+`testAKillAtAnyPointStillEndsWithOneSentVideo`).
+
+**To run them on a Mac**, with the fake server in one terminal:
+
+```bash
+python3 ios/Scripts/fake_server.py
+```
+
+```bash
+cd ios && xcodegen generate && xcodebuild build-for-testing -project ZestVideo.xcodeproj -scheme ZestVideoUITests -destination "platform=iOS Simulator,name=iPhone 17" -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO
+```
+
+The fake server is plain HTTP on `localhost`, which iOS only allows with one
+key in the app's `Info.plist`. The project has **no** such exception, in any
+configuration; it is added to the test build only, after it is built:
+
+```bash
+/usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" ios/build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app/Info.plist
+```
+
+```bash
+cd ios && xcodebuild test-without-building -project ZestVideo.xcodeproj -scheme ZestVideoUITests -destination "platform=iOS Simulator,name=iPhone 17" -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO
+```
+
+The UI tests have their own scheme, so the ordinary build and unit tests
+(scheme `ZestVideo`) never need the server.
+
+**When a test fails** it prints one block: the test's name, the assertion,
+what was on the screen, and every request the server got during that test.
+It also saves a picture of the screen. In CI the block is in the step "What
+failed, and what the server saw", and the pictures, the logs and the result
+summary are in the `ui-tests-a` / `ui-tests-b` artifacts.
+
+**What a simulator cannot show**, and so is not covered here:
+
+- the real camera and encoder (the clip is a stand-in file);
+- iOS suspending the app during a background upload;
+- Low Power Mode and Low Data Mode;
+- a real force-quit by the user (swiping the app away), which iOS treats
+  differently from a crash: it cancels the app's background uploads until the
+  app is next opened. The tests kill the app the way a crash does;
+- how well speech recognition hears a name outdoors.
+
+Those need a real phone.
+
 ## CI
 
 `.github/workflows/ios.yml`:
@@ -104,6 +201,7 @@ Xcode (⌘U) or in CI.
 | `core` | Linux | `swift test` for ZestCore |
 | `app` | macOS | generates the project, builds for an iPhone simulator, runs the unit tests |
 | `screens` | macOS | takes a picture of every screen in the simulator; download the `screens` artifact |
+| `ui-tests` | macOS, two jobs side by side | starts the fake server, runs the UI tests in the simulator; on a failure, the log names the test, the assertion and what the server saw |
 | `testflight` | macOS, manual | archives and uploads to App Store Connect |
 
 ## Pictures of every screen

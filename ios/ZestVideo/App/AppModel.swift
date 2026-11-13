@@ -109,7 +109,13 @@ struct RowState: Equatable {
 /// no navigation stack, so there is nothing to swipe back through by mistake.
 @MainActor
 final class AppModel: ObservableObject {
-    static let shared = AppModel()
+    static let shared: AppModel = {
+        #if targetEnvironment(simulator)
+        // UI-test reset: wipe the app's storage before any store reads it.
+        UITestMode.resetIfAsked()
+        #endif
+        return AppModel()
+    }()
 
     enum Route: Equatable {
         case login
@@ -159,7 +165,10 @@ final class AppModel: ObservableObject {
     private let draftStore = DraftStore()
     private let defaults = UserDefaults.standard
     private var started = false
+    private var signingOut = false
     private var checkTask: Task<Void, Never>?
+    /// Videos the tech deleted or recorded over in this run of the app.
+    private var droppedVideoIDs = Set<String>()
 
     private enum Key {
         static let tech = "tech"
@@ -171,11 +180,27 @@ final class AppModel: ObservableObject {
     }
 
     private init() {
+        #if targetEnvironment(simulator)
+        // UI-test mode (see `UITestMode.swift`): talk to the test server and
+        // use the stand-in recorder. None of this exists in a build for a
+        // real phone.
+        let api = APIClient(baseURL: UITestMode.serverURL)
+        #else
         let api = APIClient()
+        #endif
         let queue = QueueStore()
         self.api = api
         self.queue = queue
         self.uploads = UploadManager(api: api, store: queue)
+        #if targetEnvironment(simulator)
+        if UITestMode.isOn {
+            camera.useStandInRecorder()
+            if UITestMode.wantsReset {
+                // Uploads left running by the test before this one.
+                uploads.cancelEverything()
+            }
+        }
+        #endif
     }
 
     // MARK: - Derived
@@ -189,8 +214,15 @@ final class AppModel: ObservableObject {
     var stops: [Stop] {
         guard let today else { return [] }
         return today.stops.map { stop in
-            guard let video = stop.video, video.byYou, video.state == .awaitingUpload,
-                  queue.item(video.id) == nil else { return stop }
+            guard let video = stop.video else { return stop }
+            let local = queue.item(video.id)
+            // (a) A video of mine the server still waits for, that this phone
+            //     no longer has: it will never arrive.
+            let lost = video.byYou && video.state == .awaitingUpload && local == nil
+            // (b) A video I deleted or recorded over a moment ago. The server
+            //     may not have heard yet; its old answer must not bring it back.
+            let dropped = local?.phase == .deleting || droppedVideoIDs.contains(video.id)
+            guard lost || dropped else { return stop }
             var copy = stop
             copy.video = nil
             return copy
@@ -298,7 +330,7 @@ final class AppModel: ObservableObject {
         uploads.onUnauthorized = { [weak self] in self?.signedOutByServer() }
         uploads.onUpdateRequired = { [weak self] in self?.route = .updateRequired }
         uploads.onNotice = { [weak self] text in self?.notice = text }
-        uploads.onChange = { [weak self] in self?.syncNudges() }
+        uploads.onChange = { [weak self] in self?.queueChanged() }
         location.onLeave = { [weak self] customerId in self?.leftStop(customerId: customerId) }
 
         route = signedIn ? .today : .login
@@ -349,11 +381,27 @@ final class AppModel: ObservableObject {
         queue.removeOrphanFiles(keeping: protectedFileNames())
     }
 
+    /// Files the sweep must leave alone although no queue row points at them.
     private func protectedFileNames() -> Set<String> {
         var names = Set<String>()
         if let draft { names.insert(draft.fileName) }
-        if let pending = draftStore.loadPending() { names.insert(pending.movieFileName) }
+        if let pending = draftStore.loadPending() {
+            // The camera's file, and the .mp4 it is being re-wrapped into.
+            // Without the second, a sweep that lands in the middle of the
+            // re-wrap (at launch, while a recording is being recovered) would
+            // delete the clip as it is being saved.
+            names.insert(pending.movieFileName)
+            names.insert(pending.videoFileName)
+            names.insert("small-" + pending.videoFileName)
+        }
         return names
+    }
+
+    /// A video reached the server or left the queue.
+    private func queueChanged() {
+        syncNudges()
+        // The route's own view of each stop is now out of date.
+        Task { await refreshToday() }
     }
 
     // MARK: - Which day is it
@@ -405,6 +453,9 @@ final class AppModel: ObservableObject {
             for video in fresh.videos where queue.item(video.id) != nil {
                 queue.apply(.serverState(video.state, emailAt: video.emailAt), to: video.id)
             }
+            // Dropped videos the server no longer lists as live can be forgotten.
+            let stillLive = Set(fresh.stops.compactMap { $0.liveVideo?.id })
+            droppedVideoIDs = droppedVideoIDs.intersection(stillLive)
             if fresh.config.minBuild > APIClient.build {
                 route = .updateRequired
             }
@@ -423,10 +474,10 @@ final class AppModel: ObservableObject {
             signedOutByServer()
         case .updateRequired:
             route = .updateRequired
-        case .offline, .badResponse:
+        case .offline, .badResponse, .http:
+            // Any failed load counts as "could not reach the server", so the
+            // screen says so instead of looking as if it were still loading.
             offline = true
-        case .http:
-            break
         }
     }
 
@@ -480,6 +531,8 @@ final class AppModel: ObservableObject {
     /// The tech chose to sign out. Videos still waiting stay on the phone and
     /// send after the next sign-in.
     func signOut() {
+        guard signedIn, !signingOut else { return }
+        signingOut = true
         let api = self.api
         Task { try? await api.logout() }
         // Give the logout call its token, then forget it.
@@ -496,6 +549,7 @@ final class AppModel: ObservableObject {
     }
 
     private func clearSession() {
+        signingOut = false
         Keychain.remove(Keychain.deviceTokenKey)
         api.token = nil
         tech = nil
@@ -628,7 +682,7 @@ final class AppModel: ObservableObject {
     /// Tapping the ring ends the clip early, but not in the first three seconds.
     func stopRecordingEarly() {
         guard recordPhase == .recording, let startedAt = camera.recordingStartedAt,
-              Date().timeIntervalSince(startedAt) >= Countdown.earliestStopSeconds else { return }
+              Countdown.canStopEarly(elapsed: Date().timeIntervalSince(startedAt)) else { return }
         camera.stopRecording()
     }
 
@@ -652,11 +706,13 @@ final class AppModel: ObservableObject {
     /// Re-wraps the camera file as the upload-ready .mp4 and stores it as a draft.
     private func makeDraft(from pending: PendingRecording, startedAt: Date?) async -> Bool {
         let movie = Files.video(pending.movieFileName)
-        let fileName = "\(pending.id).mp4"
+        let fileName = pending.videoFileName
         let output = await VideoExporter.makeMP4(from: movie, to: Files.video(fileName))
-        Files.remove(movie)
-        draftStore.clearPending()
-        guard let output else { return false }
+        guard let output else {
+            Files.remove(movie)
+            draftStore.clearPending()
+            return false
+        }
 
         let draft = Draft(
             id: pending.id, target: pending.target, fileName: fileName, stopDate: pending.stopDate,
@@ -664,8 +720,12 @@ final class AppModel: ObservableObject {
             location: pending.location, createdAt: Date()
         )
         // On disk the instant recording stops: it survives anything from here.
+        // The draft is written BEFORE the recording marker is cleared, so
+        // there is no moment at which a kill leaves the clip unaccounted for.
         draftStore.saveDraft(draft)
         self.draft = draft
+        Files.remove(movie)
+        draftStore.clearPending()
         Notifier.scheduleDraftNudge(name: draft.target.name)
         return true
     }
@@ -674,7 +734,11 @@ final class AppModel: ObservableObject {
     private func recoverInterruptedRecording() async {
         guard let pending = draftStore.loadPending(), recordPhase == .idle else { return }
         if draft == nil, Files.size(of: Files.video(pending.movieFileName)) > 0 {
-            _ = await makeDraft(from: pending, startedAt: nil)
+            let recovered = await makeDraft(from: pending, startedAt: nil)
+            // "Keep or record again?" straight away, not a card to go and find.
+            if recovered, signedIn, route == .today {
+                openReview()
+            }
         } else {
             Files.remove(Files.video(pending.movieFileName))
             draftStore.clearPending()
@@ -683,6 +747,12 @@ final class AppModel: ObservableObject {
 
     private func loadDraft() {
         draft = draftStore.loadDraft()
+        // Killed between "queued" and "draft cleared": the video is already
+        // in the queue, so the leftover draft record must not offer it again.
+        if let loaded = draft, queue.item(loaded.id) != nil {
+            draftStore.clearDraft()
+            draft = nil
+        }
         discardStaleDraft()
     }
 
@@ -800,6 +870,7 @@ final class AppModel: ObservableObject {
                 $0.customerId == customerId && !$0.notOnMyList && $0.id != item.id && $0.phase != .deleting
             }
             for previous in old {
+                droppedVideoIDs.insert(previous.id)
                 uploads.drop(previous.id)
             }
         }
@@ -824,6 +895,12 @@ final class AppModel: ObservableObject {
     /// After the "SAVED ✓" moment: back to the list, or the one-time reminders offer.
     func finishSave() {
         target = nil
+        // The server may have signed this phone out, or asked for an update,
+        // while "Saved" was showing. Those screens stand.
+        guard signedIn, route != .updateRequired else {
+            if !signedIn { route = .login }
+            return
+        }
         if config.leaveReminders, !defaults.bool(forKey: Key.offeredReminders), location.status == .authorizedWhenInUse {
             defaults.set(true, forKey: Key.offeredReminders)
             defaults.set(true, forKey: Key.askedNotifications)
@@ -847,13 +924,14 @@ final class AppModel: ObservableObject {
             }
         }
         events.log(.permission, detail: ["leaveReminders": turnOn ? "yes" : "no"])
-        route = .today
+        route = signedIn ? .today : .login
     }
 
     /// RECORD AGAIN from the review screen: the clip is deleted at once.
     func recordAgainFromReview() {
         guard let old = draft else {
-            route = .today
+            // A second tap of the same button: the first already moved on.
+            if route == .review { route = .today }
             return
         }
         target = old.target
@@ -961,11 +1039,13 @@ final class AppModel: ObservableObject {
     /// DELETE VIDEO, after the confirming tap.
     func deleteVideo(_ summary: VideoSummary) async {
         if let itemID = summary.itemID {
+            droppedVideoIDs.insert(itemID)
             uploads.drop(itemID)
             notice = "Video deleted."
         } else if let serverVideoID = summary.serverVideoID {
             do {
                 _ = try await api.deleteVideo(id: serverVideoID)
+                droppedVideoIDs.insert(serverVideoID)
                 notice = "Video deleted."
             } catch let error as APIError {
                 if error.code == "too_late" {

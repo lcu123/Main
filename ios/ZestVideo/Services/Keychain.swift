@@ -19,8 +19,23 @@ enum Keychain {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecValueData as String: Data(value.utf8),
         ]
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        let stored = SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        #if targetEnvironment(simulator)
+        // A simulator build that is not code-signed has no keychain access.
+        // Keep the value in the app's defaults there instead, so the app
+        // (and its tests) still stays signed in across a relaunch. Never on
+        // a real phone: this branch is compiled out.
+        if !stored {
+            UserDefaults.standard.set(value, forKey: simulatorPrefix + key)
+            return true
+        }
+        #endif
+        return stored
     }
+
+    #if targetEnvironment(simulator)
+    private static let simulatorPrefix = "simulator-keychain."
+    #endif
 
     static func get(_ key: String) -> String? {
         let query: [String: Any] = [
@@ -31,9 +46,15 @@ enum Keychain {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+           let data = result as? Data {
+            return String(data: data, encoding: .utf8)
+        }
+        #if targetEnvironment(simulator)
+        return UserDefaults.standard.string(forKey: simulatorPrefix + key)
+        #else
+        return nil
+        #endif
     }
 
     static func remove(_ key: String) {
@@ -43,5 +64,8 @@ enum Keychain {
             kSecAttrAccount as String: key,
         ]
         SecItemDelete(query as CFDictionary)
+        #if targetEnvironment(simulator)
+        UserDefaults.standard.removeObject(forKey: simulatorPrefix + key)
+        #endif
     }
 }

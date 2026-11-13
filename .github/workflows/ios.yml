@@ -4,6 +4,8 @@ name: iOS
 #   core        pure-logic package on Linux (fast)
 #   app         real Xcode build + unit tests on an iPhone simulator
 #   screens     pictures of every screen, taken in the simulator (artifact "screens")
+#   ui-tests    end-to-end tests: the real app in the simulator against a fake
+#               server on the runner (artifacts "ui-tests-a" and "ui-tests-b")
 #   testflight  manual only: archive and upload to App Store Connect
 
 on:
@@ -368,6 +370,250 @@ jobs:
           name: screens-build-log
           path: ios/screens-build.log
           if-no-files-found: ignore
+
+  ui-tests:
+    # End-to-end tests. XCUITest drives the real app in the simulator: real
+    # sign-in, real storage, real upload queue. The server is a fake one on
+    # this runner (ios/Scripts/fake_server.py) that the tests can tell to
+    # misbehave. The app's simulator-only UI-test mode swaps in a stand-in
+    # for the camera; none of that mode exists in a build for a real phone.
+    # Two jobs side by side keep each one short.
+    name: UI tests (${{ matrix.name }})
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: sign-in, route, record
+            slug: a
+            classes: SignInUITests RouteUITests RecordUITests
+          - name: kills, bad network
+            slug: b
+            classes: KillUITests NetworkUITests
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Stand-in app icon if the real one is not committed yet
+        run: |
+          ICON="ZestVideo/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+          if [ ! -f "$ICON" ]; then
+            echo "::warning::icon-1024.png is missing; building with a plain purple stand-in."
+            python3 - "$ICON" <<'PY'
+          import struct, sys, zlib
+          size = 1024
+          row = b"\x00" + bytes((0x6E, 0x20, 0xB9)) * size
+          raw = row * size
+          def chunk(kind, data):
+              body = kind + data
+              return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+          png += chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+          open(sys.argv[1], "wb").write(png)
+          PY
+          fi
+
+      - name: Check the fake server against itself
+        run: |
+          set -o pipefail
+          python3 Scripts/fake_server.py --self-test | tail -3
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Pick an iPhone simulator
+        run: |
+          UDID=$(xcrun simctl list devices available --json | python3 -c '
+          import json, re, sys
+          best = None
+          for runtime, devices in json.load(sys.stdin)["devices"].items():
+              match = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              if not match:
+                  continue
+              version = (int(match.group(1)), int(match.group(2)))
+              for device in devices:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      key = (version, "Pro" not in device["name"], device["name"])
+                      if best is None or key > best[0]:
+                          best = (key, device["udid"], device["name"], runtime)
+          if best is None:
+              sys.exit("No iPhone simulator is installed on this runner.")
+          sys.stderr.write("Using %s (%s)\n" % (best[2], best[3]))
+          print(best[1])
+          ')
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          mkdir -p ui-artifacts/failures
+
+      - name: Build the app and the UI tests
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project ZestVideo.xcodeproj \
+            -scheme ZestVideoUITests \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet 2>&1 | tee ui-artifacts/ui-build.log
+
+      - name: Compile errors (summary)
+        if: failure()
+        run: |
+          echo "---- errors ----"
+          grep -n "error:" ui-artifacts/ui-build.log | sort -u | head -200 || true
+
+      - name: Let this test build talk plain HTTP to this Mac
+        run: |
+          # The fake server is plain HTTP on localhost. iOS only allows that
+          # with one key in the app's Info.plist. It is added HERE, to the
+          # copy of the app built for this test run, and nowhere else: the
+          # project itself has no such exception in any configuration, so a
+          # build for a phone or the App Store cannot have it.
+          PLIST="build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app/Info.plist"
+          ls -l "$PLIST"
+          /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy \
+            -c "Add :NSAppTransportSecurity dict" \
+            -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$PLIST"
+          plutil -lint "$PLIST"
+          /usr/libexec/PlistBuddy -c "Print :NSAppTransportSecurity" "$PLIST"
+
+      - name: Boot the simulator and set it up
+        run: |
+          APP="build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app"
+          BUNDLE=com.zestlawnpest.video
+          # Typing in the tests needs the on-screen keyboard.
+          defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false || true
+          xcrun simctl boot "$SIM_UDID" || true
+          xcrun simctl bootstatus "$SIM_UDID" -b
+          xcrun simctl ui "$SIM_UDID" appearance light || true
+          # The simulator's own first-run "slide to type" sheet would cover the keyboard.
+          xcrun simctl spawn "$SIM_UDID" defaults write com.apple.keyboard.preferences \
+            DidShowContinuousPathIntroduction -bool true || echo "keyboard tutorial setting not available"
+          # What can be granted ahead of time is. (The tests also answer any
+          # system question that still comes up, such as notifications.)
+          xcrun simctl install "$SIM_UDID" "$APP" || echo "::warning::could not install ahead of the tests; xcodebuild installs it anyway"
+          xcrun simctl privacy "$SIM_UDID" grant location "$BUNDLE" \
+            || echo "::warning::could not grant location ahead of time; the tests answer the question themselves"
+          # The phone "stands" on the first stop of the fake route.
+          xcrun simctl location "$SIM_UDID" set 38.67800,-121.17600 \
+            || echo "::warning::could not set the simulator's location"
+
+      - name: Start the fake server
+        run: |
+          nohup python3 -u Scripts/fake_server.py --port 8765 > ui-artifacts/server.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8765/__test/ping >/dev/null 2>&1; then break; fi
+            sleep 0.25
+          done
+          curl -fsS http://127.0.0.1:8765/__test/ping
+          echo
+          head -5 ui-artifacts/server.log
+
+      - name: Run the UI tests
+        run: |
+          set -o pipefail
+          ONLY=""
+          for class in ${{ matrix.classes }}; do
+            ONLY="$ONLY -only-testing:ZestVideoUITests/$class"
+          done
+          # Variables that start with TEST_RUNNER_ reach the tests without the
+          # prefix: this is where a failing test saves its picture and notes.
+          export TEST_RUNNER_ZEST_FAILURE_DIR="$PWD/ui-artifacts/failures"
+          xcodebuild test-without-building \
+            -project ZestVideo.xcodeproj \
+            -scheme ZestVideoUITests \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build/DerivedData \
+            -resultBundlePath ui-artifacts/UITests.xcresult \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 300 \
+            -maximum-test-execution-time-allowance 300 \
+            CODE_SIGNING_ALLOWED=NO \
+            $ONLY 2>&1 | tee ui-artifacts/ui-test.log \
+            | grep -E "^Test Case|^Test Suite '(All|Selected)|######## (FAILED|On screen)|^NOTE |error:|Executed [0-9]+ tests|\*\* TEST" || true
+          grep -q "\*\* TEST EXECUTE SUCCEEDED \*\*" ui-artifacts/ui-test.log
+
+      - name: What failed, and what the server saw
+        if: failure()
+        run: |
+          # One block per failed test: its name, the assertion, what was on
+          # the screen, and every request the fake server got during it.
+          echo "==================== FAILED TESTS ===================="
+          grep -E "^Test Case .* failed" ui-artifacts/ui-test.log || echo "(no test reported a failure: see the last lines of the log below)"
+          found=0
+          for note in ui-artifacts/failures/*.txt; do
+            [ -f "$note" ] || continue
+            found=1
+            echo
+            echo "------------------------------------------------------------"
+            cat "$note"
+            echo
+          done
+          if [ "$found" -eq 0 ]; then
+            # The tests print the same block; take it from the log.
+            awk '/^######## FAILED/{show=1} show{print} /^########$/{show=0}' ui-artifacts/ui-test.log || true
+          fi
+          echo
+          echo "==================== ASSERTIONS ===================="
+          grep -E "error: -\[|\.swift:[0-9]+: error:" ui-artifacts/ui-test.log | sort -u | head -80 || true
+          echo
+          echo "==================== LAST LINES OF THE LOG ===================="
+          tail -40 ui-artifacts/ui-test.log || true
+          echo
+          echo "==================== CRASH REPORTS ===================="
+          ls -1t ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -i zestvideo | head -5 || echo "none"
+          for report in $(ls -1t ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -i zestvideo | head -2); do
+            cp ~/Library/Logs/DiagnosticReports/"$report" ui-artifacts/ || true
+          done
+
+      - name: Result summary and failure pictures
+        if: always()
+        run: |
+          RESULT="ui-artifacts/UITests.xcresult"
+          if [ -d "$RESULT" ]; then
+            xcrun xcresulttool get test-results summary --path "$RESULT" > ui-artifacts/summary.json 2>/dev/null \
+              || echo "no summary (this Xcode's xcresulttool does not have that command)"
+            xcrun xcresulttool get test-results tests --path "$RESULT" > ui-artifacts/tests.json 2>/dev/null || true
+            # Pictures and notes the failed tests attached (kept only for failures).
+            xcrun xcresulttool export attachments --path "$RESULT" --output-path ui-artifacts/attachments 2>/dev/null \
+              || echo "no attachments exported"
+            python3 - ui-artifacts/summary.json <<'PY' || true
+          import json, sys
+          try:
+              summary = json.load(open(sys.argv[1]))
+          except Exception as error:
+              sys.exit("no readable summary: %s" % error)
+          print("result: %s   passed: %s   failed: %s   skipped: %s" % (
+              summary.get("result"), summary.get("passedTests"), summary.get("failedTests"), summary.get("skippedTests")))
+          for failure in summary.get("testFailures", []):
+              print("FAILED %s: %s" % (failure.get("testName"), failure.get("failureText")))
+          PY
+            # The whole bundle is big; keep it only when something failed.
+            if grep -q "\*\* TEST EXECUTE SUCCEEDED \*\*" ui-artifacts/ui-test.log 2>/dev/null; then
+              rm -rf "$RESULT"
+            else
+              ditto -c -k --keepParent "$RESULT" ui-artifacts/UITests.xcresult.zip && rm -rf "$RESULT"
+            fi
+          fi
+          ls -l ui-artifacts ui-artifacts/failures 2>/dev/null || true
+
+      - name: Upload the logs, the summary and the failure pictures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-tests-${{ matrix.slug }}
+          path: ios/ui-artifacts
+          if-no-files-found: warn
 
   testflight:
     # NOT YET RUN: this job cannot be tested until the Apple Developer account

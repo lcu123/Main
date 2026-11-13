@@ -116,12 +116,16 @@ struct ReviewView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Your video. Double tap to play it again.")
+        .accessibilityIdentifier("clip")
     }
 
     /// "I recommended something": a row with a big switch, blue when it is YES.
     private var recommendRow: some View {
         Button {
-            recommend.toggle()
+            // One press, one change: a double tap must not switch it back off.
+            if TapGate.pass() {
+                recommend.toggle()
+            }
         } label: {
             Card {
                 HStack(spacing: 14) {
@@ -143,6 +147,7 @@ struct ReviewView: View {
         .accessibilityLabel("I recommended something")
         .accessibilityValue(recommend ? "Yes" : "No")
         .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("recommend-switch")
     }
 
     // MARK: Warning
@@ -212,6 +217,7 @@ struct ReviewView: View {
             .padding(Theme.gutter)
         }
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("saved-screen")
     }
 
     // MARK: Actions

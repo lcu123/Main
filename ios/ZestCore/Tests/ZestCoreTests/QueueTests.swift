@@ -204,6 +204,85 @@ final class QueueTests: XCTestCase {
         XCTAssertEqual(run(done, .serverState(.pulled, emailAt: nil)).phase, .removed)
     }
 
+    // MARK: Killed at every point
+
+    /// What the app does with a row when it starts again: read it back from
+    /// disk, then take the next step for the phase it is in.
+    private func relaunch(_ item: QueueItem) throws -> QueueItem {
+        let data = try ZestJSON.encoder().encode([item])
+        return try XCTUnwrap(try ZestJSON.decoder().decode([QueueItem].self, from: data).first)
+    }
+
+    /// The app is killed after each step in turn. Every time, the row read
+    /// back from disk still gets to "sent" with the same ID, so the server
+    /// can never end up with two videos for one recording.
+    func testAKillAtAnyPointStillEndsWithOneSentVideo() throws {
+        let steps: [QueueEvent] = [
+            .registering,
+            .registered(Fixtures.ticket),
+            .progress(0.5),
+            .uploadFinished(status: 200),
+            .completed(state: .held, emailAt: Fixtures.at(10)),
+        ]
+        for killAfter in 0...steps.count {
+            var item = Fixtures.item()
+            for step in steps.prefix(killAfter) {
+                item = run(item, step)
+            }
+            item = try relaunch(item)
+            XCTAssertEqual(item.id, Fixtures.item().id, "the ID never changes (kill after step \(killAfter))")
+
+            // The relaunch: wake, then whatever that phase needs.
+            item = run(item, .wake)
+            switch item.phase {
+            case .queued:
+                item = run(item, .registering, .registered(Fixtures.ticket), .uploadFinished(status: 200),
+                           .completed(state: .held, emailAt: Fixtures.at(10)))
+            case .uploading:
+                // The background upload finished while the app was gone, or is started again.
+                XCTAssertNotNil(item.uploadURL, "the upload address was kept on disk")
+                item = run(item, .uploadFinished(status: 200), .completed(state: .held, emailAt: Fixtures.at(10)))
+            case .uploaded:
+                item = run(item, .completed(state: .held, emailAt: Fixtures.at(10)))
+            case .done:
+                break
+            default:
+                XCTFail("unexpected phase \(item.phase) after a kill at step \(killAfter)")
+            }
+            XCTAssertEqual(item.phase, .done, "kill after step \(killAfter)")
+            XCTAssertEqual(item.displayText, "SENT ✓")
+            XCTAssertFalse(item.needsFile, "the phone's copy can go")
+        }
+    }
+
+    /// Killed while "complete" was in the air: the server did confirm, the
+    /// phone never heard. Either way of finding out ends in one sent video.
+    func testAKillWhileConfirmingIsSettledByEitherAnswer() throws {
+        let uploaded = try relaunch(run(Fixtures.item(), .registering, .registered(Fixtures.ticket), .uploadFinished(status: 200)))
+        XCTAssertEqual(uploaded.phase, .uploaded)
+        XCTAssertTrue(uploaded.needsFile, "the file is kept until the server says it has it")
+
+        let askedAgain = run(uploaded, .completed(state: .held, emailAt: nil))
+        let toldByToday = run(uploaded, .serverState(.held, emailAt: nil))
+        XCTAssertEqual(askedAgain.phase, .done)
+        XCTAssertEqual(toldByToday.phase, .done)
+        // A late second answer changes nothing.
+        XCTAssertEqual(run(toldByToday, .completed(state: .held, emailAt: nil)).phase, .done)
+    }
+
+    /// Killed right after SAVE, before register answered: the row says the
+    /// server may know, and asking again with the same ID is safe.
+    func testAKillBeforeRegisterAnsweredAsksAgainWithTheSameID() throws {
+        let item = try relaunch(run(Fixtures.item(), .registering))
+        XCTAssertEqual(item.phase, .queued)
+        XCTAssertTrue(item.serverMayKnow)
+        XCTAssertEqual(item.registerRequest.id, Fixtures.item().id)
+        // The server had finished the first one after all: it just says so.
+        XCTAssertEqual(run(item, .serverAlreadyHas(state: .held, emailAt: nil)).phase, .done)
+        // Or it had not: a fresh address, and on it goes.
+        XCTAssertEqual(run(item, .registered(Fixtures.ticket)).phase, .uploading)
+    }
+
     func testNonsenseEventsAreIgnored() {
         let item = Fixtures.item()
         XCTAssertEqual(run(item, .uploadFinished(status: 200)), item)

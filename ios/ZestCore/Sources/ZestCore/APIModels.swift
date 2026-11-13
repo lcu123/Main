@@ -181,7 +181,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = AppConfig.fallback
         // Clamp so a bad setting can never produce a zero-length or endless clip.
-        maxSeconds = min(max(c.value(.maxSeconds, default: d.maxSeconds), 5), 60)
+        maxSeconds = min(max(c.value(.maxSeconds, default: d.maxSeconds), 3), 60)
         holdMinutes = max(c.value(.holdMinutes, default: d.holdMinutes), 0)
         farMeters = max(c.value(.farMeters, default: d.farMeters), 25)
         minBuild = c.value(.minBuild, default: d.minBuild)

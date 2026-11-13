@@ -88,6 +88,7 @@ struct LoginView: View {
                     .keyboardType(.phonePad)
                     .textContentType(.telephoneNumber)
                     .accessibilityLabel("Mobile number")
+                    .accessibilityIdentifier("contact-field")
             case .email:
                 TextField("Email", text: $contact)
                     .keyboardType(.emailAddress)
@@ -97,6 +98,7 @@ struct LoginView: View {
                     .submitLabel(.go)
                     .onSubmit(sendCode)
                     .accessibilityLabel("Email")
+                    .accessibilityIdentifier("contact-field")
             }
         }
         .zestFont(.field)
@@ -127,6 +129,8 @@ struct LoginView: View {
     }
 
     private func flipMode() {
+        // One press, one change: a double tap must not flip it straight back.
+        guard TapGate.pass() else { return }
         mode = (mode == .mobile) ? .email : .mobile
         contact = ""
         problem = nil
@@ -214,6 +218,7 @@ struct LoginView: View {
                 .tint(.clear)
                 .frame(maxWidth: .infinity, minHeight: boxHeight)
                 .accessibilityLabel("6-digit code")
+                .accessibilityIdentifier("code-field")
                 .onChange(of: code) { _, newValue in
                     let digits = String(newValue.filter { $0.isASCII && $0.isNumber }.prefix(6))
                     if digits != newValue {

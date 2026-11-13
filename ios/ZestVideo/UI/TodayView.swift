@@ -60,7 +60,9 @@ struct TodayView: View {
         .task {
             // Keep the list fresh while it is on screen. Stops with the view.
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 120 * 1_000_000_000)
+                // With no route yet, look again soon; otherwise every two minutes.
+                let wait: UInt64 = app.today == nil ? 15 : 120
+                try? await Task.sleep(nanoseconds: wait * 1_000_000_000)
                 if Task.isCancelled { break }
                 await app.refreshToday()
                 location.refresh(precise: false)
@@ -122,6 +124,7 @@ struct TodayView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(shown). Sent \(app.videosSentCount) of \(total). Waiting \(app.waitingCount).")
+        .accessibilityIdentifier("route-header")
     }
 
     private func headerName(_ name: String, role: Theme.TextRole) -> some View {
@@ -203,6 +206,7 @@ struct TodayView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("1 video not saved yet. Finish it.")
             .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("draft-card")
         }
         if let notice = app.notice {
             Banner(text: notice, tone: .attention)
@@ -218,6 +222,7 @@ struct TodayView: View {
             }
             .buttonStyle(.plain)
             .accessibilityHint("Opens My Videos")
+            .accessibilityIdentifier("waiting-banner")
         }
         if app.offline {
             Banner(text: app.today == nil ? "No signal. Your stops will show when there is signal." : "No signal. Showing your saved list.", tone: .info)
@@ -226,8 +231,18 @@ struct TodayView: View {
 
     @ViewBuilder
     private var emptyState: some View {
-        if app.today == nil && app.refreshing {
-            BodyText("Getting your stops…", bold: true)
+        if app.today == nil && !app.offline {
+            // Still asking. Any failure sets `offline`, so this never sticks.
+            HStack(spacing: 14) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .scaleEffect(1.4)
+                    .accessibilityHidden(true)
+                BodyText("Getting your stops…", bold: true)
+            }
+            .padding(.vertical, 8)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("loading-route")
         } else if app.today == nil {
             BodyText("Your stops are not here yet.", bold: true)
             BodyText("You can still record. Tap STOP NOT ON MY LIST.")
@@ -248,6 +263,7 @@ struct TodayView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Stop not on my list")
+        .accessibilityIdentifier("not-on-my-list")
     }
 }
 
@@ -308,8 +324,16 @@ struct StopCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(stop.listName), \(stop.address). \(state.text.capitalized).")
+        .accessibilityLabel(spokenLabel)
         .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("stop-\(stop.customerId)")
+    }
+
+    /// Everything on the card, read out in order: "Closest stop. Smith, Jane,
+    /// 123 Main St. Record Video."
+    private var spokenLabel: String {
+        let lead = headline.map { $0 + ". " } ?? ""
+        return "\(lead)\(stop.listName), \(stop.address). \(state.text.capitalized)."
     }
 
     /// The small grey facts: how far away, and the first service.
