@@ -149,7 +149,7 @@ class MemoryStorage:
         body = self.objects.get(key)
         if body is None:
             return None
-        return StoredObject(size=len(body), etag=hashlib.md5(body).hexdigest())
+        return StoredObject(size=len(body), etag=hashlib.md5(body, usedforsecurity=False).hexdigest())
 
     async def delete(self, key: str) -> None:
         self.deleted.append(key)
