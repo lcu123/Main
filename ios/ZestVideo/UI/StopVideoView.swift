@@ -33,7 +33,7 @@ struct StopVideoView: View {
                 changeable(summary, secondsLeft: max(0, Int(closesAt.timeIntervalSince(now).rounded(.up))))
             }
         case .otherTech:
-            Screen {
+            Screen(bar: "Video", onBack: goBack) {
                 headline(summary)
                 BodyText("Another tech already recorded this stop.", bold: true)
                 BodyText("If you record it again, your video takes its place.")
@@ -42,9 +42,9 @@ struct StopVideoView: View {
                 back
             }
         case .waiting:
-            Screen {
+            Screen(bar: "Video", onBack: goBack) {
                 headline(summary)
-                StatusPill(status: RowStatus(text: summary.statusText, kind: .waiting))
+                StatusChip(text: summary.statusText, tone: .waiting)
                 BodyText("This video is waiting to send.", bold: true)
                 BodyText("It sends by itself when there is signal. You do not need to do anything.")
             } footer: {
@@ -53,7 +53,7 @@ struct StopVideoView: View {
         case .locked:
             locked(summary, message: UploadManager.lockedMessage)
         case .blocked(let message):
-            Screen {
+            Screen(bar: "Video", onBack: goBack) {
                 headline(summary)
                 Banner(text: message, tone: .attention)
                 officeNumber
@@ -71,12 +71,9 @@ struct StopVideoView: View {
     // MARK: Inside the ten minutes
 
     private func changeable(_ summary: VideoSummary, secondsLeft: Int) -> some View {
-        Screen {
+        Screen(bar: "Video", onBack: goBack) {
             headline(summary)
-            StatusPill(status: RowStatus(
-                text: summary.statusText,
-                kind: summary.statusText.hasPrefix("SENT") ? .sent : .waiting
-            ))
+            StatusChip(text: summary.statusText, tone: summary.statusText.hasPrefix("SENT") ? .good : .waiting)
             BodyText(HoldWindow.text(secondsLeft: secondsLeft), bold: true)
             BodyText("After that it goes to the customer.")
         } footer: {
@@ -87,7 +84,7 @@ struct StopVideoView: View {
     }
 
     private func deleteQuestion(_ summary: VideoSummary) -> some View {
-        Screen(title: "Delete this video?") {
+        Screen(bar: "Delete Video", title: "Delete this video?") {
             StopHeadline(name: summary.name, address: summary.address)
             BodyText("The customer will not get a video for this visit.")
         } footer: {
@@ -105,9 +102,9 @@ struct StopVideoView: View {
     // MARK: After the ten minutes
 
     private func locked(_ summary: VideoSummary, message: String) -> some View {
-        Screen {
+        Screen(bar: "Video", onBack: goBack) {
             headline(summary)
-            StatusPill(status: RowStatus(text: "SENT ✓", kind: .sent))
+            StatusChip(text: "SENT ✓", tone: .good)
             BodyText(message, bold: true)
             officeNumber
         } footer: {
@@ -119,17 +116,16 @@ struct StopVideoView: View {
     }
 
     private var gone: some View {
-        Screen(title: "No video here") {
+        Screen(bar: "Video", onBack: goBack, title: "No video here") {
             BodyText("This stop has no video now.")
         } footer: {
             back
         }
     }
 
-    /// The name and street, as large as on the confirm screen.
+    /// The name and street on their card, as large as on the confirm screen.
     private func headline(_ summary: VideoSummary) -> some View {
         StopHeadline(name: summary.name, address: summary.address)
-            .padding(.top, 6)
     }
 
     /// On a device that cannot place a call, the number in words instead.
@@ -140,7 +136,12 @@ struct StopVideoView: View {
         }
     }
 
+    /// The arrow in the top bar and the big BACK button do the same thing.
+    private func goBack() {
+        app.backToToday()
+    }
+
     private var back: some View {
-        BigButton(title: "BACK", kind: .plain) { app.backToToday() }
+        BigButton(title: "BACK", kind: .plain, action: goBack)
     }
 }

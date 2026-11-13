@@ -1,7 +1,7 @@
 import SwiftUI
 import ZestCore
 
-/// "My videos": every video from today and where it is. It always tells the
+/// "My Videos": every video from today and where it is. It always tells the
 /// truth: SENT only once the server has the whole file.
 struct QueueView: View {
     @EnvironmentObject private var app: AppModel
@@ -25,43 +25,72 @@ struct QueueView: View {
     }
 
     private var list: some View {
-        Screen(title: "My videos") {
-            if rows.isEmpty {
-                BodyText("No videos yet today.", bold: true)
-            }
-            ForEach(rows) { item in
-                Button {
-                    app.open(item: item)
-                } label: {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(item.customerName)
-                            .zestFont(.rowName)
-                            .foregroundColor(Theme.ink)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.7)
-                            .multilineTextAlignment(.leading)
-                        StatusPill(status: RowStatus(text: item.displayText, kind: kind(item)))
+        Screen(bar: "My Videos", tab: .videos) {
+            // The rows say how many minutes are left to change a video.
+            TimelineView(.periodic(from: Date(), by: 20)) { context in
+                VStack(alignment: .leading, spacing: 18) {
+                    if rows.isEmpty {
+                        Banner(text: "No videos yet today.", tone: .info)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
-                    .padding(18)
-                    .background(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous).fill(Theme.card))
-                    .overlay(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous).strokeBorder(Theme.purple, lineWidth: 3))
-                    .contentShape(Rectangle())
+                    ForEach(rows) { item in
+                        row(item, state: app.rowState(for: item, now: context.date))
+                    }
+                    smallPrint
                 }
-                .buttonStyle(.plain)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(item.customerName). \(item.displayText.capitalized).")
-                .accessibilityAddTraits(.isButton)
             }
+        }
+        .onAppear(perform: measure)
+        .onChange(of: queue.items.waitingCount) { _, _ in
+            measure()
+        }
+    }
 
-            BodyText("Zest Video is holding \(StorageGuard.sizeText(heldBytes)) on this phone.", color: Theme.softInk)
-                .padding(.top, 6)
-            if queue.items.waitingCount > 0 {
-                BodyText("Waiting videos send by themselves when there is signal.", color: Theme.softInk)
+    /// One video: the same kind of card as a stop on My Route.
+    private func row(_ item: QueueItem, state: RowState) -> some View {
+        Button {
+            app.open(item: item)
+        } label: {
+            Card {
+                VStack(spacing: 0) {
+                    HStack(alignment: .center, spacing: 16) {
+                        StopBadge(badge: state.badge)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(item.customerName)
+                                .zestFont(.rowName)
+                                .foregroundColor(Theme.ink)
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.7)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                            // Where the video is, in words, whatever the row below offers.
+                            StatusChip(text: item.displayText, tone: tone(item))
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(18)
+
+                    Hairline()
+                    ActionRow(text: state.text, tone: state.tone)
+                }
             }
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(item.customerName). \(item.displayText.capitalized). \(state.text.capitalized).")
+        .accessibilityAddTraits(.isButton)
+    }
 
-            // The small print, at the very end.
-            VStack(alignment: .leading, spacing: 4) {
+    /// The small print, on its own card at the very end.
+    private var smallPrint: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                SmallLabel("This phone")
+                BodyText("Zest Video is holding \(StorageGuard.sizeText(heldBytes)) on this phone.")
+                if queue.items.waitingCount > 0 {
+                    BodyText("Waiting videos send by themselves when there is signal.", color: Theme.softInk)
+                }
+                Hairline()
+                    .padding(.vertical, 4)
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 28) {
                         signOutLink
@@ -74,20 +103,13 @@ struct QueueView: View {
                 }
                 BodyText("To delete your data, sign out and call the office.", color: Theme.softInk)
             }
-            .padding(.top, 26)
-        } footer: {
-            BigButton(title: "BACK", kind: .plain) {
-                app.backToToday()
-            }
+            .padding(18)
         }
-        .onAppear(perform: measure)
-        .onChange(of: queue.items.waitingCount) { _, _ in
-            measure()
-        }
+        .padding(.top, 8)
     }
 
     private var signOutQuestion: some View {
-        Screen(title: "Sign out?") {
+        Screen(bar: "Sign Out", title: "Sign out?") {
             BodyText("You will need a new code to sign in again.")
             if queue.items.waitingCount > 0 {
                 Banner(text: "Videos still waiting will send after you sign in again.", tone: .attention)
@@ -103,14 +125,14 @@ struct QueueView: View {
     }
 
     private var signOutLink: some View {
-        TextLink(title: "Sign out", color: Theme.softInk) {
+        TextLink(title: "Sign out", color: Theme.ink) {
             confirmingSignOut = true
         }
     }
 
-    private func kind(_ item: QueueItem) -> RowStatus.Kind {
+    private func tone(_ item: QueueItem) -> StateTone {
         switch item.display {
-        case .sent: return .sent
+        case .sent: return .good
         case .blocked: return .problem
         case .waiting, .sending: return .waiting
         }

@@ -7,7 +7,7 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
-            Theme.background.ignoresSafeArea()
+            Theme.page.ignoresSafeArea()
             screen
         }
         // The app's own sizes are already very large. The phone's text-size
@@ -15,7 +15,7 @@ struct RootView: View {
         // layout whole, and can never make them smaller.
         .dynamicTypeSize(DynamicTypeSize.large ... DynamicTypeSize.xxxLarge)
         .preferredColorScheme(.light)
-        .tint(Theme.purple)
+        .tint(Theme.blue)
         .task {
             // The first "became active" can arrive before this view exists.
             app.becameActive()

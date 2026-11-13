@@ -1,37 +1,62 @@
 import SwiftUI
 import UIKit
 
-/// Zest's logo colors and every size in the app.
+/// The app's colors and every size in it.
 ///
-/// Built to be read by a 75-year-old in gloves in bright sun: very large
-/// type, heavy weights, strong contrast, big buttons. Black goes on yellow
-/// and lime, white goes on the purples, and red means one thing only: the
-/// camera is recording.
+/// **The look** is the one the techs already work in all day: a light grey
+/// page, white cards with soft shadows, one strong blue for anything that
+/// can be tapped, small grey capital labels, and the plain system typeface.
+/// It is a familiar style, not a copy: every symbol is a system symbol and
+/// the only artwork is Zest's own icon.
 ///
-/// **All sizes live here.** They are written for a 430 pt wide phone (the big
+/// **The sizes** are still Zest's own rule: built to be read by a
+/// 75-year-old in gloves in bright sun. Very large type, big buttons, strong
+/// contrast. Red means one thing only: the camera is recording.
+///
+/// All sizes live here. They are written for a 430 pt wide phone (the big
 /// iPhones) and shrink gently on narrower ones through `scale`, so nothing
 /// clips on a small phone and nothing looks lost on a big one. The phone's
 /// own text-size setting still works on top (see `ZestFont`).
 enum Theme {
-    // MARK: Brand colors (the logo values)
+    // MARK: Colors
 
-    static let purple = Color(hex: 0x6E20B9)
-    static let brightPurple = Color(hex: 0x932FFB)
-    static let deepViolet = Color(hex: 0x5600C6)
-    static let yellow = Color(hex: 0xFFF515)
-    static let lime = Color(hex: 0xA7E84C)
-    static let mint = Color(hex: 0x6FE7C8)
-    static let black = Color.black
-    static let white = Color.white
+    /// Anything that can be tapped: buttons, action words, the active box.
+    static let blue = Color(hex: 0x217DE7)
+    static let bluePressed = Color(hex: 0x1A64B9)
+    /// The back arrow and its round button.
+    static let cyan = Color(hex: 0x00A7E1)
+    static let paleCyan = Color(hex: 0xCCEFF5)
+    /// The selected tab.
+    static let navy = Color(hex: 0x1A1353)
 
-    // MARK: Roles
+    /// The page behind the cards.
+    static let page = Color(hex: 0xF5F5F5)
+    /// Cards and bars.
+    static let card = Color.white
+    static let hairline = Color(hex: 0xD0D0D0)
 
-    static let background = Color.white
-    static let ink = Color.black
-    static let softInk = Color(hex: 0x3A3A3A)
-    static let card = Color(hex: 0xF3EEFA)
-    /// Recording only. Never used as a brand color.
+    /// Titles.
+    static let titleInk = Color(hex: 0x48484A)
+    /// Main text.
+    static let ink = Color(hex: 0x333333)
+    /// Small labels and second-rank text. Never used under the minimum size.
+    static let softInk = Color(hex: 0x666666)
+
+    /// Sent and saved. White on it is about 4.7 to 1.
+    static let green = Color(hex: 0x1E8449)
+    static let paleGreen = Color(hex: 0xDDF3E4)
+    static let darkGreen = Color(hex: 0x14532D)
+    /// Waiting and "look at this". Always with dark text, never blue.
+    static let amber = Color(hex: 0xF5A623)
+    static let paleAmber = Color(hex: 0xFFF1CC)
+
+    /// Recording only: the button, the border, the pill.
     static let recordRed = Color(hex: 0xE5121A)
+    /// The countdown ring only. It has to read over any picture.
+    static let ringYellow = Color(hex: 0xFFF515)
+
+    static let white = Color.white
+    static let black = Color.black
 
     // MARK: The one scale
 
@@ -52,76 +77,92 @@ enum Theme {
 
     /// Every kind of text in the app, with its size on a 430 pt wide phone.
     enum TextRole {
-        /// Screen titles. 40 pt.
+        /// The question at the top of a screen. 40 pt.
         case title
+        /// The screen's name in the top bar. 26 pt.
+        case barTitle
         /// Ordinary text. 26 pt, and never under 24 on any phone.
         case body
         case bodyBold
-        /// Button labels. 30 pt.
+        /// Button labels. 30 pt, in capitals.
         case button
         /// The customer's name on the "is this the right house" screens. 52 pt.
         case heroName
         /// The street on those screens. 38 pt.
         case heroStreet
-        /// A stop's name on the Today list. 32 pt.
+        /// A name on a card in a list. 32 pt.
         case rowName
-        /// A stop's street on the Today list. 26 pt.
+        /// A street on a card in a list. 26 pt.
         case rowStreet
-        /// Status pills and distances. 22 pt.
+        /// Small grey capital labels ("CUSTOMER", "50 FT AWAY"). 22 pt.
+        case label
+        /// Blue capital action words on a card ("RECORD VIDEO"). 26 pt.
+        case action
+        /// Status chips. 22 pt.
         case pill
-        case distance
-        /// Small purple labels over a group ("TAP YOUR STOP"). 24 pt.
-        case section
+        /// A number under a small label ("3/9"). 34 pt.
+        case stat
+        /// The words under a tab's symbol. 22 pt, never under 20.
+        case tab
         /// What is typed into the sign-in field. 34 pt.
         case field
         /// A digit in a code box. 52 pt.
         case codeDigit
-        /// "TAP TO RECORD" and "RECORDING". 34 pt.
+        /// "TAP TO RECORD" and "RECORDING", over the camera. 34 pt.
         case recordLabel
-        /// What to say while recording. 40 pt.
+        /// What to say while recording, over the camera. 40 pt.
         case prompt
-        /// "SAVED ✓". 72 pt.
+        /// "Saved". 64 pt.
         case saved
         /// Terms, Privacy, Sign out. 24 pt.
         case link
 
         var base: CGFloat {
             switch self {
-            case .title: return 40
-            case .body, .bodyBold, .rowStreet: return 26
+            case .title, .prompt: return 40
+            case .barTitle, .body, .bodyBold, .rowStreet, .action: return 26
             case .button: return 30
-            case .heroName: return 52
+            case .heroName, .codeDigit: return 52
             case .heroStreet: return 38
             case .rowName: return 32
-            case .pill, .distance: return 22
-            case .section, .link: return 24
-            case .field, .recordLabel: return 34
-            case .codeDigit: return 52
-            case .prompt: return 40
-            case .saved: return 72
+            case .label, .pill, .tab: return 22
+            case .stat, .field, .recordLabel: return 34
+            case .saved: return 64
+            case .link: return 24
             }
         }
 
         /// The smallest this text may get on a narrow phone.
         var floor: CGFloat {
             switch self {
-            case .body, .bodyBold, .rowStreet: return 24
-            case .pill, .distance: return 19
-            case .section, .link: return 22
-            case .button: return 24
-            case .title, .rowName: return 28
+            case .body, .bodyBold, .rowStreet, .button: return 24
+            case .barTitle, .action, .link: return 22
+            case .label, .pill: return 19
+            case .tab: return 20
+            case .title, .rowName, .stat: return 28
             case .field, .recordLabel: return 26
             case .heroStreet, .prompt: return 30
             case .heroName, .codeDigit: return 38
-            case .saved: return 52
+            case .saved: return 48
             }
         }
 
         var weight: Font.Weight {
             switch self {
-            case .title, .button, .heroName, .codeDigit, .recordLabel, .prompt, .saved: return .heavy
-            case .bodyBold, .heroStreet, .rowName, .rowStreet, .pill, .section, .field: return .bold
-            case .body, .distance, .link: return .medium
+            case .recordLabel, .prompt: return .heavy
+            case .title, .barTitle, .button, .action, .pill, .stat, .codeDigit, .saved: return .bold
+            case .bodyBold, .heroName, .rowName, .label, .tab, .field: return .semibold
+            case .heroStreet, .link: return .medium
+            case .body, .rowStreet: return .regular
+            }
+        }
+
+        /// The plain system face everywhere, except the two kinds of words
+        /// that sit over the camera picture, which keep their rounded look.
+        var design: Font.Design {
+            switch self {
+            case .recordLabel, .prompt: return .rounded
+            default: return .default
             }
         }
     }
@@ -134,11 +175,21 @@ enum Theme {
 
     // MARK: Controls and layout
 
+    /// Cards and buttons.
     static let corner: CGFloat = 20
     /// Space at the left and right of every screen.
-    @MainActor static let gutter: CGFloat = screenWidth < 360 ? 16 : 20
+    @MainActor static let gutter: CGFloat = screenWidth < 360 ? 14 : 18
     /// Buttons: 88 pt tall on a wide phone, never under 76.
     @MainActor static let buttonHeight: CGFloat = max(76, (88 * scale).rounded())
+    /// The action row at the foot of a card.
+    @MainActor static let actionRowHeight: CGFloat = max(64, (72 * scale).rounded())
+    /// The top bar, and the back arrow's tap target inside it.
+    static let barHeight: CGFloat = 68
+    static let backTarget: CGFloat = 56
+    /// The tab bar on the two home screens.
+    static let tabBarHeight: CGFloat = 76
+    /// The round badge on the left of a stop's card.
+    @MainActor static let badgeSize: CGFloat = max(64, (84 * scale).rounded())
     /// The sign-in field.
     @MainActor static let fieldHeight: CGFloat = max(84, (100 * scale).rounded())
     /// The ring's stroke.
@@ -151,20 +202,22 @@ enum Theme {
     @MainActor static let clipHeight: CGFloat = compactHeight ? 200 : (340 * scale).rounded()
 }
 
-/// Applies one of the app's text sizes in the rounded system font, and lets
-/// the phone's own text-size setting scale it (within the range RootView allows).
+/// Applies one of the app's text sizes, and lets the phone's own text-size
+/// setting scale it (within the range RootView allows).
 struct ZestFont: ViewModifier {
     @ScaledMetric private var size: CGFloat
     private let weight: Font.Weight
+    private let design: Font.Design
 
     @MainActor
     init(_ role: Theme.TextRole) {
         _size = ScaledMetric(wrappedValue: Theme.size(role), relativeTo: .body)
         weight = role.weight
+        design = role.design
     }
 
     func body(content: Content) -> some View {
-        content.font(.system(size: size, weight: weight, design: .rounded))
+        content.font(.system(size: size, weight: weight, design: design))
     }
 }
 

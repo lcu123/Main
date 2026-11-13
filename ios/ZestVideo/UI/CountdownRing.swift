@@ -59,7 +59,7 @@ private struct RingFace: View {
                 .inset(by: lineWidth / 2)
                 .trim(from: CGFloat(1 - fractionLeft), to: 1)
                 .stroke(
-                    finalStretch ? Theme.recordRed : Theme.yellow,
+                    finalStretch ? Theme.recordRed : Theme.ringYellow,
                     style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt)
                 )
                 .rotationEffect(.degrees(-90))

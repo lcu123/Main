@@ -1,19 +1,22 @@
 import SwiftUI
 
+// The building blocks every screen is made of: the big button, the screen
+// frame with its top bar, the tab bar, cards, labels and chips.
+
+// MARK: - Buttons
+
 /// The app's one kind of button: full width, 88 pt tall on a big phone
-/// (never under 76), words in heavy 30 pt type. Big enough to hit with a
+/// (never under 76), words in bold 30 pt capitals. Big enough to hit with a
 /// gloved thumb.
 struct BigButton: View {
     enum Kind {
-        /// Purple with white words: the main action.
+        /// Solid blue with white words: the main action.
         case primary
-        /// Lime with black words: yes / go / saved.
-        case go
-        /// Yellow with black words: needs attention.
-        case attention
-        /// White with a purple outline and black words: the other choice.
+        /// White with blue words and a blue outline: the other choice.
         case plain
-        /// Black with white words: delete and other serious actions.
+        /// Amber with dark words: go ahead despite a warning.
+        case attention
+        /// Dark with white words: delete and other serious actions. Never red.
         case dark
     }
 
@@ -33,6 +36,7 @@ struct BigButton: View {
                         .accessibilityHidden(true)
                 }
                 Text(title)
+                    .tracking(0.5)
                     .zestFont(.button)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
@@ -54,25 +58,17 @@ struct BigButtonStyle: ButtonStyle {
     static func foreground(_ kind: BigButton.Kind) -> Color {
         switch kind {
         case .primary, .dark: return Theme.white
-        case .go, .attention, .plain: return Theme.black
+        case .plain: return Theme.blue
+        case .attention: return Theme.ink
         }
     }
 
     private func fill(pressed: Bool) -> Color {
         switch kind {
-        case .primary: return pressed ? Theme.deepViolet : Theme.purple
-        case .go: return pressed ? Theme.lime.opacity(0.7) : Theme.lime
-        case .attention: return pressed ? Theme.yellow.opacity(0.7) : Theme.yellow
-        case .plain: return pressed ? Theme.card : Theme.white
-        case .dark: return pressed ? Theme.softInk : Theme.black
-        }
-    }
-
-    private var border: Color {
-        switch kind {
-        case .primary: return Theme.deepViolet
-        case .go, .attention, .dark: return Theme.black
-        case .plain: return Theme.purple
+        case .primary: return pressed ? Theme.bluePressed : Theme.blue
+        case .plain: return pressed ? Theme.paleCyan : Theme.card
+        case .attention: return pressed ? Theme.amber.opacity(0.75) : Theme.amber
+        case .dark: return pressed ? Theme.softInk : Theme.ink
         }
     }
 
@@ -85,23 +81,38 @@ struct BigButtonStyle: ButtonStyle {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.corner, style: .continuous)
-                    .strokeBorder(border, lineWidth: 4)
+                    .strokeBorder(Theme.blue, lineWidth: kind == .plain ? 2 : 0)
             )
             .contentShape(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous))
     }
 }
 
-/// A screen: a big title, content that scrolls when it has to, and the
-/// buttons pinned at the bottom where a thumb reaches them.
+// MARK: - The screen frame
+
+/// The two home screens, which share the tab bar.
+enum HomeTab: Equatable {
+    case route
+    case videos
+}
+
+/// A screen: a white top bar with the screen's name, a page that scrolls when
+/// it has to, and either the big buttons or the tab bar at the bottom.
 ///
-/// - The scrolling part never runs up under the clock and the camera island:
-///   a strip sits between it and the top of the screen.
-/// - The scrolling part ends with spare room, and a line marks the edge above
-///   the buttons, so the last thing on the page is never half-hidden.
-/// - On a very short screen the buttons join the scrolling part, so nothing
+/// - The page never runs up under the clock and the camera island: the top
+///   bar sits between it and the top of the screen and paints that area white.
+/// - The page ends with spare room, so the last thing on it is never
+///   half-hidden behind the buttons.
+/// - On a very short screen the buttons join the scrolling page, so nothing
 ///   is squeezed out.
 struct Screen<Content: View, Footer: View>: View {
+    /// The screen's short name, centred in the top bar.
+    let bar: String
+    /// Where the back arrow goes. The big BACK button at the bottom does the same.
+    var onBack: (() -> Void)?
+    /// The question, large, at the top of the page.
     var title: String?
+    /// Show the tab bar at the bottom (the two home screens).
+    var tab: HomeTab?
     /// Open scrolled to the end. Only ever true in screenshot mode.
     var startAtBottom = false
     @ViewBuilder var content: () -> Content
@@ -109,20 +120,14 @@ struct Screen<Content: View, Footer: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // With this strip above it the scroll view stops at the safe
-            // area instead of sliding its content under the status bar; the
-            // strip's own background paints that area solid.
-            Color.clear
-                .frame(height: 1)
-                .background(Theme.background.ignoresSafeArea(edges: .top))
-                .zIndex(1)
+            TopBar(title: bar, onBack: onBack)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if let title {
                         Text(title)
                             .zestFont(.title)
-                            .foregroundColor(Theme.ink)
+                            .foregroundColor(Theme.titleInk)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityAddTraits(.isHeader)
                     }
@@ -136,13 +141,15 @@ struct Screen<Content: View, Footer: View>: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Theme.gutter)
-                .padding(.top, 14)
+                .padding(.top, 18)
                 // Spare room, so the last line clears the edge when scrolled.
                 .padding(.bottom, 32)
             }
             .defaultScrollAnchor(startAtBottom ? .bottom : nil)
 
-            if Theme.compactHeight {
+            if let tab {
+                TabBar(selected: tab)
+            } else if Theme.compactHeight {
                 Color.clear.frame(height: 1)
             } else {
                 VStack(spacing: 14) {
@@ -152,18 +159,159 @@ struct Screen<Content: View, Footer: View>: View {
                 .padding(.top, 14)
                 .padding(.bottom, 14)
                 .frame(maxWidth: .infinity)
-                .background(Theme.background.ignoresSafeArea(edges: .bottom))
-                // A clear edge: what is above this line scrolls.
+                .background(Theme.card.ignoresSafeArea(edges: .bottom))
                 .overlay(alignment: .top) {
-                    Rectangle()
-                        .fill(Theme.card)
-                        .frame(height: 3)
+                    Hairline()
                 }
             }
         }
-        .background(Theme.background.ignoresSafeArea())
+        .background(Theme.page.ignoresSafeArea())
     }
 }
+
+extension Screen where Footer == EmptyView {
+    /// A screen with nothing pinned at the bottom but the tab bar.
+    init(
+        bar: String, tab: HomeTab, startAtBottom: Bool = false,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.init(
+            bar: bar, onBack: nil, title: nil, tab: tab, startAtBottom: startAtBottom,
+            content: content, footer: { EmptyView() }
+        )
+    }
+}
+
+/// The white bar across the top: the screen's name centred and bold, a
+/// hairline under it, and (where there is a way back) a back arrow on the left.
+struct TopBar: View {
+    let title: String
+    var onBack: (() -> Void)?
+
+    var body: some View {
+        ZStack {
+            Text(title)
+                .zestFont(.barTitle)
+                .foregroundColor(Theme.titleInk)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .padding(.horizontal, Theme.backTarget + 20)
+                .accessibilityAddTraits(.isHeader)
+
+            if let onBack {
+                HStack {
+                    Button(action: onBack) {
+                        Image(systemName: "arrow.left")
+                            .font(.system(size: 28, weight: .heavy))
+                            .foregroundColor(Theme.cyan)
+                            .frame(width: Theme.backTarget, height: Theme.backTarget)
+                            .background(Circle().fill(Theme.paleCyan))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Back")
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 10)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: Theme.barHeight)
+        // White right up to the top of the screen, behind the clock.
+        .background(Theme.card.ignoresSafeArea(edges: .top))
+        .overlay(alignment: .bottom) {
+            Hairline()
+        }
+        // Above the scrolling page, so nothing can slide over the bar.
+        .zIndex(1)
+    }
+}
+
+/// The bar at the bottom of the two home screens: a symbol with a word under
+/// it for each. The chosen one is navy with a navy bar along its top edge.
+/// Taller than usual, with large words, for gloves.
+struct TabBar: View {
+    @EnvironmentObject private var app: AppModel
+    let selected: HomeTab
+
+    var body: some View {
+        HStack(spacing: 0) {
+            tab(.route, title: "My Route", symbol: "map") {
+                app.backToToday()
+            }
+            tab(.videos, title: "My Videos", symbol: "video") {
+                app.showQueue()
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .background(Theme.card.ignoresSafeArea(edges: .bottom))
+        .overlay(alignment: .top) {
+            Hairline()
+        }
+    }
+
+    private func tab(_ which: HomeTab, title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        let isSelected = which == selected
+        return Button {
+            if !isSelected { action() }
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: isSelected ? symbol + ".fill" : symbol)
+                    .font(.system(size: 28, weight: .semibold))
+                    .accessibilityHidden(true)
+                Text(title)
+                    .zestFont(.tab)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundColor(isSelected ? Theme.navy : Theme.softInk)
+            .frame(maxWidth: .infinity, minHeight: Theme.tabBarHeight)
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(isSelected ? Theme.navy : Color.clear)
+                    .frame(height: 5)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
+// MARK: - Surfaces
+
+/// A white card with large round corners and a soft shadow.
+struct Card<Content: View>: View {
+    /// The card's color: white, or a pale tint for a warning or a success.
+    var tint: Color = Theme.card
+    /// A colored edge, e.g. blue round the stop the app thinks you are at.
+    var outline: Color?
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(tint)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.corner, style: .continuous)
+                    .strokeBorder(outline ?? Color.clear, lineWidth: outline == nil ? 0 : 3)
+            )
+            .shadow(color: Color.black.opacity(0.13), radius: 6, x: 0, y: 2)
+    }
+}
+
+/// A thin grey line: inside cards, and under and over the bars.
+struct Hairline: View {
+    var body: some View {
+        Rectangle()
+            .fill(Theme.hairline)
+            .frame(height: 1)
+            .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Text
 
 /// Plain text at the app's ordinary size (26 pt).
 struct BodyText: View {
@@ -185,7 +333,93 @@ struct BodyText: View {
     }
 }
 
-/// A full-width colored strip with a short message, e.g. "No signal."
+/// A small grey label in capitals with a little space between the letters:
+/// "CUSTOMER", "50 FT AWAY • MOWING". Small only next to the rest of the
+/// app; it is still 22 pt.
+struct SmallLabel: View {
+    let text: String
+    var color: Color = Theme.softInk
+
+    init(_ text: String, color: Color = Theme.softInk) {
+        self.text = text
+        self.color = color
+    }
+
+    var body: some View {
+        Text(text.uppercased())
+            .tracking(1)
+            .zestFont(.label)
+            .foregroundColor(color)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Bold capitals for something that can be done or that is true right now:
+/// "RECORD VIDEO", "CLOSEST STOP". Blue unless told otherwise.
+struct ActionText: View {
+    let text: String
+    var color: Color = Theme.blue
+
+    init(_ text: String, color: Color = Theme.blue) {
+        self.text = text
+        self.color = color
+    }
+
+    var body: some View {
+        Text(text.uppercased())
+            .tracking(0.6)
+            .zestFont(.action)
+            .foregroundColor(color)
+            .lineLimit(2)
+            .minimumScaleFactor(0.7)
+    }
+}
+
+/// How each `StateTone` is colored. Green and amber always carry dark words,
+/// never blue.
+extension StateTone {
+    /// The color of the words.
+    var ink: Color {
+        switch self {
+        case .action: return Theme.blue
+        case .good: return Theme.darkGreen
+        case .waiting: return Theme.ink
+        case .problem: return Theme.white
+        }
+    }
+
+    /// What the words sit on.
+    var fill: Color {
+        switch self {
+        case .action: return Theme.card
+        case .good: return Theme.paleGreen
+        case .waiting: return Theme.paleAmber
+        case .problem: return Theme.ink
+        }
+    }
+}
+
+/// A video's state in words on a colored chip: never a bare icon.
+struct StatusChip: View {
+    let text: String
+    let tone: StateTone
+
+    var body: some View {
+        Text(text)
+            .tracking(0.5)
+            .zestFont(.pill)
+            .foregroundColor(tone == .action ? Theme.softInk : tone.ink)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(Capsule().fill(tone.fill))
+            .overlay(Capsule().strokeBorder(tone == .action ? Theme.hairline : Color.clear, lineWidth: 2))
+    }
+}
+
+/// A full-width card with a short message: amber for "look at this", white
+/// for plain information, green for good news.
 struct Banner: View {
     enum Tone {
         case attention
@@ -197,57 +431,84 @@ struct Banner: View {
     var tone: Tone = .info
 
     var body: some View {
-        Text(text)
-            .zestFont(.bodyBold)
-            .foregroundColor(Theme.black)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        Card(tint: fill) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.system(size: 26, weight: .bold))
+                    .foregroundColor(symbolColor)
+                    .accessibilityHidden(true)
+                Text(text)
+                    .zestFont(.bodyBold)
+                    .foregroundColor(tone == .good ? Theme.darkGreen : Theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
             .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.corner, style: .continuous).fill(fill)
-            )
+        }
     }
 
     private var fill: Color {
         switch tone {
-        case .attention: return Theme.yellow
+        case .attention: return Theme.paleAmber
         case .info: return Theme.card
-        case .good: return Theme.lime
+        case .good: return Theme.paleGreen
+        }
+    }
+
+    private var symbol: String {
+        switch tone {
+        case .attention: return "exclamationmark.triangle.fill"
+        case .info: return "info.circle.fill"
+        case .good: return "checkmark.circle.fill"
+        }
+    }
+
+    private var symbolColor: Color {
+        switch tone {
+        case .attention: return Theme.ink
+        case .info: return Theme.softInk
+        case .good: return Theme.green
         }
     }
 }
 
-/// The customer's name and street, as large as they go: this is how the tech
-/// knows he has the right house.
+/// The customer's name and street on a white card, each under its small grey
+/// label, as large as they go: this is how the tech knows he has the right house.
 struct StopHeadline: View {
     let name: String
     let address: String
     var cityLine: String = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(name)
-                .zestFont(.heroName)
-                .foregroundColor(Theme.ink)
-                .lineLimit(3)
-                .minimumScaleFactor(0.6)
-                .fixedSize(horizontal: false, vertical: true)
-            if !address.isEmpty {
-                Text(address)
-                    .zestFont(.heroStreet)
+        Card {
+            VStack(alignment: .leading, spacing: 6) {
+                SmallLabel("Customer")
+                Text(name)
+                    .zestFont(.heroName)
                     .foregroundColor(Theme.ink)
                     .lineLimit(3)
                     .minimumScaleFactor(0.6)
                     .fixedSize(horizontal: false, vertical: true)
+                if !address.isEmpty {
+                    Hairline()
+                        .padding(.vertical, 10)
+                    SmallLabel("Address")
+                    Text(address)
+                        .zestFont(.heroStreet)
+                        .foregroundColor(Theme.ink)
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.6)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !cityLine.isEmpty {
+                        Text(cityLine)
+                            .zestFont(.body)
+                            .foregroundColor(Theme.softInk)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
-            if !cityLine.isEmpty {
-                Text(cityLine)
-                    .zestFont(.body)
-                    .foregroundColor(Theme.softInk)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            .padding(20)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
 }
@@ -255,7 +516,7 @@ struct StopHeadline: View {
 /// An underlined word that does something. At least 48 pt tall to tap.
 struct TextLink: View {
     let title: String
-    var color: Color = Theme.purple
+    var color: Color = Theme.blue
     let action: () -> Void
 
     var body: some View {

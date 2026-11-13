@@ -6,7 +6,7 @@ struct RemindersOfferView: View {
     @EnvironmentObject private var app: AppModel
 
     var body: some View {
-        Screen(title: "Want a reminder?") {
+        Screen(bar: "Reminders", title: "Want a reminder?") {
             BodyText("Zest Video can remind you if you leave a stop with no video.", bold: true)
             BodyText("To do that, your phone will ask about your location. Pick \u{201C}Change to Always Allow\u{201D}.")
             BodyText("The app works fine without it.", color: Theme.softInk)
@@ -26,7 +26,7 @@ struct UpdateRequiredView: View {
     @EnvironmentObject private var app: AppModel
 
     var body: some View {
-        Screen(title: "Please update Zest Video") {
+        Screen(bar: "Update", title: "Please update Zest Video") {
             BodyText("This version is too old to send videos.", bold: true)
             if app.appStoreURL == nil {
                 BodyText("Update Zest Video the same way you installed it, or call the office.")

@@ -56,7 +56,7 @@ struct LoginView: View {
     // MARK: Step one
 
     private var contactStep: some View {
-        Screen(title: "Zest Video") {
+        Screen(bar: "Sign In", title: "Zest Video") {
             BodyText(mode == .mobile ? "Type your mobile number." : "Type your email.", bold: true)
             field
             BodyText(mode == .mobile ? "We will text you a 6-digit code." : "We will email you a 6-digit code.", color: Theme.softInk)
@@ -107,7 +107,12 @@ struct LoginView: View {
         .frame(minHeight: Theme.fieldHeight)
         .background(
             RoundedRectangle(cornerRadius: Theme.corner, style: .continuous)
-                .strokeBorder(Theme.purple, lineWidth: 4)
+                .fill(Theme.card)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.corner, style: .continuous)
+                .strokeBorder(Theme.blue, lineWidth: 3)
+                .allowsHitTesting(false)
         )
         .contentShape(Rectangle())
         .onTapGesture { contactFocused = true }
@@ -160,7 +165,7 @@ struct LoginView: View {
     // MARK: Step two
 
     private var codeStep: some View {
-        Screen(title: "Type your code") {
+        Screen(bar: "Sign In", onBack: backToContact, title: "Type your code") {
             BodyText(mode == .mobile ? "We texted a 6-digit code to your phone." : "We emailed a 6-digit code.", bold: true)
             codeBoxes
             if busy {
@@ -180,14 +185,17 @@ struct LoginView: View {
                 problem = nil
                 sendCode()
             }
-            BigButton(title: "BACK", kind: .plain) {
-                step = .contact
-                problem = nil
-            }
+            BigButton(title: "BACK", kind: .plain, action: backToContact)
         }
         .onAppear {
             if autoFocus { codeFocused = true }
         }
+    }
+
+    /// The arrow in the top bar and the big BACK button do the same thing.
+    private func backToContact() {
+        step = .contact
+        problem = nil
     }
 
     /// Six boxes drawn over one hidden text field, so iOS can fill the code
@@ -238,12 +246,13 @@ struct LoginView: View {
             .lineLimit(1)
             .minimumScaleFactor(0.5)
             .frame(maxWidth: .infinity, minHeight: height)
+            // White boxes with a grey edge; the one being filled has a blue edge.
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.card)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(isNext ? Theme.brightPurple : Theme.purple, lineWidth: isNext ? 5 : 3)
+                    .strokeBorder(isNext ? Theme.blue : Theme.hairline, lineWidth: isNext ? 4 : 2)
             )
     }
 

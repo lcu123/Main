@@ -45,7 +45,8 @@ struct RecordTarget: Codable, Equatable {
 
     init(stop: Stop) {
         customerId = stop.customerId
-        name = stop.name
+        // Last name first, the way the route list shows it: "Smith, Jane".
+        name = stop.listName
         address = stop.address
         cityLine = stop.cityLine
         appointmentIds = stop.appointmentIds

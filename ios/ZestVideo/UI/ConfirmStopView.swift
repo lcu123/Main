@@ -33,7 +33,7 @@ struct ConfirmStopView: View {
             case .storageBlocked: storageBlocked
             }
         } else {
-            Screen(title: "Pick a stop") {
+            Screen(bar: "Confirm Stop", onBack: { app.backToToday() }, title: "Pick a stop") {
                 BodyText("Go back and tap your stop.")
             } footer: {
                 BigButton(title: "BACK", kind: .plain) { app.backToToday() }
@@ -44,16 +44,24 @@ struct ConfirmStopView: View {
     // MARK: Stages
 
     private func confirm(_ target: RecordTarget) -> some View {
-        Screen(title: target.notOnMyList ? "Not on my list" : "Is this the stop?") {
+        Screen(
+            bar: target.notOnMyList ? "Not On My List" : "Confirm Stop",
+            onBack: { app.backToToday() },
+            title: target.notOnMyList ? "Not on my list" : "Is this the stop?"
+        ) {
             if target.notOnMyList {
-                BodyText("Record a video for a stop that is not on your list.", bold: true)
-                BodyText("The office will match it to the customer.")
+                Card {
+                    VStack(alignment: .leading, spacing: 10) {
+                        BodyText("Record a video for a stop that is not on your list.", bold: true)
+                        BodyText("The office will match it to the customer.", color: Theme.softInk)
+                    }
+                    .padding(20)
+                }
             } else {
                 StopHeadline(name: target.name, address: target.address, cityLine: target.cityLine)
-                    .padding(.top, 12)
             }
         } footer: {
-            BigButton(title: target.notOnMyList ? "RECORD" : "THIS IS IT", kind: .go) {
+            BigButton(title: target.notOnMyList ? "RECORD" : "THIS IS IT", kind: .primary) {
                 proceed()
             }
             BigButton(title: target.notOnMyList ? "BACK" : "WRONG STOP", kind: .plain) {
@@ -63,7 +71,7 @@ struct ConfirmStopView: View {
     }
 
     private func farWarning(_ target: RecordTarget) -> some View {
-        Screen(title: "You look far from this address") {
+        Screen(bar: "Confirm Stop", onBack: { app.backToToday() }, title: "You look far from this address") {
             StopHeadline(name: target.name, address: target.address, cityLine: target.cityLine)
             Banner(text: "Still right?", tone: .attention)
         } footer: {
@@ -78,7 +86,7 @@ struct ConfirmStopView: View {
     }
 
     private var storageWarning: some View {
-        Screen(title: "Your phone is almost full") {
+        Screen(bar: "Storage", onBack: { app.backToToday() }, title: "Your phone is almost full") {
             BodyText("You can still record this video.", bold: true)
             BodyText("Please free up some space on your phone soon.")
         } footer: {
@@ -93,7 +101,7 @@ struct ConfirmStopView: View {
     }
 
     private var storageBlocked: some View {
-        Screen(title: "Your phone is full") {
+        Screen(bar: "Storage", onBack: { app.backToToday() }, title: "Your phone is full") {
             BodyText("There is no room to record a video.", bold: true)
             BodyText("Delete some photos or apps you do not need, then try again.")
             if app.waitingCount > 0 {

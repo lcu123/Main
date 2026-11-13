@@ -10,6 +10,16 @@ buttons, one question per screen, no swipes, no menus, no typing after setup.
 Every size in the app comes from one table in `UI/Theme.swift`, written for a
 430 pt wide phone and scaled down gently for narrower ones.
 
+The look is the one the techs already work in all day in their route app: a
+light grey page, white cards with soft shadows, one strong blue for anything
+that can be tapped, small grey capital labels, a white top bar with the
+screen's name and a back arrow, and a tab bar on the two home screens (My
+Route, My Videos). Customers are listed last name first ("Smith, Jane"). It is
+a familiar style, not a copy: every symbol is a system symbol, the typeface is
+the system one, and the only artwork is Zest's own icon. Red is still used for
+one thing only, recording, and the record screen (the red button, the border,
+the draining ring) is Zest's own.
+
 Sign-in is a mobile number and a texted 6-digit code (email is the other
 choice on the same screen). Terms and Privacy open the server's `/terms` and
 `/privacy` pages, from the sign-in screen and from My videos.

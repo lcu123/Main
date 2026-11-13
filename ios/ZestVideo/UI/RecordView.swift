@@ -229,14 +229,16 @@ struct RecordView: View {
         Button {
             camera.flip()
         } label: {
+            // White with blue words, like every other secondary button.
             Text("FLIP")
+                .tracking(0.5)
                 .zestFont(.button)
-                .foregroundColor(.white)
+                .foregroundColor(Theme.blue)
                 .lineLimit(1)
                 .frame(minWidth: 120, minHeight: Theme.buttonHeight)
                 .padding(.horizontal, 10)
-                .background(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous).fill(Color.black.opacity(0.6)))
-                .overlay(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous).strokeBorder(Color.white, lineWidth: 3))
+                .background(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous).fill(Theme.card))
+                .overlay(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous).strokeBorder(Theme.blue, lineWidth: 2))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -306,7 +308,7 @@ struct RecordView: View {
     // MARK: No camera / no permission
 
     private func problem(title: String, text: String, showSettings: Bool) -> some View {
-        Screen(title: title) {
+        Screen(bar: "Record", onBack: { app.backToToday() }, title: title) {
             BodyText(text)
         } footer: {
             if showSettings {
@@ -365,7 +367,7 @@ private struct PromptCard: View {
             VStack(spacing: 4) {
                 Text("\(index + 1) of \(prompts.count)")
                     .zestFont(.bodyBold)
-                    .foregroundColor(Theme.yellow)
+                    .foregroundColor(Theme.ringYellow)
                 Text(prompts.isEmpty ? "" : prompts[index])
                     .zestFont(.prompt)
                     .foregroundColor(.white)

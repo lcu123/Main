@@ -55,7 +55,7 @@ struct ReviewView: View {
     // MARK: Ask
 
     private var ask: some View {
-        Screen(title: "Save this video?") {
+        Screen(bar: "Review", title: "Save this video?") {
             if let draft = app.draft {
                 Text(draft.target.name)
                     .zestFont(.rowName)
@@ -68,7 +68,7 @@ struct ReviewView: View {
                 recommendRow
             }
         } footer: {
-            BigButton(title: stage == .checking ? "CHECKING…" : "SAVE", kind: .go, isBusy: stage == .checking) {
+            BigButton(title: stage == .checking ? "CHECKING…" : "SAVE", kind: .primary, isBusy: stage == .checking) {
                 save(override: false)
             }
             BigButton(title: "RECORD AGAIN", kind: .plain) {
@@ -113,32 +113,32 @@ struct ReviewView: View {
         .accessibilityLabel("Your video. Double tap to play it again.")
     }
 
+    /// "I recommended something": a row with a big switch, blue when it is YES.
     private var recommendRow: some View {
         Button {
             recommend.toggle()
         } label: {
-            HStack(spacing: 14) {
-                Text(recommend ? "YES" : "NO")
-                    .zestFont(.bodyBold)
-                    .foregroundColor(Theme.black)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .frame(width: 88, height: 60)
-                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(recommend ? Theme.lime : Theme.white))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.black, lineWidth: 3))
-                Text("I recommended something")
-                    .zestFont(.bodyBold)
-                    .foregroundColor(Theme.ink)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
+            Card {
+                HStack(spacing: 14) {
+                    Text("I recommended something")
+                        .zestFont(.bodyBold)
+                        .foregroundColor(Theme.ink)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Text(recommend ? "YES" : "NO")
+                        .zestFont(.bodyBold)
+                        .foregroundColor(recommend ? Theme.blue : Theme.softInk)
+                        .lineLimit(1)
+                    BigSwitch(isOn: recommend)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, minHeight: Theme.buttonHeight, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, minHeight: Theme.buttonHeight, alignment: .leading)
-            .padding(.horizontal, 14)
-            .background(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous).fill(Theme.card))
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("I recommended something")
         .accessibilityValue(recommend ? "Yes" : "No")
         .accessibilityAddTraits(.isButton)
@@ -148,7 +148,7 @@ struct ReviewView: View {
 
     private var warning: some View {
         let result = currentResult
-        return Screen(title: "Is this the right stop?") {
+        return Screen(bar: "Check Stop", title: "Is this the right stop?") {
             if let draft = app.draft {
                 StopHeadline(name: draft.target.name, address: draft.target.address)
             }
@@ -156,7 +156,7 @@ struct ReviewView: View {
                 Banner(text: reason, tone: .attention)
             }
             if let better = result?.better {
-                BodyText("It sounded like \(better.name).", bold: true)
+                BodyText("It sounded like \(better.listName).", bold: true)
             }
         } footer: {
             BigButton(title: "SAVE ANYWAY", kind: .attention) {
@@ -180,19 +180,32 @@ struct ReviewView: View {
 
     // MARK: Saved
 
+    /// A light page with one very large green tick: it worked, nothing more to do.
     private var saved: some View {
-        ZStack {
-            Theme.lime.ignoresSafeArea()
-            VStack(spacing: 18) {
-                Text("SAVED ✓")
+        let circle = min(Theme.screenWidth * 0.52, 240)
+        return ZStack {
+            Theme.page.ignoresSafeArea()
+            VStack(spacing: 22) {
+                ZStack {
+                    Circle()
+                        .fill(Theme.green)
+                    Image(systemName: "checkmark")
+                        .font(.system(size: circle * 0.5, weight: .heavy))
+                        .foregroundColor(.white)
+                }
+                .frame(width: circle, height: circle)
+                .accessibilityHidden(true)
+
+                Text("Saved")
                     .zestFont(.saved)
-                    .foregroundColor(Theme.black)
-                    .minimumScaleFactor(0.6)
+                    .foregroundColor(Theme.ink)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.6)
                 Text("It sends by itself.")
-                    .zestFont(.title)
-                    .foregroundColor(Theme.black)
+                    .zestFont(.heroStreet)
+                    .foregroundColor(Theme.softInk)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(Theme.gutter)
         }
@@ -256,23 +269,18 @@ struct PickStopView: View {
         let others = app.stops.filter { stop in
             stop.customerId != app.draft?.target.customerId && stop.customerId != better?.customerId
         }
-        Screen(title: "Pick the right stop") {
+        Screen(bar: "Pick Stop", onBack: goBack, title: "Pick the right stop") {
             if let better {
-                Text("IT SOUNDED LIKE THIS ONE")
-                    .zestFont(.bodyBold)
-                    .foregroundColor(Theme.purple)
-                row(better, highlighted: true)
+                row(better, headline: "It sounded like this one", highlighted: true)
             }
             ForEach(others) { stop in
-                row(stop, highlighted: false)
+                row(stop, headline: nil, highlighted: false)
             }
             if better == nil && others.isEmpty {
-                BodyText("There are no other stops on your list today.")
+                Banner(text: "There are no other stops on your list today.", tone: .info)
             }
         } footer: {
-            BigButton(title: "BACK", kind: .plain) {
-                app.openReview()
-            }
+            BigButton(title: "BACK", kind: .plain, action: goBack)
         }
     }
 
@@ -281,14 +289,39 @@ struct PickStopView: View {
         return nil
     }
 
-    private func row(_ stop: Stop, highlighted: Bool) -> some View {
+    /// The arrow in the top bar and the big BACK button do the same thing.
+    private func goBack() {
+        app.openReview()
+    }
+
+    private func row(_ stop: Stop, headline: String?, highlighted: Bool) -> some View {
         StopCard(
-            entry: StopRanker.RankedStop(stop: stop, distanceMeters: nil),
-            status: app.rowStatus(for: stop),
-            highlighted: highlighted,
-            hint: nil
+            stop: stop,
+            state: RowState(badge: .number(app.routeNumber(of: stop)), text: "PICK THIS STOP", tone: .action),
+            headline: headline,
+            distanceMeters: nil,
+            highlighted: highlighted
         ) {
             app.retargetDraft(to: stop)
         }
+    }
+}
+
+/// A large on/off switch, drawn to match the rest of the app: blue when on.
+/// It only shows the state; the whole row it sits in is the button.
+struct BigSwitch: View {
+    let isOn: Bool
+
+    var body: some View {
+        ZStack(alignment: isOn ? .trailing : .leading) {
+            Capsule()
+                .fill(isOn ? Theme.blue : Theme.hairline)
+            Circle()
+                .fill(Color.white)
+                .shadow(color: Color.black.opacity(0.25), radius: 2, x: 0, y: 1)
+                .padding(4)
+        }
+        .frame(width: 92, height: 54)
+        .accessibilityHidden(true)
     }
 }

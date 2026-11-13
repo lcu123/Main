@@ -73,17 +73,36 @@ struct ScreenSeeds: Equatable {
     var autoFocus = true
 }
 
-/// One line under a stop on the Today list.
-struct RowStatus: Equatable {
-    enum Kind: Equatable {
-        case none
-        case waiting
+/// The four ways a video's state is shown (the colors are in `Controls.swift`).
+enum StateTone: Equatable {
+    /// Something to tap: blue words.
+    case action
+    /// Sent, saved: green.
+    case good
+    /// Waiting, sending, look at this: amber.
+    case waiting
+    /// It did not go: dark.
+    case problem
+}
+
+/// What a stop's card (or a video's row) shows: the round badge on the left
+/// and the one line at the foot that says what tapping it does.
+struct RowState: Equatable {
+    enum Badge: Equatable {
+        /// No video yet: the stop's number on the route.
+        case number(Int)
+        /// The server has it: a tick.
         case sent
+        /// Still on the phone: an up arrow.
+        case waiting
+        /// It did not go.
         case problem
     }
 
+    var badge: Badge
+    /// In capitals: "RECORD VIDEO", "CHANGE VIDEO · 7 MIN LEFT", "SENT ✓".
     var text: String
-    var kind: Kind
+    var tone: StateTone
 }
 
 /// The app's state and its one router. Screens are plain values of `route`:
@@ -193,22 +212,59 @@ final class AppModel: ObservableObject {
         return stops.first { $0.customerId == customerId }
     }
 
-    func rowStatus(for stop: Stop) -> RowStatus {
+    /// The stop's place on the route, counting from 1.
+    func routeNumber(of stop: Stop) -> Int {
+        let ordered = stops.sorted { $0.order != $1.order ? $0.order < $1.order : $0.customerId < $1.customerId }
+        return (ordered.firstIndex { $0.customerId == stop.customerId } ?? 0) + 1
+    }
+
+    /// What a stop's card shows, and so what tapping it does.
+    func rowState(for stop: Stop, now: Date = Date()) -> RowState {
         if let draft, !draft.target.notOnMyList, draft.target.customerId == stop.customerId {
-            return RowStatus(text: "NOT SAVED YET", kind: .waiting)
+            return RowState(badge: .waiting, text: "NOT SAVED YET · FINISH IT", tone: .waiting)
         }
-        if let item = queue.items.liveItem(customerId: stop.customerId) {
-            return RowStatus(text: item.displayText, kind: item.phase == .done ? .sent : .waiting)
+        return rowState(summary(for: .stop(stop.customerId), now: now), number: routeNumber(of: stop), now: now)
+    }
+
+    /// What a video's row on My Videos shows.
+    func rowState(for item: QueueItem, now: Date = Date()) -> RowState {
+        let focus: VideoFocus
+        if let customerId = item.customerId, !item.notOnMyList, queue.items.liveItem(customerId: customerId)?.id == item.id {
+            focus = .stop(customerId)
+        } else {
+            focus = .item(item.id)
         }
-        if blockedItem(customerId: stop.customerId) != nil {
-            return RowStatus(text: "NOT SENT", kind: .problem)
+        return rowState(summary(for: focus, now: now), number: nil, now: now)
+    }
+
+    private func rowState(_ summary: VideoSummary, number: Int?, now: Date) -> RowState {
+        // Still on the phone, whatever the clock says.
+        let onPhone = summary.itemID.flatMap { queue.item($0) }?.isWaiting ?? false
+        switch summary.mode {
+        case .gone:
+            return RowState(badge: number.map { .number($0) } ?? .problem, text: "RECORD VIDEO", tone: .action)
+        case .changeable(let closesAt):
+            let seconds = max(0, Int(closesAt.timeIntervalSince(now).rounded(.up)))
+            let minutes = HoldWindow.minutesLeft(secondsLeft: seconds)
+            return RowState(badge: onPhone ? .waiting : .sent, text: "CHANGE VIDEO · \(minutes) MIN LEFT", tone: .action)
+        case .otherTech:
+            return RowState(badge: .sent, text: "RECORD AGAIN", tone: .action)
+        case .waiting:
+            let text = summary.statusText == "WAITING" ? "WAITING TO SEND" : summary.statusText
+            return RowState(badge: .waiting, text: text, tone: .waiting)
+        case .locked:
+            return RowState(badge: .sent, text: "SENT ✓", tone: .good)
+        case .blocked:
+            return RowState(badge: .problem, text: "NOT SENT · SEE WHY", tone: .problem)
         }
-        if let video = stop.liveVideo {
-            return video.state == .awaitingUpload
-                ? RowStatus(text: "WAITING", kind: .waiting)
-                : RowStatus(text: "SENT ✓", kind: .sent)
-        }
-        return RowStatus(text: "NO VIDEO YET", kind: .none)
+    }
+
+    /// For the header: how many of today's stops have a video the server holds.
+    var videosSentCount: Int {
+        let sentHere = Set(queue.items.filter { $0.phase == .done && !$0.notOnMyList }.compactMap { $0.customerId })
+        return stops.filter { stop in
+            sentHere.contains(stop.customerId) || (stop.liveVideo?.state.serverHasFile ?? false)
+        }.count
     }
 
     private func blockedItem(customerId: Int) -> QueueItem? {
@@ -846,7 +902,7 @@ final class AppModel: ObservableObject {
             item = queue.item(id)
         }
 
-        let name = stop?.name ?? item?.customerName ?? "This stop"
+        let name = stop?.listName ?? item?.customerName ?? "This stop"
         let address = stop?.address ?? ""
 
         if let item {
