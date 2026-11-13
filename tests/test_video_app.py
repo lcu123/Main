@@ -473,6 +473,26 @@ async def test_customer_emails_are_off_until_someone_turns_them_on(tmp_path) -> 
         await env.ctx.engine.dispose()
 
 
+async def test_printing_emails_to_the_log_never_counts_as_emailing_a_customer(tmp_path) -> None:
+    # VIDEO_MAIL_BACKEND=log is for reading login codes before a mail provider exists.
+    # Even with emails switched to live, a video must not be marked as sent.
+    from zest_video.notify import LogMailer
+
+    env = await make_env(tmp_path, email_mode="live")
+    try:
+        headers = await login(env)
+        await env.http.get("/v1/today", headers=headers)
+        env.ctx.mailer = LogMailer()
+        video_id = await film(env, headers, 501)
+        await env.window_closed(video_id)
+        assert await videos.send_due(env.ctx) == 0
+        video = await env.video(video_id)
+        assert (video.state, video.email_skip, video.emailed_at) == ("no_email", "email_off", None)
+    finally:
+        await env.http.aclose()
+        await env.ctx.engine.dispose()
+
+
 async def test_test_mode_sends_every_customer_email_to_the_test_address(tmp_path) -> None:
     env = await make_env(tmp_path, email_mode="test", email_test_to="owner@zest.test")
     try:

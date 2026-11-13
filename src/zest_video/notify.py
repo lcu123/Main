@@ -38,6 +38,10 @@ class Mailer:
     """Base: a mailer that is switched off. `send` returns the provider's message id."""
 
     configured = False
+    # True only for a mailer that really puts mail in an inbox. The log mailer is
+    # "configured" (codes can be read from the log) but must never count as having
+    # emailed a customer.
+    delivers = False
 
     async def send(self, email: Email) -> str:
         raise DeliveryError("email is not set up on this server (set RESEND_API_KEY)")
@@ -45,6 +49,7 @@ class Mailer:
 
 class ResendMailer(Mailer):
     configured = True
+    delivers = True
 
     def __init__(self, cfg: Config, *, transport: httpx.AsyncBaseTransport | None = None):
         self.cfg = cfg
@@ -89,6 +94,7 @@ class LogMailer(Mailer):
 
 class MemoryMailer(Mailer):
     configured = True
+    delivers = True
 
     def __init__(self) -> None:
         self.sent: list[Email] = []

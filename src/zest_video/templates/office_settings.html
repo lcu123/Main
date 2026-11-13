@@ -34,7 +34,7 @@
 <p class="muted">These are deployment switches, changed in Railway, not here.</p>
 <table>
   <tr><th>Switch</th><th>Now</th></tr>
-  <tr><td>Customer emails (<code>VIDEO_EMAIL_MODE</code>)</td><td><b>{{ cfg.email_mode }}</b>{% if cfg.email_mode == "test" %} → {{ cfg.email_test_to or "no test address" }}{% endif %}</td></tr>
+  <tr><td>Customer emails (<code>VIDEO_EMAIL_MODE</code>)</td><td><b>{{ cfg.email_mode }}</b>{% if cfg.email_mode == "test" %} → {{ cfg.email_test_to or "no test address" }}{% endif %}{% if not mail_delivers and cfg.email_mode != "off" %} · but nothing is sent: no email sender is set up{% endif %}</td></tr>
   <tr><td>Email sender</td><td>{{ cfg.mail_backend }}{% if cfg.mail_backend == "resend" %} · from {{ cfg.mail_from }}{% endif %}</td></tr>
   <tr><td>Login codes by text</td><td>{{ "on" if cfg.quo_api_key and cfg.quo_from else "off (email only)" }}</td></tr>
   <tr><td>Push nudges</td><td>{{ "on" if cfg.push_configured else "off (the phone still reminds itself)" }}</td></tr>

@@ -401,7 +401,9 @@ async def _deliver(ctx: Ctx, video: Any) -> bool:
             detail=f"Recorded at {ctx.local(video.recorded_at):%-I:%M %p}, outside the check-in time for this stop.",
         )
 
-    if cfg.email_mode == "off":
+    if cfg.email_mode == "off" or not ctx.mailer.delivers:
+        # Off by choice, or no real sender is set up (the log mailer prints, it does not
+        # deliver): either way the customer was not emailed, and the record must say so.
         return await no_email("email_off")
     if cfg.email_customer_ids is not None and video.customer_id not in cfg.email_customer_ids:
         return await no_email("not_in_test_list")
