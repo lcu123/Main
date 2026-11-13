@@ -28,9 +28,11 @@ FieldRoutes employee record. Your Quo account is already approved by the
 carriers to send texts, so this only needs a key.
 
 1. In Quo, create an API key (in the workspace settings, under API).
-2. In Railway, on the `zest-video` service, set `QUO_API_KEY` to that key and
-   `QUO_FROM_NUMBER` to the Quo number the texts should come from, written
-   like `+19165550100`.
+2. In Railway, open the `zest-video` service, go to Variables, and add
+   `QUO_API_KEY` with that key as its value. Do not paste the key into a chat
+   or an email. (`QUO_FROM_NUMBER` is already set to the main office line; change
+   it there if the codes should come from another Quo number, written like
+   `+19165550100`.)
 3. In FieldRoutes, make sure every tech's employee record has his mobile
    number. A tech with no number there cannot get a text. The office page
    (Techs & phones) shows who is missing one.
