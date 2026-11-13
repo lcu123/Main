@@ -1,0 +1,255 @@
+name: iOS
+
+# Builds and tests the Zest Video iPhone app (ios/).
+#   core        pure-logic package on Linux (fast)
+#   app         real Xcode build + unit tests on an iPhone simulator
+#   testflight  manual only: archive and upload to App Store Connect
+
+on:
+  push:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+    inputs:
+      testflight:
+        description: "Also archive and upload this build to TestFlight"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: ZestCore (swift test)
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the logic package
+        working-directory: ios/ZestCore
+        run: swift test
+
+  app:
+    name: App build + tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-15 = Xcode 16 (oldest toolchain we support).
+        # macos-26 = Xcode 26 (what App Store uploads must be built with).
+        os: [macos-15, macos-26]
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Stand-in app icon if the real one is not committed yet
+        run: |
+          ICON="ZestVideo/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+          if [ ! -f "$ICON" ]; then
+            echo "::warning::icon-1024.png is missing; building with a plain purple stand-in. The TestFlight job refuses to run without the real icon."
+            python3 - "$ICON" <<'PY'
+          import struct, sys, zlib
+          size = 1024
+          row = b"\x00" + bytes((0x6E, 0x20, 0xB9)) * size
+          raw = row * size
+          def chunk(kind, data):
+              body = kind + data
+              return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+          png += chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+          open(sys.argv[1], "wb").write(png)
+          PY
+          fi
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Pick an iPhone simulator
+        run: |
+          xcrun simctl list devices available
+          UDID=$(xcrun simctl list devices available --json | python3 -c '
+          import json, re, sys
+          best = None
+          for runtime, devices in json.load(sys.stdin)["devices"].items():
+              match = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              if not match:
+                  continue
+              version = (int(match.group(1)), int(match.group(2)))
+              for device in devices:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      key = (version, "Pro" not in device["name"], device["name"])
+                      if best is None or key > best[0]:
+                          best = (key, device["udid"], device["name"], runtime)
+          if best is None:
+              sys.exit("No iPhone simulator is installed on this runner.")
+          sys.stderr.write("Using %s (%s)\n" % (best[2], best[3]))
+          print(best[1])
+          ')
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          set -o pipefail
+          # -quiet prints only warnings and errors, so a compile error is easy to find.
+          xcodebuild build-for-testing \
+            -project ZestVideo.xcodeproj \
+            -scheme ZestVideo \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet 2>&1 | tee build.log
+
+      - name: Compile errors (summary)
+        if: failure()
+        run: |
+          echo "---- errors ----"
+          grep -n "error:" build.log | sort -u | head -200 || true
+
+      - name: Unit tests
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -project ZestVideo.xcodeproj \
+            -scheme ZestVideo \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee test.log | grep -E "Test (Suite|Case)|error:|failed|passed|Executed|\*\*" || true
+          grep -q "\*\* TEST EXECUTE SUCCEEDED \*\*" test.log
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-logs-${{ matrix.os }}
+          path: |
+            ios/build.log
+            ios/test.log
+          if-no-files-found: ignore
+
+  testflight:
+    # NOT YET RUN: this job cannot be tested until the Apple Developer account
+    # exists. Before the first run, add these repository secrets
+    # (Settings → Secrets and variables → Actions):
+    #   APPLE_TEAM_ID   the 10-character Team ID (developer.apple.com → Membership)
+    #   ASC_KEY_ID      App Store Connect API key ID  (Users and Access → Integrations)
+    #   ASC_ISSUER_ID   the Issuer ID shown on that same page
+    #   ASC_KEY_P8      the full text of the downloaded AuthKey_XXXX.p8 file
+    # The API key needs the Admin role so Xcode can create the signing
+    # certificate and profile by itself (cloud signing). The app record
+    # "com.zestlawnpest.video" must already exist in App Store Connect.
+    name: Upload to TestFlight
+    if: github.event_name == 'workflow_dispatch' && inputs.testflight
+    needs: [core, app]
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ios
+    env:
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check everything needed is here
+        run: |
+          missing=0
+          for name in APPLE_TEAM_ID ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret $name is not set."
+              missing=1
+            fi
+          done
+          if [ ! -f ZestVideo/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png ]; then
+            echo "::error::The app icon (icon-1024.png) is not committed."
+            missing=1
+          fi
+          exit $missing
+
+      - name: Toolchain
+        run: xcodebuild -version
+
+      - name: Install XcodeGen and generate the project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Write the App Store Connect key
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+          chmod 600 "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Archive
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project ZestVideo.xcodeproj \
+            -scheme ZestVideo \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/ZestVideo.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            -quiet 2>&1 | tee archive.log
+
+      - name: Upload to App Store Connect
+        run: |
+          set -o pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>destination</key>
+            <string>upload</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+            <key>uploadSymbols</key>
+            <true/>
+            <key>manageAppVersionAndBuildNumber</key>
+            <false/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/ZestVideo.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" 2>&1 | tee export.log
+
+      - name: Remove the key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/asc"

@@ -1,0 +1,18 @@
+// Build settings shared by Debug and Release.
+//
+// "https:/$()/host" is how a URL is written in an xcconfig: a plain "//"
+// would start a comment and cut the value short.
+
+// The Zest video server. The app talks to nothing else.
+ZEST_SERVER_URL = https:/$()/zest-video-production.up.railway.app
+
+// Where the "Please update" button goes. The server sends it on to the App Store page
+// once VIDEO_APP_STORE_URL is set there, so this never needs a new build.
+ZEST_APP_STORE_URL = https:/$()/zest-video-production.up.railway.app/app
+
+// Apple Developer team ID. Blank here; set it in Xcode (Signing & Capabilities)
+// or pass DEVELOPMENT_TEAM=XXXXXXXXXX to xcodebuild. CI passes it from a secret.
+DEVELOPMENT_TEAM =
+
+MARKETING_VERSION = 1.0.0
+CURRENT_PROJECT_VERSION = 1
