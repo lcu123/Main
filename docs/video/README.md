@@ -124,7 +124,18 @@ Proven:
   confirm. The bucket refused an upload with the wrong content type.
 - URL signing matches Amazon's published SigV4 example.
 - App: compiles and passes its unit tests on Xcode 16 and Xcode 26, and CI
-  launches every screen in the iPhone simulator and photographs it. The logic
+  launches every screen in the iPhone simulator and photographs it.
+- App, end to end in the simulator: 41 UI tests tap through every screen and
+  button against a fake server and check both the screen and what the server
+  received. They cover sign-in by text code, the route list, record → "Save
+  this video?" → SAVE, record again, delete inside the 10 minutes, the
+  two-keys warning, double taps, and the failures: the app killed in the
+  middle of a recording (the clip is recovered and offered on relaunch),
+  killed on the review screen, killed in the middle of an upload, killed
+  before the server confirmed; server errors, no connection, an expired
+  upload link, being signed out with a video queued. In every case exactly
+  one video reaches the server and none is lost. A real background-session
+  upload also arrives in a signed simulator build. The logic
   package (stop ranking, spoken-name matching, two-keys rule, queue state
   machine, 10-minute window, phone-number formatting) has its own test suite
   that also runs on Linux.
@@ -132,8 +143,11 @@ Proven:
 Not proven until it runs on real phones with real accounts:
 
 - Recording, background upload and speech-to-text on a physical iPhone. The
-  simulator has no camera, so the camera, the encoder and a real upload from
-  the app have never run. The brief's upload spike (airplane mode, Low Power
+  simulator has no camera, so the UI tests use a stand-in recorder that writes
+  a real clip; the camera and the encoder themselves have never run. Also not
+  reachable in a simulator: iOS pausing the app during a background upload,
+  Low Power Mode, a force-quit by the user, and how well speech recognition
+  hears a name outdoors. The brief's upload spike (airplane mode, Low Power
   Mode, app swiped closed, restart) still has to be run on a device.
 - The TestFlight job (needs the Apple Developer account).
 - Sending through Resend, the bounce webhook's payload, texts through Quo and
