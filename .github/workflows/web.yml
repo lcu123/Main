@@ -1,0 +1,276 @@
+name: Customer pages in real browsers
+
+# The watch page, the dead-link page, unsubscribe, privacy, terms and support, opened in real
+# browser engines at the sizes customers own: every iPhone and iPad size on WebKit, Android
+# phones and TVs on Chromium, desktop Chrome, Edge, Firefox and Safari, and real Safari on a
+# Mac and in the iOS Simulator. The suite and how to read it: tests/browser/README.md.
+
+on:
+  push:
+    paths:
+      - "src/zest_video/templates/**"
+      - "src/zest_video/static/**"
+      - "src/zest_video/http_web.py"
+      - "tests/browser/**"
+      - ".github/workflows/web.yml"
+  workflow_dispatch:
+    inputs:
+      live_url:
+        description: >-
+          Optional. A real watch link (https://.../w/<token>) to open READ-ONLY in every browser:
+          the page is checked and the video played through the real bucket; nothing is scored or
+          taken down. Use a test video: the link is that customer's key, it shows in this run's
+          inputs, and the video will count as watched.
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  browsers:
+    name: browsers (Chromium, Firefox, WebKit) ${{ matrix.shard }}/3
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3] # the same suite cut in three so the wait is a third as long
+    defaults:
+      run:
+        working-directory: tests/browser
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the video server (the suite runs the real one)
+        working-directory: .
+        run: pip install -e ".[dev,video]"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tests/browser/package-lock.json
+
+      - name: Install the test suite
+        run: npm ci
+
+      - name: Install the three browser engines
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Video decoders for Firefox and WebKit on Linux
+        # Chrome brings its own H.264/AAC. Firefox uses the system's ffmpeg, WebKit uses GStreamer.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg gstreamer1.0-libav gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+
+      - name: Run the whole suite, every project
+        run: npx playwright test --shard=${{ matrix.shard }}/3
+
+      - name: "Live: open the real link, read-only, on every project"
+        if: ${{ always() && inputs.live_url != '' && matrix.shard == 1 }}
+        env:
+          LIVE_WATCH_URL: ${{ inputs.live_url }}
+        run: |
+          echo "::add-mask::$LIVE_WATCH_URL"
+          npx playwright test
+
+      - name: Known gaps and what is left to confirm
+        if: always()
+        run: |
+          {
+            echo '### Customer pages in browsers (part ${{ matrix.shard }} of 3)'
+            echo
+            echo '```'
+            cat report/known-gaps.txt 2>/dev/null || echo 'no known gaps were touched in this part'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-report-${{ matrix.shard }}
+          path: tests/browser/report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload one picture of the watch page per project
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-screenshots-${{ matrix.shard }}
+          path: tests/browser/screenshots/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload traces of what failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-traces-${{ matrix.shard }}
+          path: |
+            tests/browser/test-results/
+            tests/browser/live-test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  safari-mac:
+    name: Safari (WebKit on macOS, real Safari, iOS Simulator)
+    runs-on: macos-15
+    timeout-minutes: 75
+    defaults:
+      run:
+        working-directory: tests/browser
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the video server
+        working-directory: .
+        run: pip install -e ".[dev,video]"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tests/browser/package-lock.json
+
+      - name: Install the test suite
+        run: npm ci
+
+      - name: Install WebKit (here it decodes video with Apple's own stack)
+        run: npx playwright install webkit
+
+      # 1. The same suite, WebKit projects only: every iPhone and iPad row and desktop Safari.
+      #    The stand-in bucket is served from the page's own origin here: on a Mac the video is
+      #    fetched by Apple's media stack, which is not known to accept the throwaway certificate
+      #    the https stand-in uses. Step 2 finds out.
+      - name: "WebKit on macOS: every iPhone, iPad and desktop Safari project"
+        timeout-minutes: 25
+        env:
+          ONLY_ENGINE: webkit
+          BROWSER_TEST_BUCKET: same-origin
+        run: npx playwright test
+
+      - name: "Probe, allowed to fail: WebKit on macOS with the bucket on another origin (throwaway certificate)"
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          ONLY_ENGINE: webkit
+          BROWSER_TEST_PORT: 19310
+          GAPS_REPORT: probe-known-gaps.txt
+        run: |
+          echo "If this step is green, change BROWSER_TEST_BUCKET above to https: the Mac run is then as close to production as the Linux one."
+          echo "Its TO CONFIRM lines say what Apple's video stack does when the bucket link has expired."
+          npx playwright test specs/watch.spec.js specs/expiring-links.spec.js --project="Desktop Safari" --project="iPhone 13" --reporter=list,./lib/gaps-reporter.js --output=probe-test-results
+
+      # 2. Real Safari through Apple's safaridriver: on the Mac, and Mobile Safari in the simulator.
+      - name: Allow Safari to be driven
+        if: always()
+        run: |
+          sw_vers
+          sudo safaridriver --enable
+          safaridriver --version || true
+          defaults read com.apple.Safari AllowRemoteAutomation 2>/dev/null || echo "(Safari's AllowRemoteAutomation setting is not readable; safaridriver --enable has been run)"
+
+      - name: Which simulators does this runner have?
+        if: always()
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+          xcrun simctl list devices available
+
+      - name: "Real Safari: Mac, small iPhone, current iPhone, Pro Max, iPad"
+        if: always()
+        timeout-minutes: 40
+        env:
+          LIVE_WATCH_URL: ${{ inputs.live_url }}
+        run: |
+          if [ -n "$LIVE_WATCH_URL" ]; then echo "::add-mask::$LIVE_WATCH_URL"; fi
+          node safari/real-safari.js
+
+      - name: "Live: open the real link, read-only, on every WebKit project"
+        if: ${{ always() && inputs.live_url != '' }}
+        timeout-minutes: 15
+        env:
+          ONLY_ENGINE: webkit
+          LIVE_WATCH_URL: ${{ inputs.live_url }}
+        run: |
+          echo "::add-mask::$LIVE_WATCH_URL"
+          npx playwright test
+
+      - name: Known gaps and what is left to confirm
+        if: always()
+        run: |
+          {
+            echo '### WebKit on macOS'
+            echo
+            echo '```'
+            cat report/known-gaps.txt 2>/dev/null || echo 'no known gaps were touched'
+            echo '```'
+            if [ -f report/probe-known-gaps.txt ]; then
+              echo
+              echo 'Probe with the bucket on another origin (allowed to fail):'
+              echo
+              echo '```'
+              cat report/probe-known-gaps.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload real Safari pictures and its log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-safari
+          path: tests/browser/safari-shots/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload the HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webkit-mac-report
+          path: tests/browser/report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload one picture of the watch page per project
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webkit-mac-screenshots
+          path: tests/browser/screenshots/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload traces of what failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webkit-mac-traces
+          path: |
+            tests/browser/test-results/
+            tests/browser/live-test-results/
+            tests/browser/probe-test-results/
+          if-no-files-found: ignore
+          retention-days: 14

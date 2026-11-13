@@ -1,0 +1,55 @@
+{
+  "//": "Features the customer pages use that some browser on the support list (iOS 12+, Chromium 53+, Samsung Internet 7+, Safari 12+, Firefox ESR) lacks. static/compat.spec.js prints the full list with versions on every run. An entry here means: seen, understood, accepted FOR NOW. 'effect' is what a customer on such a browser gets; 'reason' is why that is tolerable; 'fix' (optional) is the cheap way to make it right. A feature that is not listed here fails the build; so does an entry the pages no longer need.",
+
+  "css-focus-visible": {
+    "effect": "On Safari before 15.4, Chromium before 86 and Samsung Internet before 14 the rule that outlines the focused star is dropped whole. The radio buttons behind the stars are invisible on purpose, so someone moving through the page with a keyboard sees NO sign of which star has the focus. (A TV remote in focus mode is not affected: there the browser puts the focus on the star itself and draws its own ring.)",
+    "reason": "Touch, mouse and TV-remote use are not affected, and those are how nearly every customer scores. It is still a real gap for keyboard users on older Macs and PCs.",
+    "fix": "Add a plain fallback before the :focus-visible rule: .stars input:focus+label{outline:3px solid #932FFB;border-radius:8px}"
+  },
+  "flexbox-gap": {
+    "effect": "On iOS before 14.5 (so every iPhone 5s, 6 and 6 Plus, which stop at iOS 12), Safari before 14.1, Chromium before 84 and Samsung Internet before 14, 'gap' on a flex row does nothing: the logo touches the heading text, and the stars sit 4 px closer together.",
+    "reason": "Nothing overlaps and nothing stops working; it only looks cramped. (Side effect: without the gap the five stars are 310 px wide, so they fit a 320 px phone.)",
+    "fix": "header.top img{margin-right:12px} and .stars label{margin:0 2px} instead of gap."
+  },
+  "aspect-ratio": {
+    "effect": "On Chromium before 88, Safari and iOS before 15 and Samsung Internet before 15 the player has no shape until the video's details arrive: it shows as a small 300x150 box for a moment, then jumps to the tall 9:16 shape. On a slow connection the jump is visible and pushes the score form down.",
+    "reason": "The player ends up the right size and works; only the first moment differs.",
+    "fix": "Give the tag its size: <video width=\"720\" height=\"1280\" ...> (browsers then keep the ratio from the attributes)."
+  },
+  "variable-fonts": {
+    "effect": "Chromium 53 to 61 and Samsung Internet 7 do not understand 'font-weight:300 900' in @font-face. They use the one Rubik file at its lightest built-in weight and fake the bold, so headings look thinner and slightly smeared. Chromium 62 to 65 support it only partly.",
+    "reason": "All text stays readable. Only 2016-2018 TV browsers and very old Android phones are that old; iOS has had variable fonts since iOS 11."
+  },
+  "css-font-rendering-controls": {
+    "effect": "Chromium 53 to 59 and Samsung Internet 7 ignore font-display:swap: while the Rubik file is on its way the words are invisible (for up to 3 seconds on a slow connection), then appear.",
+    "reason": "The words always appear; the delay is short and only on the very oldest Chromium."
+  },
+  "aac": {
+    "effect": "Firefox does not carry its own AAC decoder: it uses the one in Windows, macOS or Android, which is always there. On a Linux desktop without the system codecs the video is silent or does not play.",
+    "reason": "Customers on Firefox are on Windows or a Mac, where the decoder is part of the system. The CI run on Linux installs it."
+  },
+  "media-fragments": {
+    "effect": "No browser supports the whole media-fragments standard, so caniuse marks every one 'partly'. The part used here, #t=0.1 (show the frame at a tenth of a second instead of a possibly black first frame), is the part they all do support.",
+    "reason": "Where it were ignored the video would simply show its very first frame."
+  },
+  "referrer-policy": {
+    "effect": "Chromium 53 to 60 know only the older referrer values. 'no-referrer', the one used here, is among those.",
+    "reason": "The value in use works on the whole list; and the watch link is also sent with Referrer-Policy: no-referrer as a header."
+  },
+  "text-size-adjust": {
+    "effect": "Desktop Safari, Firefox and Chromium 53 ignore -webkit-text-size-adjust. It exists to stop an iPhone enlarging text when turned on its side; desktop browsers never do that.",
+    "reason": "It is understood exactly where it matters (Safari on iOS, Chrome on Android)."
+  },
+  "font-family-system-ui": {
+    "effect": "Chromium 53 to 55 do not know the name system-ui and move on to the next names in the list (-apple-system, Segoe UI, Roboto, sans-serif).",
+    "reason": "It is only the fallback behind Rubik, and it has fallbacks of its own."
+  },
+  "css-overflow": {
+    "effect": "None. caniuse marks 'overflow' as partly supported because of its newer values (clip, two values at once). The page uses only overflow:hidden, which every browser has always had.",
+    "reason": "False alarm from the tool for the value in use; listed so that the day a newer overflow value is written it shows up in review."
+  },
+  "mdn-text-decoration-shorthand": {
+    "effect": "None. Chromium 53 to 56 lack the three-part text-decoration shorthand (line, style, colour). The page writes only text-decoration:none, which every browser understands.",
+    "reason": "False alarm from the tool for the value in use."
+  }
+}

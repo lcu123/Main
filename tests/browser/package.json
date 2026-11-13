@@ -1,0 +1,27 @@
+{
+  "name": "zest-video-browser-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real browsers against the customer side of Zest Visit Video: the watch page, the dead-link page, unsubscribe, privacy, terms and support.",
+  "license": "MIT",
+  "scripts": {
+    "test": "playwright test",
+    "static": "playwright test --project=static",
+    "report": "playwright show-report report/html",
+    "serve": "python3 serve.py --port 19300",
+    "safari": "node safari/real-safari.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "acorn": "8.19.0",
+    "browserslist": "4.29.5",
+    "caniuse-lite": "1.0.30001826",
+    "doiuse": "6.0.6",
+    "pngjs": "7.0.0",
+    "postcss": "8.5.32",
+    "selenium-webdriver": "4.52.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
