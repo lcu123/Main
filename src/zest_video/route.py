@@ -304,6 +304,9 @@ async def today_payload(ctx: Ctx, device: Device) -> dict[str, Any]:
                 "customerId": v.customer_id,
                 "state": public_state(v.state, v.first_viewed_at),
                 "emailAt": iso(v.email_due_at),
+                # Only the App Review account is handed the customer's link, so a reviewer
+                # can see the other half of the product. A real tech's phone never gets one.
+                **({"watchUrl": f"{ctx.cfg.base_url}/w/{v.token}"} if device.demo and v.state != "awaiting_upload" else {}),
             }
             for v in videos
             if v.tech_id == device.tech_id

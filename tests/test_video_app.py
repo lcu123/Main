@@ -337,6 +337,9 @@ async def test_register_upload_complete_then_email_after_the_window(env: Env) ->
     today_body = (await env.http.get("/v1/today", headers=headers)).json()
     assert today_body["stops"][0]["video"] == {"id": body["id"], "state": "sent", "byYou": True}
     assert today_body["videos"][0]["id"] == body["id"]
+    assert "watchUrl" not in today_body["videos"][0] and video.token not in str(today_body), (
+        "a real tech's phone is never handed the customer's link"
+    )
 
 
 async def test_the_link_is_filed_in_fieldroutes_after_the_email(env: Env) -> None:
@@ -777,6 +780,11 @@ async def test_the_demo_account_works_end_to_end_and_touches_nothing_real(env: E
 
     after = (await env.http.get("/v1/today", headers=headers)).json()
     assert after["stops"][0]["video"]["state"] == "no_email"
+
+    # The reviewer can open the customer's page for his own demo video.
+    assert after["videos"][0]["watchUrl"] == f"https://video.test/w/{video.token}"
+    page = await env.http.get(f"/w/{video.token}")
+    assert page.status_code == 200 and "A video from Demo at 100 Sample Street" in page.text
 
     wrong = await env.http.post("/v1/auth/verify", json={"contact": DEMO_CONTACT, "code": "000000"})
     assert wrong.status_code == 401

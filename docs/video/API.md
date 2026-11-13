@@ -117,7 +117,9 @@ today.
   appointment is completed.
 - `stop.video` is `{"id", "state", "byYou"}` when any tech has a live video for
   the stop, else `null`.
-- `videos` lists this tech's own videos for the day.
+- `videos` lists this tech's own videos for the day. For the App Review account
+  only (`tech.demo`), each uploaded video also carries `watchUrl`, the page a
+  customer would see. A real tech's phone is never sent a customer link.
 - The phone holds only what is in this body. No phone numbers, emails, billing
   or notes are ever sent to it.
 
