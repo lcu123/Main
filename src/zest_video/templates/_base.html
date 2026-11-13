@@ -17,7 +17,7 @@ body{margin:0;font-family:Rubik,system-ui,-apple-system,"Segoe UI",Roboto,sans-s
 .wrap{max-width:560px;margin:0 auto;padding:14px 16px 40px}
 header.top{display:flex;align-items:center;gap:12px;padding:2px 0 12px}
 header.top img{width:58px;height:58px;flex:none}
-header.top p{margin:0;font-size:18px;font-weight:600;line-height:1.25}
+header.top p,header.top h1{margin:0;font-size:18px;font-weight:600;line-height:1.25}
 header.top small{display:block;font-size:15px;font-weight:400;color:#5b4a70;margin-top:2px}
 h1{font-size:26px;line-height:1.2;font-weight:700;margin:22px 0 10px}
 h2{font-size:22px;line-height:1.25;font-weight:700;margin:26px 0 10px}
@@ -30,13 +30,16 @@ a{color:var(--violet)}
 .card{background:var(--soft);border-radius:16px;padding:18px;margin-top:18px}
 .ok{background:var(--lime);color:#000;border-radius:14px;padding:16px;font-weight:600;font-size:20px;text-align:center}
 .note{background:var(--yellow);color:#000;border-radius:12px;padding:12px 14px;font-weight:600;margin-bottom:14px}
-footer{margin-top:34px;font-size:15px;color:#5b4a70;text-align:center}
+footer{margin-top:34px;font-size:16px;color:#5b4a70;text-align:center}
+footer a{display:inline-block;padding:13px 10px;min-height:48px}
 {% block style %}{% endblock %}
 </style>
 </head>
 <body>
 <div class="wrap">
+<main>
 {% block body %}{% endblock %}
+</main>
 <footer>{{ brand }}{% if office_phone %} · <a href="tel:{{ office_phone }}">{{ office_phone | phone }}</a>{% endif %}<br>
   <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/support">Support</a></footer>
 </div>

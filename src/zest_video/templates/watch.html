@@ -19,8 +19,8 @@ details .btn{margin-top:10px}
 {% block body %}
 <header class="top">
   <img src="/static/logo.png?v={{ version }}" width="58" height="58" alt="{{ brand }}">
-  <p>A video from {{ video.tech_first_name or "your technician" }}{% if video.address %} at {{ video.address }}{% endif %}
-    <small>{{ recorded.strftime("%A, %B %-d") }}</small></p>
+  <h1>A video from {{ video.tech_first_name or "your technician" }}{% if video.address %} at {{ video.address }}{% endif %}
+    <small>{{ recorded.strftime("%A, %B %-d") }}</small></h1>
 </header>
 
 <div class="player">
