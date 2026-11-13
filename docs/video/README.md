@@ -181,6 +181,22 @@ Proven:
   pages without a session, malformed FieldRoutes records, clock changes and
   midnight. Nothing crashes, leaks or crosses over.
 
+- The brief's match spike, on real data (read-only, Nov 10 to 12, 2026: 4 techs,
+  10 tech-days, 106 stops, every one with a check-in position and a map pin).
+  Ranking a tech's stops by distance from where he checked in, the true stop was
+  the nearest 98% of the time and in the nearest three 99%; against only the stops
+  not yet visited, 106 of 106. Both misses were a tech checking the next customer
+  in while still at the previous house, not GPS error. At the house, the check-in
+  position lands a median 24 m from the pin (95th percentile 57 m), and anything
+  from 100 to 200 m warns on the same stops, so the 150 m "you look far" line fits
+  this office. Next-door customers are rare here (one pair within 30 m in ten
+  tech-days) but real, which is why GPS orders the list and never picks. The
+  check-in TIME is the weak key: two techs tap in and out within a minute at a
+  fifth of their stops, six stops were left checked in for over 90 minutes, and
+  with 20 minutes of slack a video at the right stop also fits a neighbouring
+  stop's window about half the time. A time mismatch means something; a time
+  match says little.
+
 Not proven until it runs on real phones with real accounts:
 
 - Recording, background upload and speech-to-text on a physical iPhone. The
