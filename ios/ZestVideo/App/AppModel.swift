@@ -75,6 +75,10 @@ struct ScreenSeeds: Equatable {
     var scrollToEnd = false
     /// The recording ring and prompts hold still at this many seconds in.
     var frozenElapsed: TimeInterval?
+    /// The lists and the video screen read this moment instead of the
+    /// clock, so "7 MIN LEFT" in a picture is still "7 MIN LEFT" a minute
+    /// later while the picture is being checked.
+    var frozenNow: Date?
     /// Draw a stand-in picture where the camera or the clip would be.
     var standInPicture = false
     /// Put the cursor in the sign-in field as soon as it shows.

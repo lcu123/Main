@@ -39,7 +39,7 @@ struct QueueView: View {
                         Banner(text: "No videos yet today.", tone: .info)
                     }
                     ForEach(rows) { item in
-                        row(item, state: app.rowState(for: item, now: context.date))
+                        row(item, state: app.rowState(for: item, now: app.seeds.frozenNow ?? context.date))
                     }
                     smallPrint
                 }

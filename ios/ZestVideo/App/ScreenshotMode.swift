@@ -279,6 +279,9 @@ enum ScreenshotMode {
             shot.seeds.standInPicture = true
         }
 
+        // The made-up day is built around this moment, and stays at it: a
+        // card that says "7 MIN LEFT" says so until the app is closed.
+        shot.seeds.frozenNow = now
         app.loadScreenshot(shot)
     }
 

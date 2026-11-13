@@ -425,6 +425,11 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
                 store.apply(.callFailed(error.message, retryAfter: 300), to: id)
             }
         }
+        // Every repeat of a call has a failure written down before it.
+        if let item = store.item(id) {
+            let wait = item.notBefore.map { "in \(max(0, Int($0.timeIntervalSinceNow.rounded()))) s" } ?? "at the next look"
+            trace("call for \(id) failed (\(error.message)): try \(item.attempts), next try \(wait)")
+        }
     }
 
     // MARK: The tech's delete / record again

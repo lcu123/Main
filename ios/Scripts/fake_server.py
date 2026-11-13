@@ -138,6 +138,7 @@ class State:
             self.test = test or ""
             self.route = route if route in ("usual", "long") else "usual"
             self.started = utc_now()
+            self.began = time.monotonic()  # every request and note is timed from here
             self.switches = dict(DEFAULT_SWITCHES)
             self.config = dict(DEFAULT_CONFIG)
             if config:
@@ -307,7 +308,7 @@ class State:
                     extra = " bytes=%d" % r["bytes"]
                 elif r.get("body") is not None:
                     extra = " " + json.dumps(r["body"], sort_keys=True)[:300]
-                lines.append("%3d  %-6s %-46s -> %s%s" % (r["n"], r["method"], r["path"], r["status"], extra))
+                lines.append("%3d %7.1fs  %-6s %-46s -> %s%s" % (r["n"], r.get("t", 0.0), r["method"], r["path"], r["status"], extra))
             for v in (self.videos[i] for i in self.order):
                 lines.append("video %s customer=%s state=%s registers=%d puts=%s bytes=%d completes=%s deletes=%d" % (
                     v["id"], v["customerId"], v["state"], v["registers"],
@@ -319,7 +320,7 @@ class State:
             if self.notes:
                 lines.append("what the app said about its uploads:")
                 for note in self.notes:
-                    lines.append("  after request %d: %s" % (note["after"], note["note"]))
+                    lines.append("  after request %d (%.1fs): %s" % (note["after"], note.get("t", 0.0), note["note"]))
             else:
                 lines.append("the app said nothing about its uploads (no upload task was made)")
             return "\n".join(lines) + "\n"
@@ -356,6 +357,7 @@ class Handler(BaseHTTPRequestHandler):
         with STATE.lock:
             entry = {
                 "n": len(STATE.requests) + 1,
+                "t": round(time.monotonic() - STATE.began, 1),
                 "test": STATE.test,
                 "method": self.command,
                 "path": self.path,
@@ -435,6 +437,11 @@ class Handler(BaseHTTPRequestHandler):
 
         # Everything below is the app talking.
         if STATE.switches["down"]:
+            # A small JSON call is read first, so the log can say WHICH video
+            # a call that never got through was for. The app sees no difference.
+            length = int(self.headers.get("Content-Length") or 0)
+            if self.command == "POST" and path.startswith("/v1/") and 0 < length <= 262144:
+                self.read_json()
             return self.drop()
         if path.startswith("/upload/"):
             return self.upload(path[len("/upload/"):])
@@ -724,7 +731,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/__test/note" and self.command == "POST":
             text = str((body or {}).get("note", ""))[:600]
             with STATE.lock:
-                STATE.notes.append({"after": len(STATE.requests), "note": text})
+                STATE.notes.append({"after": len(STATE.requests), "t": round(time.monotonic() - STATE.began, 1), "note": text})
             print("      app: %s" % text, flush=True)
             return self.reply(200, {"ok": True}, record=False)
         if path == "/__test/set" and self.command == "POST":
@@ -833,7 +840,10 @@ def self_test():
     check(call("GET", "/v1/today", token=body["token"])[0] == 200, "the issued token is signed in")
     check(call("POST", "/__test/note", {"note": "upload task 1 made"})[0] == 200, "note")
     state = call("GET", "/__test/state")[1]
-    check(state["notes"] == [{"after": 1, "note": "upload task 1 made"}] and state["logins"] == 0, "notes are kept")
+    kept = [{k: v for k, v in note.items() if k != "t"} for note in state["notes"]]
+    check(kept == [{"after": 1, "note": "upload task 1 made"}] and state["logins"] == 0, "notes are kept")
+    check(all(isinstance(note.get("t"), float) for note in state["notes"]), "notes are timed")
+    check(all(isinstance(r.get("t"), float) for r in state["requests"]), "requests are timed")
     check("upload task 1 made" in call("GET", "/__test/log")[1].decode(), "notes are in the log")
     check(call("POST", "/__test/reset", {"test": "self-test", "config": {"maxSeconds": 3}})[0] == 200, "reset")
     check("the app said nothing about its uploads" in call("GET", "/__test/log")[1].decode(), "no notes after reset")
@@ -925,6 +935,11 @@ def self_test():
 
     call("POST", "/__test/set", {"down": True})
     check(call("GET", "/v1/today", token=token)[0] == "dropped", "down drops the connection")
+    check(call("POST", "/v1/videos", {"id": "never-arrives", "customerId": 201}, token)[0] == "dropped", "down drops a register too")
+    seen = call("GET", "/__test/state")[1]
+    last = seen["requests"][-1]
+    check(last["status"] == "dropped" and (last["body"] or {}).get("id") == "never-arrives", "a dropped register still says which video it was for")
+    check(all(v["id"] != "never-arrives" for v in seen["videos"]), "and the server never heard of that video")
     check(call("GET", "/__test/ping")[0] == 200, "controls still answer")
     call("POST", "/__test/set", {"down": False})
 

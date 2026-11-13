@@ -1,5 +1,8 @@
 import XCTest
 import ZestCore
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Every screen of the app, opened with made-up data (the app's screenshot
 /// mode, `-ZestScreen <name>`), and checked two ways:
@@ -160,6 +163,8 @@ final class ScreensUITests: ZestUITestCase {
     // MARK: The check
 
     private func check(_ screen: String) {
+        // Room for the audit not coming back once (see `auditProblems`).
+        executionTimeAllowance = 420
         let audits: XCUIAccessibilityAuditType = [.contrast, .hitRegion, .textClipped, .sufficientElementDescription, .dynamicType]
         let problems = inspect(screen, odd: nil, audits: audits)
         report(problems, for: screen)
@@ -222,8 +227,8 @@ final class ScreensUITests: ZestUITestCase {
         // leaves the page at its top, where the audit starts.)
         problems += scrollProblems(on: name)
         if Self.runAudit {
-            problems += auditProblems(audits, on: name, screen: screen)
-            if screen == "review", odd == nil {
+            problems += auditProblems(audits, on: name, screen: screen, anchor: plan.anchor)
+            if screen == "review", odd == nil, app.state == .runningForeground {
                 // The picture is taken with the switch at NO. YES is looked
                 // at too: its white word and knob on the blue track.
                 problems += switchOnProblems(on: name)
@@ -248,7 +253,7 @@ final class ScreensUITests: ZestUITestCase {
             return ["\(name): tapping the \"I recommended something\" switch did not turn it on (it says \(String(describing: toggle.value)))."]
         }
         pause(0.5)
-        return auditProblems([.contrast, .textClipped], on: "\(name) (switch at YES)", screen: "review")
+        return auditProblems([.contrast, .textClipped], on: "\(name) (switch at YES)", screen: "review", anchor: "SAVE")
     }
 
     // MARK: The words to say
@@ -407,7 +412,10 @@ final class ScreensUITests: ZestUITestCase {
     }
 
     private func sight(of item: XCUIElement) -> Sight {
-        let frame = item.frame
+        sight(ofFrame: item.frame)
+    }
+
+    private func sight(ofFrame frame: CGRect) -> Sight {
         let window = app.windows.firstMatch.frame.insetBy(dx: -1.5, dy: -1.5)
         guard let room = pageRoom() else { return window.contains(frame) ? .clear : .cut }
         if room.insetBy(dx: -1.5, dy: -1.5).contains(frame) { return .clear }
@@ -424,10 +432,83 @@ final class ScreensUITests: ZestUITestCase {
 
     // MARK: Every page scrolls clear
 
+    /// Where this piece of the page is now. A piece is known by its words
+    /// and its place among pieces with the same words ("Sent ✓ #2"): unlike
+    /// an element handed out by the audit, that still finds it after the
+    /// page has moved.
+    private func frame(of key: String) -> CGRect? {
+        pageTexts().first { $0.key == key }?.frame
+    }
+
+    /// Moves the page until this piece is whole inside the room it scrolls
+    /// in (or, for a piece taller than the room, until its first line is at
+    /// the top). Returns where the piece ended up; `nil` if it is gone.
+    @discardableResult
+    private func bringIntoPageRoom(key: String) -> CGRect? {
+        var last: CGRect?
+        for _ in 0..<12 {
+            guard let room = pageRoom(), let spot = frame(of: key) else { return nil }
+            if room.insetBy(dx: -1.5, dy: -1.5).contains(spot) { break }
+            if let last, last == spot { break }                     // the page no longer moves
+            last = spot
+            if spot.height > room.height - 8 {
+                let off = spot.minY - room.minY - 12                // its top, to the top of the room
+                if abs(off) < 6 { break }
+                scrollPage(points: off)
+            } else if spot.maxY > room.maxY {
+                scrollPage(points: spot.maxY - room.maxY + 28)      // further down
+            } else if spot.minY < room.minY {
+                scrollPage(points: -(room.minY - spot.minY + 28))   // further up
+            } else {
+                break
+            }
+        }
+        settle()
+        return frame(of: key)
+    }
+
+    /// Moves the page until the last line of this piece is in the room.
+    /// (For a piece taller than the room, whose end is read in a second scroll.)
+    @discardableResult
+    private func bringEndIntoPageRoom(key: String) -> CGRect? {
+        var last: CGRect?
+        for _ in 0..<12 {
+            guard let room = pageRoom(), let spot = frame(of: key) else { return nil }
+            let over = spot.maxY - room.maxY
+            if over <= 1.5, spot.maxY >= room.minY + 24 { break }
+            if let last, last == spot { break }                     // the page no longer moves
+            last = spot
+            scrollPage(points: over > 1.5 ? over + 22 : -(room.minY + 24 - spot.maxY + 22))
+        }
+        settle()
+        return frame(of: key)
+    }
+
+    /// Brings the last piece of the page whole into the room: the end of the
+    /// page, reached the way a thumb reaches it, without pulling at a page
+    /// that is already there.
+    private func showEndOfPage() {
+        for _ in 0..<14 {
+            let texts = pageTexts()
+            guard let room = pageRoom(), let last = texts.max(by: { $0.frame.maxY < $1.frame.maxY }) else { return }
+            let over = last.frame.maxY - room.maxY
+            if over <= -6 { break }                                 // whole, with a little air under it
+            scrollPage(points: over + 22)
+            if pageTexts().map({ $0.frame }) == texts.map({ $0.frame }) { break }   // the page no longer moves
+        }
+        settle()
+    }
+
     /// A page taller than its room must scroll, and far enough that every
     /// line of it can be seen whole: nothing may stay half under the tab bar
     /// or behind the buttons. The page is walked from top to bottom and
-    /// every text has to be whole in the room at one position at least.
+    /// every piece has to be whole in the room at one position at least.
+    ///
+    /// A single piece taller than the room (a card with a long name at the
+    /// largest text) can never be whole in it. That is accepted only if it
+    /// can be read in two scrolls: its first line comes into view at one
+    /// position and its last line at another. A piece with a part that can
+    /// never be reached is a failure.
     private func scrollProblems(on name: String) -> [String] {
         // Nothing to do when the whole page is in view already.
         guard let room = pageRoom(), !pageFits() else { return [] }
@@ -436,13 +517,22 @@ final class ScreensUITests: ZestUITestCase {
         var texts = pageTexts()
 
         var seenWhole = Set<String>()
+        var seenTop = Set<String>()
+        var seenEnd = Set<String>()
         var known: [String: (label: String, height: CGFloat)] = [:]
         var moved = false
-        for _ in 0..<16 {
+        func look() {
             for text in texts {
                 known[text.key] = (text.label, text.frame.height)
                 if clear.contains(text.frame) { seenWhole.insert(text.key) }
+                // For a piece taller than the room: its first line in view,
+                // and (at another position) its last.
+                if text.frame.minY >= clear.minY, text.frame.minY <= room.maxY - 24 { seenTop.insert(text.key) }
+                if text.frame.maxY <= clear.maxY, text.frame.maxY >= room.minY + 24 { seenEnd.insert(text.key) }
             }
+        }
+        for _ in 0..<16 {
+            look()
             let before = texts.map { $0.frame }
             scrollPage(points: room.height * 0.45)
             settle()
@@ -450,26 +540,40 @@ final class ScreensUITests: ZestUITestCase {
             if texts.map({ $0.frame }) == before { break }   // the end of the page
             moved = true
         }
-        for text in texts {
-            known[text.key] = (text.label, text.frame.height)
-            if clear.contains(text.frame) { seenWhole.insert(text.key) }
-        }
+        look()
         var problems: [String] = []
         if !moved {
             problems.append("\(name): the page is taller than the room above the buttons and does not scroll.")
         }
         // Whatever was never whole on the way down gets its own try: the
         // steps above can pass over a tall card.
-        let missed = known.filter { !seenWhole.contains($0.key) && $0.value.height <= room.height - 8 }
-        for (key, text) in missed.sorted(by: { $0.key < $1.key }).prefix(6) {
-            let order = (Int(key.components(separatedBy: " #").last ?? "1") ?? 1) - 1
-            let item = app.scrollViews.firstMatch.descendants(matching: .any)
-                .matching(NSPredicate(format: "label == %@", text.label)).element(boundBy: order)
-            if item.exists {
-                bringIntoPageRoom(item)
-                if let now = pageRoom(), now.insetBy(dx: -1.5, dy: -1.5).contains(item.frame) { continue }
+        let missed = known.filter { !seenWhole.contains($0.key) }
+        for (key, text) in missed.sorted(by: { $0.key < $1.key }).prefix(8) {
+            let words = "\"\(text.label.prefix(60))\""
+            if text.height > room.height - 8 {
+                // Taller than the room: read in two scrolls, or not at all.
+                var top = seenTop.contains(key), end = seenEnd.contains(key)
+                if !top, let spot = bringIntoPageRoom(key: key), let now = pageRoom() {
+                    top = spot.minY >= now.minY - 1.5 && spot.minY <= now.maxY - 24
+                }
+                if !end, let spot = bringEndIntoPageRoom(key: key), let now = pageRoom() {
+                    end = spot.maxY <= now.maxY + 1.5 && spot.maxY >= now.minY + 24
+                }
+                if top && end { continue }
+                let part = !top && !end ? "neither its first line nor its last comes" : (!top ? "its first line never comes" : "its last line never comes")
+                problems.append("\(name): \(words) is taller than the room it scrolls in (\(Int(text.height)) points in \(Int(room.height))) and part of it can never be reached: \(part) into view.")
+                continue
             }
-            problems.append("\(name): \"\(text.label.prefix(60))\" can never be seen whole: the page does not scroll it clear of the bar or the buttons.")
+            if let spot = bringIntoPageRoom(key: key), let now = pageRoom(), now.insetBy(dx: -1.5, dy: -1.5).contains(spot) {
+                continue
+            }
+            if frame(of: key) == nil {
+                // Its words changed while the page was being walked. The
+                // clock holds still in these screens, so this should not be.
+                problems.append("\(name): \(words) was on the page and then was not: its words changed while the page was being checked.")
+                continue
+            }
+            problems.append("\(name): \(words) can never be seen whole: the page does not scroll it clear of the bar or the buttons.")
         }
         scrollPage(toEnd: false)
         return problems
@@ -723,30 +827,75 @@ final class ScreensUITests: ZestUITestCase {
         return nil
     }
 
+    /// One thing Apple's audit said about one element, as it stood when the
+    /// audit looked.
+    private struct Flag {
+        /// The kind of issue and the element: the same issue about the same
+        /// element in a later pass has the same key.
+        let key: String
+        let type: XCUIAccessibilityAuditType
+        let item: XCUIElement
+        let identifier: String
+        let label: String
+        let frame: CGRect
+        /// One line of text (not a card or a button made of several).
+        let isText: Bool
+        /// "[contrast] "SENT ✓", 130 x 41 at 154,295: Contrast failed"
+        let shown: String
+        /// Its place in the scrolling page, when it is part of it.
+        var pageKey: String?
+    }
+
     /// Runs Apple's audit and returns what it found wrong.
     ///
-    /// An element is judged where it can be seen whole. The audit looks at
-    /// the screen as it is, and a row that is half under the tab bar (or
-    /// still moving) is measured with the bar's pixels in it: that says
-    /// nothing about the row. So such a row is not judged there and not
-    /// excused either: it is scrolled into the clear and the audit is run
-    /// again. Only what is still wrong with it then is a failure.
-    private func auditProblems(_ audits: XCUIAccessibilityAuditType, on name: String, screen: String) -> [String] {
+    /// **An element is judged where it can be seen whole.** The audit looks
+    /// at the screen as it is, and a row that is half under the tab bar is
+    /// measured with the bar's pixels in it: that says nothing about the
+    /// row. So such a row is not judged there and not excused either: it is
+    /// scrolled into the clear and the audit is run again.
+    ///
+    /// **A contrast issue on a line of text is settled by the pixels.** The
+    /// audit's "Contrast failed" gives no numbers. For a line that is whole
+    /// on the screen the test takes a picture of just that line and reads
+    /// the two colours off it (`PixelContrast`). 4.5:1 or better, inside the
+    /// screen, with no other text over it: the line is listed as known, with
+    /// the measured numbers. Anything else fails, with the numbers. The
+    /// pixels that were read are kept, and `Scripts/measure_contrast.py`
+    /// reads them again in CI.
+    ///
+    /// **The audit is not trusted to come back.** On some layouts it never
+    /// does. The CI job closes the app when nothing has happened for a long
+    /// while; the test then opens the screen again and tries once more, a
+    /// little further along the page. A second time is a failure that says so.
+    private func auditProblems(_ audits: XCUIAccessibilityAuditType, on name: String, screen: String, anchor: String) -> [String] {
         var problems: [String] = []
         var lines: [String] = []
         var judged = Set<String>()
         // Flagged while not whole in the room the page scrolls in.
-        var waiting: [(key: String, label: String, item: XCUIElement, shown: String)] = []
+        var waiting: [Flag] = []
         // Seen whole in that room during a pass that did not flag them.
         var fineWhenWhole = Set<String>()
+        var stalls = 0
+        var passes = 0
 
-        // One run of the audit over the screen as it stands. Returns the
-        // keys of the elements it flagged.
-        func pass() -> Set<String> {
-            var flagged = Set<String>()
+        func fail(_ text: String) {
+            lines.append("FAILED  \(name): \(text)")
+            problems.append("\(name): \(text)")
+        }
+
+        // One run of the audit over the screen as it stands. Returns what it
+        // flagged; `nil` when the app was gone by the end of it.
+        func pass() -> [Flag]? {
+            var flags: [Flag] = []
             var nameless: [String] = []
+            var thrown: String?
+            // The Dynamic Type check is listed, never failed, and is the one
+            // check that makes the app lay itself out again at other text
+            // sizes. Once per screen, on the first pass, is enough.
+            passes += 1
+            let checks = passes == 1 ? audits : audits.subtracting(.dynamicType)
             do {
-                try app.performAccessibilityAudit(for: audits) { issue in
+                try app.performAccessibilityAudit(for: checks) { issue in
                     let kind = Self.word(for: issue.auditType)
                     guard let item = issue.element, item.exists else {
                         nameless.append("[\(kind)] (no element given): \(issue.compactDescription)")
@@ -757,37 +906,22 @@ final class ScreensUITests: ZestUITestCase {
                     let frame = item.frame
                     let shown = identifier.isEmpty ? "\"\(label.prefix(60))\"" : "\"\(identifier)\" (\"\(label.prefix(40))\")"
                     let what = "\(shown), \(Int(frame.width)) x \(Int(frame.height)) at \(Int(frame.minX)),\(Int(frame.minY))"
-                    let text = "[\(kind)] \(what): \(issue.compactDescription)"
-                    let key = "\(kind)|\(identifier.isEmpty ? label : identifier)"
-                    flagged.insert(key)
-                    guard !judged.contains(key) else { return true }
-
-                    if let reason = self.knownReason(issue.auditType, screen: screen, identifier: identifier) {
-                        judged.insert(key)
-                        lines.append("known   \(name): \(text)  (\(reason))")
-                    } else if issue.auditType == .dynamicType {
-                        // Listed, not failed. The app sizes its own type and
-                        // scales it with the phone's setting (`ZestFont`);
-                        // Apple's audit flags every text that is not one of
-                        // its named styles. The large-text run checks that
-                        // the type really grows.
-                        judged.insert(key)
-                        lines.append("listed  \(name): \(text)")
-                    } else if Self.isPinned(identifier: identifier, label: label) || self.sight(of: item) == .clear {
-                        judged.insert(key)
-                        waiting.removeAll { $0.key == key }
-                        lines.append("FAILED  \(name): \(text)")
-                        problems.append("\(name): \(text)")
-                    } else if !waiting.contains(where: { $0.key == key }), !fineWhenWhole.contains(key) {
-                        // Not whole in the room the page scrolls in: judged
-                        // once it is.
-                        waiting.append((key: key, label: label, item: item, shown: text))
-                    }
+                    flags.append(Flag(
+                        key: "\(kind)|\(identifier.isEmpty ? label : identifier)", type: issue.auditType, item: item,
+                        identifier: identifier, label: label, frame: frame, isText: item.elementType == .staticText,
+                        shown: "[\(kind)] \(what): \(issue.compactDescription)", pageKey: nil
+                    ))
                     // Handled here: the test fails once, below, with the whole list.
                     return true
                 }
             } catch {
-                problems.append("\(name): Apple's accessibility audit could not run: \(error)")
+                thrown = "\(error)"
+            }
+            // The app is gone: it crashed, or it was closed from outside
+            // because the audit sat with nothing happening.
+            guard app.wait(for: .runningForeground, timeout: 3) else { return nil }
+            if let thrown {
+                problems.append("\(name): Apple's accessibility audit could not run: \(thrown)")
             }
             if !nameless.isEmpty {
                 // An issue with no element cannot be scrolled into view to
@@ -798,19 +932,68 @@ final class ScreensUITests: ZestUITestCase {
                 let cut = self.cutTexts()
                 for text in nameless {
                     if cut.isEmpty {
-                        lines.append("FAILED  \(name): \(text)")
-                        problems.append("\(name): \(text)")
+                        fail(text)
                     } else {
                         lines.append("cut     \(name): \(text)  (at this position the edge of the page cuts: \(cut.prefix(3).joined(separator: "; ")))")
                     }
+                }
+            }
+            return flags
+        }
+
+        // Whole on the screen and flagged: this is the verdict on it.
+        func judge(_ flag: Flag) {
+            judged.insert(flag.key)
+            waiting.removeAll { $0.key == flag.key }
+            guard flag.type == .contrast else {
+                fail(flag.shown)
+                return
+            }
+            let verdict = self.contrastVerdict(flag, on: name)
+            if verdict.cleared {
+                lines.append("known   \(name): \(flag.shown)  (\(verdict.words))")
+            } else {
+                fail("\(flag.shown)  (\(verdict.words))")
+            }
+        }
+
+        // Sorts what one pass flagged: known, listed, judged here, or to be
+        // judged once it is whole on the screen.
+        func sort(_ flags: [Flag]) {
+            var texts: [(key: String, label: String, frame: CGRect)]?
+            for flag in flags where !judged.contains(flag.key) {
+                if let reason = self.knownReason(flag.type, screen: screen, identifier: flag.identifier) {
+                    judged.insert(flag.key)
+                    lines.append("known   \(name): \(flag.shown)  (\(reason))")
+                } else if flag.type == .dynamicType {
+                    // Listed, not failed. The app sizes its own type and
+                    // scales it with the phone's setting (`ZestFont`);
+                    // Apple's audit flags every text that is not one of
+                    // its named styles. The large-text run checks that
+                    // the type really grows.
+                    judged.insert(flag.key)
+                    lines.append("listed  \(name): \(flag.shown)")
+                } else if Self.isPinned(identifier: flag.identifier, label: flag.label) || self.sight(ofFrame: flag.frame) == .clear {
+                    judge(flag)
+                } else if !waiting.contains(where: { $0.key == flag.key }), !fineWhenWhole.contains(flag.key) {
+                    // Not whole in the room the page scrolls in: judged
+                    // once it is. It is found again by its words.
+                    if texts == nil { texts = self.pageTexts() }
+                    var kept = flag
+                    kept.pageKey = (texts ?? [])
+                        .filter { $0.label == flag.label }
+                        .min { abs($0.frame.minY - flag.frame.minY) < abs($1.frame.minY - flag.frame.minY) }?
+                        .key
+                    waiting.append(kept)
                 }
             }
             // Whatever was waiting to be seen whole, is whole on the screen
             // now (its text is part of a row that is all inside the room)
             // and was not flagged in this pass, is fine.
             if let room = self.pageRoom(), !waiting.isEmpty {
+                let flagged = Set(flags.map { $0.key })
                 let clear = room.insetBy(dx: -1.5, dy: -1.5)
-                let whole = self.pageTexts().filter { clear.contains($0.frame) }.map { $0.label.lowercased() }
+                let whole = (texts ?? self.pageTexts()).filter { clear.contains($0.frame) }.map { $0.label.lowercased() }
                 for entry in waiting where !flagged.contains(entry.key) {
                     let words = entry.label.lowercased()
                     if !words.isEmpty, whole.contains(where: { $0.contains(words) }) {
@@ -820,46 +1003,100 @@ final class ScreensUITests: ZestUITestCase {
                 }
                 waiting.removeAll { fineWhenWhole.contains($0.key) }
             }
-            return flagged
+        }
+
+        // A pass that survives the audit not coming back once. `restore`
+        // puts the page back where it was, a little off, after the screen
+        // has been opened again. `nil`: it happened twice, or the screen
+        // would not open again. Either way the reason is in `problems`.
+        func passOrOpenAgain(at place: String, restore: () -> Void) -> [Flag]? {
+            while true {
+                if let flags = pass() { return flags }
+                stalls += 1
+                guard stalls < 2 else {
+                    fail("Apple's audit did not finish at \(place). The app stopped twice while it ran (the CI job closes the app when nothing has happened for a long while; a crash looks the same from here), so nothing could be judged there.")
+                    return nil
+                }
+                lines.append("stalled \(name): Apple's audit did not come back at \(place) and the app had stopped. The screen was opened again and the audit run once more, a little further along the page.")
+                app.launch()
+                guard element(anchor).waitForExistence(timeout: 40) else {
+                    fail("after Apple's audit stalled at \(place) the screen could not be opened again.")
+                    return nil
+                }
+                pause(1.0)
+                restore()
+            }
+        }
+
+        func place(of flag: Flag) -> CGRect? {
+            if let key = flag.pageKey { return self.frame(of: key) }
+            return flag.item.exists ? flag.item.frame : nil
+        }
+        func bring(_ flag: Flag) {
+            if let key = flag.pageKey {
+                self.bringIntoPageRoom(key: key)
+            } else {
+                self.bringIntoPageRoom(flag.item)
+            }
         }
 
         // The same for the top of the page and for its end.
-        for end in [false, true] {
+        positions: for end in [false, true] {
             if end {
                 guard let room = pageRoom(), pageTexts().contains(where: { $0.frame.maxY > room.maxY + 1.5 }) else { break }
-                scrollPage(toEnd: true)
+                showEndOfPage()
             }
             settle()
-            _ = pass()
+            let first = passOrOpenAgain(at: end ? "the end of the page" : "the top of the page") {
+                // Not quite the same spot: a row that sat exactly on an
+                // edge no longer does.
+                if end {
+                    self.showEndOfPage()
+                    self.scrollPage(points: -44)
+                } else if !self.pageFits() {
+                    self.scrollPage(points: 44)
+                }
+                self.settle()
+            }
+            guard let first else { break positions }
+            sort(first)
+
             // Each element that was not whole in the room when it was
             // flagged: into the clear, and the audit again.
             var rounds = 0
             while let next = waiting.first, rounds < 4 {
                 rounds += 1
-                let before = next.item.exists ? next.item.frame : .zero
-                bringIntoPageRoom(next.item)
-                let flagged = pass()
+                let before = place(of: next)
+                bring(next)
+                let again = passOrOpenAgain(at: "the row \(next.shown.prefix(70))") {
+                    bring(next)
+                    self.settle()
+                }
+                guard let again else { break positions }
+                sort(again)
                 guard waiting.contains(where: { $0.key == next.key }) else { continue }   // judged in that pass
                 waiting.removeAll { $0.key == next.key }
-                guard next.item.exists else { continue }
-                let now = sight(of: next.item)
-                let stayedPut = next.item.frame == before
-                let tooTall = next.item.frame.height > (pageRoom()?.height ?? .greatestFiniteMagnitude) - 8
-                if now == .clear || (now == .outside && stayedPut) || tooTall {
+                guard let now = place(of: next) else {
+                    lines.append("unseen  \(name): flagged while not whole on the screen, and gone when looked for again: \(next.shown)")
+                    continue
+                }
+                let flaggedAgain = again.first { $0.key == next.key }
+                let seen = sight(ofFrame: now)
+                let stayedPut = before == now
+                let tooTall = now.height > (pageRoom()?.height ?? .greatestFiniteMagnitude) - 8
+                if seen == .clear || (seen == .outside && stayedPut) || tooTall {
                     // Whole in the room now; or a part of the bars that no
                     // scrolling moves; or taller than the room, which can
                     // never be whole in it: what this pass said stands.
-                    judged.insert(next.key)
-                    if flagged.contains(next.key) {
-                        lines.append("FAILED  \(name): \(next.shown)")
-                        problems.append("\(name): \(next.shown)")
+                    if let flaggedAgain {
+                        judge(flaggedAgain)
                     } else {
+                        judged.insert(next.key)
                         lines.append("clean   \(name): fine once whole on the screen: \(next.shown)")
                     }
                 } else {
                     judged.insert(next.key)
-                    lines.append("FAILED  \(name): could not be scrolled clear of the bars to be judged: \(next.shown)")
-                    problems.append("\(name): could not be scrolled clear of the bars to be judged: \(next.shown)")
+                    fail("could not be scrolled clear of the bars to be judged: \(next.shown)")
                 }
             }
         }
@@ -870,10 +1107,138 @@ final class ScreensUITests: ZestUITestCase {
             lines.append("clean   \(name): no issue of any kind")
         }
         appendNote(named: "accessibility-audit.\(Self.device).info", lines.joined(separator: "\n"))
-        if !pageFits() {
+        if app.state == .runningForeground, !pageFits() {
             scrollPage(toEnd: false)
         }
         return problems
+    }
+
+    // MARK: Contrast, from the pixels
+
+    /// Reads the contrast of a flagged line of text off the screen itself.
+    /// `cleared` only when the pixels read 4.5:1 or better and the line is
+    /// whole on the screen with no other text over it. `words` says what was
+    /// found either way.
+    private func contrastVerdict(_ flag: Flag, on name: String) -> (cleared: Bool, words: String) {
+        guard flag.isText else {
+            return (false, "not one line of text, so it cannot be settled by measuring one colour against another")
+        }
+        guard flag.item.exists else {
+            return (false, "it was gone before its pixels could be read")
+        }
+        let frame = flag.item.frame
+        var faults: [String] = []
+
+        // Inside the screen? A line that runs off the edge is a layout bug,
+        // whatever its colours.
+        let window = app.windows.firstMatch.frame
+        if window.width > 0, !window.insetBy(dx: -0.5, dy: -0.5).contains(frame) {
+            faults.append("it runs off the screen (\(Int(frame.minX))...\(Int(frame.maxX)) across, \(Int(frame.minY))...\(Int(frame.maxY)) down, on a screen \(Int(window.width)) x \(Int(window.height)))")
+        }
+        // Another line of text lying across it? (One wholly inside the
+        // other is a row and its own words, not two lines colliding.)
+        if let tree = try? app.snapshot() {
+            var over: [String] = []
+            collect(in: tree) { node in
+                guard node.elementType == .staticText, !node.label.isEmpty, node.label != flag.label else { return }
+                let other = node.frame
+                let shared = other.intersection(frame)
+                guard !shared.isNull, shared.width > 2, shared.height > 2 else { return }
+                if other.insetBy(dx: -1, dy: -1).contains(frame) || frame.insetBy(dx: -1, dy: -1).contains(other) { return }
+                over.append("\"\(node.label.prefix(30))\"")
+            }
+            if !over.isEmpty {
+                faults.append("other text lies across it: \(over.prefix(2).joined(separator: ", "))")
+            }
+        }
+
+        let reading = Self.read(flag.item)
+        let saved = save(reading, flag: flag, cleared: faults.isEmpty && (reading?.reading.isEnough ?? false), on: name)
+        guard let reading else {
+            return (false, "its pixels could not be read" + (faults.isEmpty ? "" : "; " + faults.joined(separator: "; ")))
+        }
+        let measured = "measured on the pixels: \(reading.reading.summary)"
+        if !reading.reading.isEnough {
+            faults.insert("too faint: \(measured), under \(GloveRule.minContrast):1", at: 0)
+        }
+        if faults.isEmpty {
+            return (true, "\(measured); whole on the screen, nothing over it\(saved.isEmpty ? "" : "; pixels kept as \(saved)")")
+        }
+        return (false, (reading.reading.isEnough ? measured + "; " : "") + faults.joined(separator: "; "))
+    }
+
+    private struct Pixels {
+        let reading: PixelContrast.Reading
+        let rgb: [UInt8]
+        let width: Int
+        let height: Int
+        let png: Data
+    }
+
+    /// A picture of just this element, as red, green and blue per pixel,
+    /// and the contrast read from it. `nil` when there is no picture, or
+    /// it is one flat colour.
+    private static func read(_ item: XCUIElement) -> Pixels? {
+        #if canImport(UIKit)
+        let shot = item.screenshot()
+        guard let image = shot.image.cgImage else { return nil }
+        let width = image.width, height = image.height
+        guard width > 0, height > 0, width * height <= 8_000_000 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: width * height * 4)
+        let space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let drawn: Bool = buffer.withUnsafeMutableBytes { raw in
+            guard let context = CGContext(
+                data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+            ) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+        var rgb = [UInt8]()
+        rgb.reserveCapacity(width * height * 3)
+        var index = 0
+        while index + 3 < buffer.count {
+            rgb.append(buffer[index])
+            rgb.append(buffer[index + 1])
+            rgb.append(buffer[index + 2])
+            index += 4
+        }
+        guard let reading = PixelContrast.read(rgb: rgb) else { return nil }
+        return Pixels(reading: reading, rgb: rgb, width: width, height: height, png: shot.pngRepresentation)
+        #else
+        return nil
+        #endif
+    }
+
+    /// Keeps the pixels that were read (a .ppm the measuring script reads,
+    /// and a .png for a person), and adds a row to `contrast-readings.tsv`:
+    /// verdict, screen, ratio, words, background, the .ppm's name, the line.
+    /// Returns the picture's name, "" if nothing was kept.
+    private func save(_ pixels: Pixels?, flag: Flag, cleared: Bool, on name: String) -> String {
+        let folder = URL(fileURLWithPath: Self.failureFolder, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var file = ""
+        var fields = [cleared ? "measured" : "FAILED", name, "", "", "", "", flag.shown]
+        if let pixels {
+            // A name no other reading has, in this run of the tests or an
+            // earlier one into the same folder.
+            let safe = name.map { $0.isLetter || $0.isNumber ? $0 : "-" }
+            file = "contrast-\(Self.device)-\(String(safe))-\(UUID().uuidString.prefix(8).lowercased())"
+            var ppm = Data("P6\n\(pixels.width) \(pixels.height)\n255\n".utf8)
+            ppm.append(contentsOf: pixels.rgb)
+            try? ppm.write(to: folder.appendingPathComponent(file + ".ppm"))
+            try? pixels.png.write(to: folder.appendingPathComponent(file + ".png"))
+            fields[2] = String(format: "%.2f", pixels.reading.ratio)
+            fields[3] = PixelContrast.hexText(pixels.reading.words)
+            fields[4] = PixelContrast.hexText(pixels.reading.background)
+            fields[5] = file + ".ppm"
+        }
+        let row = fields.map { $0.replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ") }.joined(separator: "\t")
+        let table = folder.appendingPathComponent("contrast-readings.tsv")
+        let old = (try? String(contentsOf: table, encoding: .utf8)) ?? ""
+        try? Data((old + row + "\n").utf8).write(to: table)
+        return file.isEmpty ? "" : file + ".png"
     }
 
     /// The texts of the page that the edge of its room cuts right now.

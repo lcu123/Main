@@ -83,7 +83,7 @@ final class LongDayUITests: ZestUITestCase {
             XCTAssertGreaterThan(video.bytes, 0, "And it was a real file: \(video.summary)")
         }
         XCTAssertEqual(Set(seen.videos.map { $0.id }).count, count, "\(count) different videos.")
-        XCTAssertEqual(seen.registerCalls(), count, "One register call each, none repeated.")
+        checkRegisterTries(seen, count: count)
 
         // The phone agrees, and holds nothing.
         waitForLabel(element("route-header"), "the header", contains: "Sent \(count) of \(count)", timeout: 90)
@@ -97,5 +97,55 @@ final class LongDayUITests: ZestUITestCase {
         }
         waitForLabel(element("held-space"), "the space line", contains: "holding 0 MB")
         XCTAssertFalse(element("keep-app-warning").exists, "Nothing is on the phone, so nothing warns about deleting the app.")
+    }
+
+    /// What the day may cost in register calls.
+    ///
+    /// With no signal the app cannot know the server is out of reach without
+    /// trying, so it does try: the OLDEST video only (the line is held behind
+    /// it), again after 5, 10, 20, 40... seconds. Those tries get no answer
+    /// and the server never hears of the video. Once the signal is back every
+    /// video costs exactly one register, one upload, one complete.
+    ///
+    /// So a register is repeated only after a try that failed, and never
+    /// once one has been answered.
+    private func checkRegisterTries(_ seen: ServerState, count: Int) {
+        let tries = seen.registerTries
+        let story = tries.map { $0.summary }.joined(separator: ", ")
+        let answered = tries.filter { $0.gotThrough }
+        let unanswered = tries.filter { !$0.gotThrough }
+
+        XCTAssertEqual(answered.count, count, "One answered register for each video. All tries: \(story)")
+        XCTAssertEqual(
+            answered.map { $0.videoId }, seen.videos.map { $0.id },
+            "Each video was answered once, oldest first. All tries: \(story)"
+        )
+        XCTAssertTrue(
+            unanswered.allSatisfy { $0.answer == "dropped" },
+            "The only tries that were not answered are the ones made with no signal. All tries: \(story)"
+        )
+        if let first = tries.firstIndex(where: { $0.gotThrough }) {
+            XCTAssertTrue(
+                tries[first...].allSatisfy { $0.gotThrough },
+                "Once the signal was back nothing was registered twice. All tries: \(story)"
+            )
+        }
+        if let oldest = seen.videos.first?.id {
+            XCTAssertTrue(
+                unanswered.allSatisfy { $0.videoId == oldest },
+                "With no signal only the oldest video is tried; the rest wait in line behind it. All tries: \(story)"
+            )
+        }
+        // It waits longer each time; it never hammers a server it cannot reach.
+        for (earlier, later) in zip(unanswered, unanswered.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(
+                later.at - earlier.at, 3,
+                "Two tries with no signal came \(later.at - earlier.at) s apart. All tries: \(story)"
+            )
+        }
+        XCTAssertLessThanOrEqual(
+            unanswered.count, 12,
+            "The waits double (5, 10, 20, 40, 80, 160, then 300 s), so a day this long has room for only a few tries. All tries: \(story)"
+        )
     }
 }

@@ -175,6 +175,26 @@ final class AppSourceRulesTests: XCTestCase {
         XCTAssertFalse(review.contains("Theme.hairline)"), "the pale grey track failed Apple's contrast audit")
     }
 
+    /// The three screens that count down the minutes left read the clock
+    /// through `frozenNow`, so a picture of them holds still. (A test that
+    /// walked a page for two minutes once lost a card whose words went from
+    /// "7 MIN LEFT" to "6 MIN LEFT" under it.) In a real build `frozenNow`
+    /// is always nil and the real clock is read.
+    func testTheScreensThatCountDownHoldStillForAPicture() throws {
+        for file in ["TodayView.swift", "QueueView.swift", "StopVideoView.swift"] {
+            let source = try text("ZestVideo/UI/\(file)")
+            XCTAssertTrue(source.contains("TimelineView("), "\(file) counts down by itself")
+            XCTAssertTrue(source.contains("app.seeds.frozenNow ?? context.date"), "\(file) must read the clock through frozenNow")
+            let direct = source.components(separatedBy: "\n").filter { $0.contains("now: context.date") }
+            XCTAssertEqual(direct, [], "\(file) reads the clock directly: \(direct)")
+        }
+        let mode = try text("ZestVideo/App/ScreenshotMode.swift")
+        XCTAssertTrue(mode.contains("shot.seeds.frozenNow = now"), "screenshot mode must hold the clock at the moment its made-up day was built around")
+        let model = try text("ZestVideo/App/AppModel.swift")
+        XCTAssertTrue(model.contains("var frozenNow: Date?"), "outside screenshot mode there is no frozen moment")
+        XCTAssertFalse(model.contains("frozenNow ="), "only screenshot mode may set it")
+    }
+
     /// No third-party code, and no sharing of a video out of the app.
     func testNoShareSheetAndNoThirdPartyImports() throws {
         let allowed: Set<String> = [

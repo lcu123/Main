@@ -594,7 +594,7 @@ jobs:
             -maximum-test-execution-time-allowance 900 \
             $SIGNING \
             $ONLY 2>&1 | tee ui-artifacts/ui-test.log \
-            | grep -E "^Test Case|^Test Suite '(All|Selected)|######## (FAILED|On screen)|^NOTE |error:|Executed [0-9]+ tests|\*\* TEST" || true
+            | grep --line-buffered -E "^Test Case|^Test Suite '(All|Selected)|######## (FAILED|On screen)|^NOTE |error:|Executed [0-9]+ tests|\*\* TEST|Restarting after unexpected exit|Failed to initialize for UI testing|encountered an error \(" || true
           grep -q "\*\* TEST EXECUTE SUCCEEDED \*\*" ui-artifacts/ui-test.log
 
       - name: What failed, and what the server saw
@@ -604,7 +604,13 @@ jobs:
           # the screen, every request the fake server got during it, and what
           # the app said about its uploads.
           echo "==================== FAILED TESTS ===================="
-          grep -E "^Test Case .* failed" ui-artifacts/ui-test.log || echo "(no test reported a failure: see the last lines of the log below)"
+          grep -E "^Test Case .* failed" ui-artifacts/ui-test.log || echo "(no test reported a failure: see WHY and the last lines of the log below)"
+          # A run can fail with no test failing: a test that sat out its
+          # time, a test runner that crashed or never started. Say which.
+          echo
+          echo "==================== WHY (when no assertion failed) ===================="
+          grep -E "exceeded execution time allowance|Restarting after unexpected exit|Failed to initialize for UI testing|encountered an error \(|Timed out waiting for AX|The test runner (exited|crashed|hung)" ui-artifacts/ui-test.log \
+            | sed -E 's/^[0-9: .+-]+ZestVideoUITests-Runner\[[0-9:]+\] //' | sort -u | cut -c1-300 || true
           found=0
           for note in ui-artifacts/failures/*.txt; do
             [ -f "$note" ] || continue
@@ -688,7 +694,9 @@ jobs:
     name: Sizes (${{ matrix.name }})
     if: github.event_name != 'pull_request'
     runs-on: macos-26
-    timeout-minutes: 45
+    # Two simulators, pictures and every check on each: the 6.1-inch + iPad
+    # job needed 51 minutes and was cut off at 45 with the iPad half done.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -739,8 +747,10 @@ jobs:
           open(sys.argv[1], "wb").write(png)
           PY
           fi
-      - name: Check the simulator picker against itself
-        run: python3 Scripts/pick_simulator.py --self-test
+      - name: Check the simulator picker and the contrast measure against themselves
+        run: |
+          python3 Scripts/pick_simulator.py --self-test
+          python3 Scripts/measure_contrast.py --self-test | tail -1
 
       - name: Generate the Xcode project
         run: xcodegen generate
@@ -776,7 +786,12 @@ jobs:
           # (what is missing, cut off, covered, too small, or flagged by
           # Apple's audit, with the element it is about).
           echo "==================== FAILED TESTS ===================="
-          grep -hE "^Test Case .* failed" ui-artifacts/*.log 2>/dev/null || echo "(no test reported a failure: see the logs)"
+          grep -hE "^Test Case .* failed" ui-artifacts/*.log 2>/dev/null || echo "(no test reported a failure: see STUCK and TIMED OUT below and in the step above)"
+          # A test that wrote nothing for a long while was stopped from
+          # outside; what it and the app were doing is in the step above.
+          cat ui-artifacts/*.stuck.txt 2>/dev/null || true
+          grep -hE "exceeded execution time allowance|Failed to initialize for UI testing|encountered an error \(" ui-artifacts/*.log 2>/dev/null \
+            | sed -E 's/^[0-9: .+-]+ZestVideoUITests-Runner\[[0-9:]+\] //' | sort -u | cut -c1-300 || true
           for note in ui-artifacts/failures/*/*.txt; do
             [ -f "$note" ] || continue
             case "$note" in *.info.txt) continue ;; esac

@@ -36,7 +36,7 @@ struct TodayView: View {
                             VStack(spacing: 18) {
                                 ForEach(Array(ranked.suggested.enumerated()), id: \.element.id) { index, entry in
                                     card(entry, headline: headline(for: entry.stop, first: index == 0, reason: ranked.reason),
-                                         highlighted: index == 0, now: context.date)
+                                         highlighted: index == 0, now: app.seeds.frozenNow ?? context.date)
                                 }
                             }
                         }
@@ -46,7 +46,7 @@ struct TodayView: View {
                             VStack(spacing: 18) {
                                 ForEach(ranked.rest) { entry in
                                     card(entry, headline: headline(for: entry.stop, first: false, reason: ranked.reason),
-                                         highlighted: false, now: context.date)
+                                         highlighted: false, now: app.seeds.frozenNow ?? context.date)
                                 }
                             }
                         }
@@ -452,6 +452,10 @@ struct ActionRow: View {
             .lineLimit(2)
             .minimumScaleFactor(0.7)
             .padding(.horizontal, 12)
+            // Air above and below, for when the words take two lines (the
+            // largest text): they must not touch the card's edge. One line
+            // is shorter than the row either way, so it looks as before.
+            .padding(.vertical, 8)
             .frame(maxWidth: .infinity, minHeight: Theme.actionRowHeight)
             .background(tone.fill)
     }

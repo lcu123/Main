@@ -21,7 +21,9 @@ struct StopVideoView: View {
         // Re-read every few seconds so the minutes left count down by themselves.
         TimelineView(.periodic(from: Date(), by: 5)) { context in
             if let focus = app.focus {
-                content(app.summary(for: focus, now: context.date), now: context.date)
+                // (The clock holds still in a screenshot. See `ScreenSeeds`.)
+                let now = app.seeds.frozenNow ?? context.date
+                content(app.summary(for: focus, now: now), now: now)
             } else {
                 gone
             }

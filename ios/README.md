@@ -42,7 +42,7 @@ ios/
   ZestVideoUITests/      End-to-end tests: the real app, driven in the simulator.
   Scripts/               fake_server.py (the UI tests' server); for the pictures:
                          pick_simulator.py, take_screens.sh, screens_job.sh,
-                         contact_sheet.py and is_blank.py.
+                         contact_sheet.py, is_blank.py and measure_contrast.py.
 ```
 
 No third-party code. Apple frameworks only, system font, one bundled image
@@ -169,7 +169,7 @@ in that file).
 cd ios/ZestCore && swift test
 ```
 
-runs the logic tests anywhere, Linux included (237 tests). Among them are
+runs the logic tests anywhere, Linux included (247 tests). Among them are
 rules about the app's own source, checked by reading the files
 (`AppSourceRulesTests`): no photo-library key or call, no share sheet,
 Apple frameworks only, and every pair of colours the screens use has the
@@ -190,7 +190,9 @@ sign-in, real storage on disk, the real upload queue, real screens. Every
 test starts from a clean app and a clean server, and checks **both** what is
 on the screen and what the server got.
 
-**The clock.** No test leans on how long the run took. The practice server
+**The clock.** No test leans on how long the run took. (The twenty-video
+test once counted every register call and failed when the run was slow
+enough for a seventh try with no signal; it now checks the rule itself.) The practice server
 moves its "just finished" stop with the clock, and the tests that take many
 steps ask for a 60-minute change window. The few tests that count days
 (old clips, the twenty-video day) skip themselves, with a plain message, if
@@ -247,13 +249,13 @@ reset: what the app kept is what is being tested.
 | `RecordUITests` | record → SAVE → one register, the whole file once, one complete; FLIP, BACK, ending early; RECORD AGAIN; the recommend switch; the two-keys warning both ways; another customer's name said where the place and the time fit still asks ("It sounded like…"), a forgotten name at the right house does not; change and delete inside ten minutes; not-on-my-list (SENT TO OFFICE, no promise of an email, deletable for ten minutes and not after); double taps; and that the audit events (record, retake, override) really reach the server for the right customer |
 | `KillUITests` | the app killed mid-recording, on review, mid-upload, before "complete" is answered, and right after SAVE: after it is started again there is exactly one video on the server |
 | `NetworkUITests` | 500s, no server, an expired upload address, "not uploaded", signed out by the server, update required, a stop locked by the server, starting with no signal; "Do not delete this app" while a video waits, gone once it is sent |
-| `LongDayUITests` | the brief's own number: twenty videos saved in a row with no server, all twenty arriving once each and in order when it is back, the phone left holding no files, and My Videos saying WAITING, never SENT, until each one is really there |
+| `LongDayUITests` | the brief's own number: twenty videos saved in a row with no server, all twenty arriving once each and in order when it is back, the phone left holding no files, and My Videos saying WAITING, never SENT, until each one is really there. What it may cost: with no signal only the oldest video is tried, again after 5, 10, 20, 40... seconds, and those tries reach nothing; once the signal is back each video is one register, one upload, one complete, and nothing is asked twice |
 | `StorageUITests` | under 200 MB free the camera is never reached: from THIS IS IT, from RECORD for a stop not on the list, and from both RECORD AGAIN buttons, with the clip already made still there to save; under 500 MB one warning, and RECORD ANYWAY reaches the camera |
 | `DraftUITests` | with a clip unsaved, tapping another stop opens the question for the clip's own customer; a clip left since yesterday is asked about on the next open (SAVE or DELETE VIDEO, the day it was filmed, no RECORD AGAIN), saved for that day, and does not count for today's stop; a week-old one deleted; only one older than 14 days is dropped by itself, and logged |
 | `WithoutLocationUITests` | location refused: the stops show in route order, a video is recorded and arrives once with the GPS key "unknown" and no location, and nothing crashes |
 | `TeamUITests` | one video per tech per property. The lead is not shown another tech's video, his own is taken with no 409, and RECORD AGAIN replaces only his own. The helper sees DONE BY TEAM, gets no RECORD AGAIN, DELETE or CALL OFFICE on the lead's video, records his own beside it, and deleting his own leaves the lead's alone and the stop reads DONE BY TEAM again. After a delete the app asks the server for the day again; for the lead the stop simply reopens |
 | `BackgroundUploadUITests` | informational: what the simulator does with the real background upload session. Skipped, with the recorded error, if the upload never arrives |
-| `ScreensUITests` | every screen (19), opened with made-up data: its main actions are on the screen, tappable and not overlapping, nothing runs off the side; the gloves rule (every main button at least 76 points tall and as wide as the screen less its gutters, the record button and ring at least 120 across, and after sign-in nothing to type, pick, slide or swipe); every page that is taller than its room scrolls every line of it clear of the bars; and Apple's accessibility audit (contrast, 44-point tap targets, clipped text, descriptions, Dynamic Type) finds nothing unexplained, each row judged where it can be seen whole (one half under the tab bar is scrolled clear and audited again), with the YES / NO switch looked at in both states. Also the route of awkward names, where nothing may be cut off. Run by the `sizes` jobs on several simulators and text sizes |
+| `ScreensUITests` | every screen (19), opened with made-up data: its main actions are on the screen, tappable and not overlapping, nothing runs off the side; the gloves rule (every main button at least 76 points tall and as wide as the screen less its gutters, the record button and ring at least 120 across, and after sign-in nothing to type, pick, slide or swipe); every page that is taller than its room scrolls every line of it clear of the bars (a single card taller than the room must be readable in two scrolls: its first line and its last each come into view); and Apple's accessibility audit (contrast, 44-point tap targets, clipped text, descriptions, Dynamic Type) finds nothing unexplained, each row judged where it can be seen whole (one half under the tab bar is scrolled clear and audited again), a contrast issue on a line of text settled by measuring that line's pixels, with the YES / NO switch looked at in both states. Also the route of awkward names, where nothing may be cut off. Run by the `sizes` jobs on several simulators and text sizes |
 | `PerformanceUITests` | informational: launch time, time to My Route, memory on each screen and over ten videos, what is left on disk. Run by the `performance` job |
 
 Timing a tap to the tenth of a second is not something a UI test does well,
@@ -403,9 +405,40 @@ xcrun simctl launch --terminate-running-process booted com.zestlawnpest.video -Z
 After the pictures, each job runs `ScreensUITests` on the same simulator.
 Its failures name the screen and the element. Every issue Apple's audit
 raises is also printed as a table in the step "Apple's accessibility audit,
-every issue": `FAILED` lines fail the test, `known` lines are deliberate and
-give the reason (words over the camera picture, which is a drawing here),
-and `listed` lines are shown but do not fail.
+every issue": `FAILED` lines fail the test, `known` lines give the reason
+they do not, and `listed` lines are shown but do not fail.
+
+**Contrast is settled by the pixels.** Apple's audit says "Contrast failed"
+with no numbers, and at some text sizes it says so about plain dark words on
+a pale page. So for every line of text it flags, the test takes a picture of
+just that line, where it is whole on the screen, and reads the two colours
+off it (`ZestCore/PixelContrast.swift`: the most common colour is what the
+words sit on; the colour that stands out most from it is the words). 4.5:1
+or better, inside the screen, no other text across it: the line is `known`,
+with the measured numbers. Fainter, cut off or covered: it fails, with the
+numbers. The pixels are kept (`contrast-*.ppm`, and a `.png` to look at),
+and `Scripts/measure_contrast.py` reads them again in the job and prints the
+table; a line the tests let through that reads under 4.5:1 there fails the
+job. To measure a rectangle of any screenshot by hand (points, not pixels):
+
+```bash
+python3 ios/Scripts/measure_contrast.py --png 01-login.png --rect 18,225,397,41 --scale 3
+```
+
+**The clock holds still in screenshot mode.** "7 MIN LEFT" on a card stays
+"7 MIN LEFT" for as long as the screen is open, so a check that takes two
+minutes is looking at the same words at the end as at the start.
+
+**A test that is stuck is stopped and explained.** Apple's audit does not
+always come back. `screens_job.sh` watches each pass: if a running test has
+written nothing for 75 seconds it prints `######## STUCK <test>`, saves a
+stack sample of the app and of the test runner (the main thread is printed;
+the whole sample is in the reports), and closes the app. The test then opens
+the screen again and runs the audit once more a little further along the
+page; a second time is a failure that says so. A pass that fails with no
+failed test prints why (`######## TIMED OUT ...`, or the runner's own
+error); a pass whose runner never started is run once more on a simulator
+started afresh.
 
 ## Ship to TestFlight
 

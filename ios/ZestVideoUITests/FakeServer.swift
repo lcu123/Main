@@ -201,6 +201,32 @@ struct ServerState {
         calls("POST", exactly: "/v1/videos", status: status)
     }
 
+    /// One try at registering a video, as the server saw it.
+    struct RegisterTry {
+        /// The video it was for ("" if the call carried none).
+        let videoId: String
+        /// "200", "409"... or "dropped" when the server was out of reach and
+        /// the call got no answer at all.
+        let answer: String
+        /// Seconds since the test's server was reset.
+        let at: Double
+
+        var gotThrough: Bool { answer == "200" }
+        var summary: String { "\(videoId.prefix(8)) \(answer) at \(Int(at)) s" }
+    }
+
+    /// Every `POST /v1/videos` in the order it reached the server, answered
+    /// or not.
+    var registerTries: [RegisterTry] {
+        requests.compactMap { entry in
+            guard (entry["method"] as? String) == "POST",
+                  ((entry["path"] as? String) ?? "").components(separatedBy: "?").first == "/v1/videos" else { return nil }
+            let body = (entry["body"] as? [String: Any]) ?? [:]
+            let answer = (entry["status"] as? Int).map(String.init) ?? (entry["status"] as? String) ?? "?"
+            return RegisterTry(videoId: (body["id"] as? String) ?? "", answer: answer, at: (entry["t"] as? Double) ?? 0)
+        }
+    }
+
     /// Requests to exactly this path (the query string is ignored).
     func calls(_ method: String, exactly path: String, status: Int? = nil) -> Int {
         requests.filter { entry in
