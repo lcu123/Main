@@ -21,7 +21,7 @@ Apple renumbers now and then.
 | 10 | Declaring background abilities it does not use | 2.5.4 | None declared. Uploads use the system's background transfer service, which needs no declaration. |
 | 11 | An account you can create but cannot delete | 5.1.1(v) | Nobody creates an account in the app: sign-in is issued by the employer from FieldRoutes. The tech can sign out (removes that phone), and the privacy policy says how to have details deleted. Say so in the review notes. |
 | 12 | An app meant for one company, on the public store | 3.2 | Ask for **unlisted distribution**: the app passes normal review but only people with the link can find it. See below. |
-| 13 | Screenshots that do not show the real app | 2.3 | CI photographs the real app on a 6.9-inch iPhone simulator at App Store size (1320 × 2868). The current set is in [`screens/`](screens/00-contact-sheet.png); upload a few of those (Today, Record, Recording, Save this video?, My videos). The picture behind the record screens is a drawn stand-in, because a simulator has no camera. |
+| 13 | Screenshots that do not show the real app | 2.3 | CI photographs the real app on a 6.9-inch iPhone simulator at App Store size (1320 × 2868). The current set is in [`screens/`](screens/00-contact-sheet.png); upload a few of those (My Route, Record, Recording, Save this video?, My Videos). The picture behind the record screens is a drawn stand-in, because a simulator has no camera. |
 | 14 | Too thin to be an app ("could be a web page") | 4.2 | It needs the camera, background upload, on-device speech and location. A web page cannot do those, which is why the brief chose a native app. |
 | 15 | A third-party login with no "Sign in with Apple" | 4.8 | Does not apply: there is no social or third-party login. |
 | 16 | Digital goods sold outside in-app purchase | 3.1.1 | Does not apply: nothing is sold in the app. |
@@ -89,7 +89,7 @@ These are the same six the app's own privacy manifest declares
 > the red button and record up to 15 seconds, then tap SAVE. Because the demo
 > stops have no real address, the app may show one warning asking you to
 > confirm the stop; tap SAVE ANYWAY. The video uploads by itself and appears
-> under MY VIDEOS. Demo videos are never sent to a customer.
+> under the My Videos tab. Demo videos are never sent to a customer.
 >
 > Recording is always started by the user and is clearly shown: a red border,
 > a RECORDING label and a countdown stay on screen until it stops.
@@ -99,7 +99,7 @@ These are the same six the app's own privacy manifest declares
 > device to check that the customer's name or street was said.
 >
 > Account deletion: users do not create accounts. A user can sign out under
-> MY VIDEOS, which removes the device. Deletion requests are handled by the
+> the My Videos tab, which removes the device. Deletion requests are handled by the
 > employer as described in the privacy policy.
 >
 > We are requesting unlisted distribution because the app is only useful to
