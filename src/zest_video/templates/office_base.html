@@ -63,6 +63,24 @@ details.act[open]{display:block;background:var(--soft);border-radius:10px;paddin
 .login input{width:100%;font-size:18px;padding:11px;margin:6px 0 14px}
 .login button{width:100%;font-size:17px;padding:12px}
 .scroll{overflow-x:auto}
+input[type=checkbox]{width:20px;height:20px;vertical-align:-4px;margin-right:6px;accent-color:var(--purple)}
+/* On a phone a wide table is unreadable sideways: each row becomes a card. */
+@media (max-width:760px){
+  main{padding:12px}
+  table.stack,table.stack tbody,table.stack tr,table.stack td{display:block;width:auto!important}
+  table.stack{border:0;background:none;overflow:visible}
+  table.stack th{display:none}
+  table.stack tr{background:#fff;border:1px solid var(--line);border-radius:12px;margin:0 0 10px;padding:6px 2px}
+  table.stack tr:first-child:has(th){display:none}
+  table.stack td{border:0;padding:5px 12px;overflow-wrap:anywhere}
+  table.stack td[data-l]::before{content:attr(data-l);display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+  table.stack td[data-l="Customer"]::before,table.stack td[data-l="Tech"]::before{display:none}
+  table.stack td:empty{display:none}
+  button,.btn,details.act summary{padding-top:10px;padding-bottom:10px}
+  input,select,textarea{font-size:16px}
+  form.inline{display:flex}
+  code{overflow-wrap:anywhere}
+}
 </style>
 </head>
 <body>

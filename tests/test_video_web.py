@@ -432,11 +432,11 @@ async def test_the_audit_trail_shows_who_did_what_and_filters_by_video(env: Env)
     await env.http.post(f"/office/video/{video.id}/pull", data={"csrf": csrf})
     page = await env.http.get("/office/audit")
     for action in ("login", "video_registered", "video_uploaded", "email_sent", "video_pulled"):
-        assert f"<td>{action}</td>" in page.text
+        assert f">{action}</td>" in page.text
     assert "Pat Rivera" in page.text and OWNER in page.text
     assert "jane@example.com" not in page.text and "j***@example.com" in page.text, "addresses are masked in the trail"
     one = await env.http.get(f"/office/audit?video={video.id}&action=video_pulled")
-    assert one.text.count("<td>video_pulled</td>") == 1 and "<td>login</td>" not in one.text
+    assert one.text.count(">video_pulled</td>") == 1 and ">login</td>" not in one.text
 
 
 async def test_the_office_can_watch_any_video_through_a_signed_url(env: Env) -> None:

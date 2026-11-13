@@ -8,17 +8,17 @@
   <a class="btn {{ '' if d == days else 'ghost' }}" href="/office/stats?days={{ d }}">{{ d }} days</a>
   {% endfor %}
 </p>
-<div class="scroll"><table>
+<div class="scroll"><table class="stack">
   <tr><th>Tech</th><th>Stops finished</th><th>Videos</th><th>Stops missed</th><th>Emailed</th><th>Watch rate</th><th>Average score</th></tr>
   {% for r in rows %}
   <tr>
-    <td><b>{{ r.name }}</b></td>
-    <td>{{ r.stops }}</td>
-    <td>{{ r.videos }}</td>
-    <td>{% if r.missed %}<span class="pill bad">{{ r.missed }}</span>{% else %}0{% endif %}</td>
-    <td>{{ r.sent }}</td>
-    <td>{% if r.watch_rate is not none %}{{ r.watch_rate }}%{% else %}<span class="muted">—</span>{% endif %}</td>
-    <td>{% if r.avg_stars is not none %}{{ r.avg_stars }}★ <small>({{ r.scores }})</small>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td data-l="Tech"><b>{{ r.name }}</b></td>
+    <td data-l="Stops finished">{{ r.stops }}</td>
+    <td data-l="Videos">{{ r.videos }}</td>
+    <td data-l="Stops missed">{% if r.missed %}<span class="pill bad">{{ r.missed }}</span>{% else %}0{% endif %}</td>
+    <td data-l="Emailed">{{ r.sent }}</td>
+    <td data-l="Watch rate">{% if r.watch_rate is not none %}{{ r.watch_rate }}%{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td data-l="Average score">{% if r.avg_stars is not none %}{{ r.avg_stars }}★ <small>({{ r.scores }})</small>{% else %}<span class="muted">—</span>{% endif %}</td>
   </tr>
   {% else %}
   <tr><td colspan="7">Nothing in this window yet.</td></tr>

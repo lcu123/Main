@@ -17,13 +17,13 @@
   <button class="ghost" type="submit">Refresh the list from FieldRoutes</button>
 </form>
 
-<div class="scroll"><table>
+<div class="scroll"><table class="stack">
   <tr><th>Tech</th><th>Signs in with</th><th>Phones signed in</th><th>Setup code</th></tr>
   {% for t in techs %}
   <tr>
-    <td><b>{{ t.fname }} {{ t.lname }}</b><br><small>#{{ t.id }} · {% if t.active %}active{% else %}<span class="pill off">inactive in FieldRoutes</span>{% endif %}</small></td>
-    <td><small>{% if t.email %}{{ mask(t.email) }}{% endif %}{% if t.email and t.phone %}<br>{% endif %}{% if t.phone %}•••-•••-{{ t.phone[-4:] }}{% endif %}{% if not t.phone %}{% if t.email %}<br>{% endif %}<span class="pill bad">no mobile number in FieldRoutes</span>{% endif %}</small></td>
-    <td>
+    <td data-l="Tech"><b>{{ t.fname }} {{ t.lname }}</b><br><small>#{{ t.id }} · {% if t.active %}active{% else %}<span class="pill off">inactive in FieldRoutes</span>{% endif %}</small></td>
+    <td data-l="Signs in with"><small>{% if t.email %}{{ mask(t.email) }}{% endif %}{% if t.email and t.phone %}<br>{% endif %}{% if t.phone %}•••-•••-{{ t.phone[-4:] }}{% endif %}{% if not t.phone %}{% if t.email %}<br>{% endif %}<span class="pill bad">no mobile number in FieldRoutes</span>{% endif %}</small></td>
+    <td data-l="Phones signed in">
       {% for d in devices.get(t.id, []) %}
       <form class="inline" method="post" action="/office/devices/{{ d.id }}/cut">
         <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -35,7 +35,7 @@
       <span class="muted">none yet</span>
       {% endfor %}
     </td>
-    <td>
+    <td data-l="Setup code">
       {% if t.active %}
       <form method="post" action="/office/techs/{{ t.id }}/code">
         <input type="hidden" name="csrf" value="{{ csrf }}">

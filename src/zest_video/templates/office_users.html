@@ -4,12 +4,12 @@
 {% block body %}
 <h1>Office users</h1>
 <p class="muted">People on this list sign in with a code emailed to them. Staff see the day, pull or move videos, clear flags and manage phones. Owners also get settings, stats, this page and the audit trail.</p>
-<table>
+<table class="stack">
   <tr><th>Email</th><th>Role</th><th></th></tr>
   {% for u in users %}
   <tr>
-    <td>{{ u.email }}{% if not u.active %} <span class="pill off">removed</span>{% endif %}</td>
-    <td>{{ u.role }}{% if u.email in fixed %} <small>(set on the server)</small>{% endif %}</td>
+    <td data-l="Email">{{ u.email }}{% if not u.active %} <span class="pill off">removed</span>{% endif %}</td>
+    <td data-l="Role">{{ u.role }}{% if u.email in fixed %} <small>(set on the server)</small>{% endif %}</td>
     <td>
       {% if u.email not in fixed and u.email != user.email %}
       <form class="inline" method="post" action="/office/users">

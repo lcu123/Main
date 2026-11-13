@@ -76,15 +76,15 @@
 
 {% if others %}
 <h2>Videos not tied to a stop</h2>
-<div class="scroll"><table>
+<div class="scroll"><table class="stack">
   <tr><th>Tech</th><th>What</th><th>Status</th><th>Actions</th></tr>
   {% for row in others %}
   <tr>
-    <td>{{ row.video.tech_first_name }}<br><small>{{ row.video.recorded_at | time(tz) }}</small></td>
-    <td>{% if row.video.customer_name %}{{ row.video.customer_name }}<br><small>{{ row.video.address }}</small>{% else %}Not on the list{% endif %}
+    <td data-l="Tech">{{ row.video.tech_first_name }}<br><small>{{ row.video.recorded_at | time(tz) }}</small></td>
+    <td data-l="What">{% if row.video.customer_name %}{{ row.video.customer_name }}<br><small>{{ row.video.address }}</small>{% else %}Not on the list{% endif %}
       {% if row.video.spoken_text %}<br><small>He said: “{{ row.video.spoken_text[:200] }}”</small>{% endif %}</td>
-    <td><span class="pill {{ row.tone }}">{{ row.label }}</span></td>
-    <td>{{ actions(row.video, back) }}</td>
+    <td data-l="Status"><span class="pill {{ row.tone }}">{{ row.label }}</span></td>
+    <td data-l="Actions">{{ actions(row.video, back) }}</td>
   </tr>
   {% endfor %}
 </table></div>
@@ -92,22 +92,22 @@
 
 {% for name, rows in groups %}
 <h2>{{ name }} <span class="muted" style="font-weight:400">· {{ rows | length }} stop{{ "" if rows | length == 1 else "s" }}</span></h2>
-<div class="scroll"><table>
+<div class="scroll"><table class="stack">
   <tr><th style="width:30%">Customer</th><th>Service</th><th>Checked in</th><th>Video</th><th>Score</th><th style="width:30%">Actions</th></tr>
   {% for row in rows %}
   <tr>
-    <td>{{ row.stop.name }}<br><small>{{ row.stop.address }}, {{ row.stop.city_line }} · #{{ row.stop.customer_id }}</small></td>
-    <td><small>{{ row.view.services | join(", ") }}</small></td>
-    <td><small>{% if row.view.check_in %}{{ row.view.check_in | time(tz) }}{% if row.view.check_out %} – {{ row.view.check_out | time(tz) }}{% endif %}{% else %}—{% endif %}</small></td>
-    <td><span class="pill {{ row.tone }}">{{ row.label }}</span>
+    <td data-l="Customer">{{ row.stop.name }}<br><small>{{ row.stop.address }}, {{ row.stop.city_line }} · #{{ row.stop.customer_id }}</small></td>
+    <td data-l="Service"><small>{{ row.view.services | join(", ") }}</small></td>
+    <td data-l="Checked in"><small>{% if row.view.check_in %}{{ row.view.check_in | time(tz) }}{% if row.view.check_out %} – {{ row.view.check_out | time(tz) }}{% endif %}{% else %}—{% endif %}</small></td>
+    <td data-l="Video"><span class="pill {{ row.tone }}">{{ row.label }}</span>
       {% if row.video %}
         <br><small>{{ row.video.tech_first_name }} · {{ row.video.recorded_at | time(tz) }}
         {% if row.video.override %} · sent past a warning{% endif %}
         {% if row.video.time_check == "mismatch" %} · outside check-in time{% endif %}
         {% if row.video.view_count %} · played {{ row.video.view_count }}×{% endif %}</small>
       {% endif %}</td>
-    <td>{% if row.score %}{{ row.score.stars }}★{% if row.score.comment %}<br><small>“{{ row.score.comment[:160] }}”</small>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
-    <td>{% if row.video %}{{ actions(row.video, back) }}{% endif %}</td>
+    <td data-l="Score">{% if row.score %}{{ row.score.stars }}★{% if row.score.comment %}<br><small>“{{ row.score.comment[:160] }}”</small>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td data-l="Actions">{% if row.video %}{{ actions(row.video, back) }}{% endif %}</td>
   </tr>
   {% endfor %}
 </table></div>
