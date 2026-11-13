@@ -4,6 +4,21 @@ import Foundation
 /// recording, while the tech is still at the stop. If at least two agree on
 /// the customer the video goes with nobody else involved. If not, the tech
 /// sees one warning and fixes it himself (or sends anyway, which is logged).
+///
+/// The three keys are not equally good. Three real days of this office's
+/// check-ins (106 stops, 4 techs) showed what the check-in is worth:
+///
+/// - A check-in that MATCHES says little. The median drive between stops is
+///   16.6 minutes, so a video filmed at the right stop also falls inside a
+///   neighbouring stop's check-in window for 46 to 59% of stops when 20
+///   minutes of slack are allowed, 25 to 32% with 10, and 15 to 17% with 5.
+/// - A check-in that does NOT match means something.
+/// - Two of the four techs tap check-in and check-out within a minute at
+///   about a fifth of their stops (22 of 106), and 6 of 106 stops were left
+///   checked in for over 90 minutes (104 to 347).
+///
+/// So the check-in is a supporting key only. It can be the second key
+/// beside the spoken name or the GPS; it can never send a video on its own.
 public enum TwoKeys {
     public enum Key: String, CaseIterable, Equatable, Sendable {
         case spoken
@@ -33,8 +48,11 @@ public enum TwoKeys {
 
     public static let requiredMatches = 2
 
-    public static func verdict(_ signals: Signals) -> Verdict {
-        verdict(signals, required: requiredMatches)
+    /// - Parameter spokenMiss: what kind of spoken mismatch it was, if it
+    ///   was one. When the words named another stop, the verdict is never
+    ///   clean.
+    public static func verdict(_ signals: Signals, spokenMiss: SpokenMiss? = nil) -> Verdict {
+        verdict(signals, required: requiredMatches, spokenMiss: spokenMiss)
     }
 
     /// The verdict for one stop.
@@ -44,18 +62,33 @@ public enum TwoKeys {
     /// with no check-in has no check-in key. When the spoken key is the only
     /// one there is, a spoken match is enough: asking for a second key that
     /// cannot exist would warn on every video for that stop for ever.
-    public static func verdict(_ signals: Signals, stop: Stop) -> Verdict {
+    ///
+    /// One thing overrides all of it. When the words fit ANOTHER stop on
+    /// today's list better (`spokenMiss == .otherStop`: he said a different
+    /// customer's name), the video is never sent without asking, whatever
+    /// the GPS and the check-in say and whatever kind of stop it is. The GPS
+    /// cannot tell next-door houses apart and a neighbour's check-in window
+    /// is often still open, so both can agree with the wrong house; the
+    /// words are the one key that can tell. A mismatch because no name was
+    /// heard at all (`.noName`) is only a missing key: with the GPS and the
+    /// check-in both agreeing, the video still goes.
+    public static func verdict(_ signals: Signals, stop: Stop, spokenMiss: SpokenMiss? = nil) -> Verdict {
         var readable = 1                                  // the spoken key
         if stop.coordinate != nil { readable += 1 }       // the GPS key
         if stop.checkIn != nil { readable += 1 }          // the check-in key
-        return verdict(signals, required: min(requiredMatches, readable))
+        return verdict(signals, required: min(requiredMatches, readable), spokenMiss: spokenMiss)
     }
 
-    private static func verdict(_ signals: Signals, required: Int) -> Verdict {
+    private static func verdict(_ signals: Signals, required: Int, spokenMiss: SpokenMiss?) -> Verdict {
         let all: [(Key, SignalResult)] = [(.spoken, signals.spoken), (.gps, signals.gps), (.checkIn, signals.checkIn)]
         let matches = all.filter { $0.1 == .match }.count
+        // The check-in only ever supports: one of the keys that match has
+        // to be the spoken name or the GPS, however few keys are asked for.
+        let strongMatch = signals.spoken == .match || signals.gps == .match
+        // He said another customer's name: never without asking.
+        let contradicted = spokenMiss == .otherStop
         return Verdict(
-            clean: matches >= required,
+            clean: matches >= required && strongMatch && !contradicted,
             matches: matches,
             mismatched: all.filter { $0.1 == .mismatch }.map { $0.0 },
             unknown: all.filter { $0.1 == .unknown }.map { $0.0 }
@@ -68,10 +101,17 @@ public enum TwoKeys {
     /// circle (capped) is added to the allowed distance so a fuzzy fix on the
     /// right lawn is not called a mismatch.
     public static func gpsSignal(fix: VideoLocation?, stop: Stop, farMeters: Double) -> SignalResult {
-        guard let fix, let pin = stop.coordinate else { return .unknown }
-        if fix.accuracyM < 0 || fix.accuracyM > 500 { return .unknown }
+        guard let fix = usable(fix), let pin = stop.coordinate else { return .unknown }
         let distance = Geo.distanceMeters(fix.coordinate, pin)
         return distance <= farMeters + min(fix.accuracyM, 100) ? .match : .mismatch
+    }
+
+    /// A fix worth going by: one whose error circle is known and under 500
+    /// metres. A wider one says nothing about which house, or even which
+    /// street, the phone is at.
+    public static func usable(_ fix: VideoLocation?) -> VideoLocation? {
+        guard let fix, fix.accuracyM >= 0, fix.accuracyM <= 500 else { return nil }
+        return fix
     }
 
     /// For the confirm screen, before recording: is the phone clearly far away?
@@ -84,16 +124,32 @@ public enum TwoKeys {
         }
     }
 
-    public static let checkInSlackSeconds: TimeInterval = 20 * 60
+    /// How far outside the check-in window a video may be filmed and still
+    /// count as matching it: 10 minutes. It was 20; with the median drive
+    /// between stops at 16.6 minutes, 20 let a video at the right stop match
+    /// a neighbour's window too for about half of all stops (see the figures
+    /// at the top of this file). Some slack is still needed: a fifth of
+    /// stops are checked in and out within the same minute.
+    public static let checkInSlackSeconds: TimeInterval = 10 * 60
+
+    /// How long a check-in that was never closed is taken at its word: 90
+    /// minutes. In the real days, 6 of 106 stops were left checked in for
+    /// longer (104 to 347 minutes), the tech long gone to other houses.
+    /// After this an open check-in says nothing either way.
+    public static let openCheckInTrustSeconds: TimeInterval = 90 * 60
 
     /// Check-in key: does the record time fall inside the stop's FieldRoutes
     /// check-in window? Check-in is a hint, not proof (some stops are checked
-    /// in and out a second apart), so the window gets generous slack.
+    /// in and out a second apart), so the window gets some slack.
     public static func checkInSignal(recordedAt: Date, stop: Stop, slack: TimeInterval = checkInSlackSeconds) -> SignalResult {
         guard let checkIn = stop.checkIn else { return .unknown }
         let opens = checkIn.addingTimeInterval(-slack)
         if recordedAt < opens { return .mismatch }
-        guard let checkOut = stop.checkOut else { return .match }
+        guard let checkOut = stop.checkOut else {
+            // Still open. Left open for hours, it tells nothing about where
+            // the tech is now: neither for nor against.
+            return recordedAt <= checkIn.addingTimeInterval(openCheckInTrustSeconds) ? .match : .unknown
+        }
         return recordedAt <= checkOut.addingTimeInterval(slack) ? .match : .mismatch
     }
 
@@ -104,14 +160,30 @@ public enum TwoKeys {
     public static func signals(
         transcript: String?, fix: VideoLocation?, recordedAt: Date, stop: Stop, all: [Stop], farMeters: Double,
         techName: String? = nil
-    ) -> (signals: Signals, better: Stop?) {
+    ) -> (signals: Signals, better: Stop?, spokenMiss: SpokenMiss?) {
         let spoken = SpokenMatcher.evaluate(transcript: transcript, target: stop, all: all, techName: techName)
         let signals = Signals(
             spoken: spoken.result,
             gps: gpsSignal(fix: fix, stop: stop, farMeters: farMeters),
             checkIn: checkInSignal(recordedAt: recordedAt, stop: stop)
         )
-        return (signals, spoken.better)
+        return (signals, spoken.better, spoken.miss)
+    }
+
+    /// For the audit trail: the three keys, and for a spoken mismatch which
+    /// kind it was (`spokenMiss`: "other_stop" or "no_name") and, when the
+    /// words pointed at one other stop, that customer (`soundedLike`). The
+    /// office can then tell "he said the neighbour's name" from "he forgot
+    /// to say a name".
+    public static func auditDetail(_ signals: Signals, spokenMiss: SpokenMiss?, better: Stop?) -> [String: String] {
+        var detail = ["spoken": signals.spoken.rawValue, "gps": signals.gps.rawValue, "checkIn": signals.checkIn.rawValue]
+        if signals.spoken == .mismatch, let spokenMiss {
+            detail["spokenMiss"] = spokenMiss.rawValue
+            if spokenMiss == .otherStop, let better {
+                detail["soundedLike"] = String(better.customerId)
+            }
+        }
+        return detail
     }
 }
 

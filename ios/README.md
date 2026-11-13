@@ -77,6 +77,32 @@ No third-party code. Apple frameworks only, system font, one bundled image
   "Another tech already recorded this stop. You can record your own too.
   The customer gets both." with RECORD VIDEO, which is a plain new
   recording.
+- **Which stop is he at?** (`StopRanker`) An open check-in puts a stop first
+  only when it is believable now: with a GPS fix the phone has to be at the
+  stop (the far-away distance), with none the check-in has to be under 90
+  minutes old. Otherwise the nearest stop by GPS comes first. With no
+  usable location: a stop he completed within the last hour and has not
+  filmed ("JUST FINISHED": he is standing there), then the stops still to
+  do in route order, then the ones finished longer ago. Three real days of
+  this office's check-ins showed why: stops left checked in for hours, and
+  a fifth of stops checked in, out and completed within a minute, twenty
+  minutes before the work there was done.
+- **Two keys** (`TwoKeys`): the spoken name, the GPS and the check-in time.
+  Two must agree, and one of the two has to be the name or the GPS: the
+  check-in only supports (10 minutes of slack; a check-in left open over 90
+  minutes says nothing). One thing overrides it all: if the words named
+  ANOTHER stop on today's list (`SpokenMiss.otherStop`), the video never
+  goes without asking, whatever the GPS and the check-in say: that is the
+  wrong house next door, which both of those can agree with. A mismatch
+  because no name was heard at all (`.noName`) is only a missing key. The
+  audit events say which it was. Every combination is a row of a table in
+  `CheckInSignalsTests`.
+- **Large text.** At the two largest text sizes a page can be taller than
+  the room above its buttons and scrolls. Then the customer's card is drawn
+  smaller and, on the screens with a message, the words come before the
+  card, so what has to be read is in view as the screen opens. The colours
+  of words are held to 4.5 to 1 or better on every ground they sit on
+  (`AppSourceRulesTests` reads them from `Theme.swift`).
 - **AppModel** is the one router. A screen is a value of `route`; there is no
   navigation stack to swipe back through.
 - **A video's life**: record to `.mov` → re-wrap as a fast-start `.mp4`
@@ -143,7 +169,7 @@ in that file).
 cd ios/ZestCore && swift test
 ```
 
-runs the logic tests anywhere, Linux included (201 tests). Among them are
+runs the logic tests anywhere, Linux included (237 tests). Among them are
 rules about the app's own source, checked by reading the files
 (`AppSourceRulesTests`): no photo-library key or call, no share sheet,
 Apple frameworks only, and every pair of colours the screens use has the
@@ -163,6 +189,12 @@ a later edit cannot quietly make uploads wait for Wi-Fi
 sign-in, real storage on disk, the real upload queue, real screens. Every
 test starts from a clean app and a clean server, and checks **both** what is
 on the screen and what the server got.
+
+**The clock.** No test leans on how long the run took. The practice server
+moves its "just finished" stop with the clock, and the tests that take many
+steps ask for a 60-minute change window. The few tests that count days
+(old clips, the twenty-video day) skip themselves, with a plain message, if
+midnight is minutes away.
 
 **The server** is `Scripts/fake_server.py` (standard-library Python). It
 speaks `docs/video/API.md`, keeps everything in memory, and can be told to
@@ -206,21 +238,22 @@ issues the token when a test resets it), so only the sign-in tests type a
 number and a code. A test that kills the app starts it again *without* the
 reset: what the app kept is what is being tested.
 
-**What is covered** (76 tests):
+**What is covered** (78 tests):
 
 | Class | What it proves |
 | --- | --- |
 | `SignInUITests` | the number and the code typed one key at a time arrive whole and are sent once; a country code in front; too short and too long; wrong and right code; the loading line right after sign-in; email instead and back; a new code; both ways back; Terms and Privacy; sign out with its question |
 | `RouteUITests` | header counts, nearest stop first, both tabs, locked stop, WRONG STOP, the far-away warning |
-| `RecordUITests` | record → SAVE → one register, the whole file once, one complete; FLIP, BACK, ending early; RECORD AGAIN; the recommend switch; the two-keys warning both ways; change and delete inside ten minutes; not-on-my-list (SENT TO OFFICE, no promise of an email, deletable for ten minutes and not after); double taps; and that the audit events (record, retake, override) really reach the server for the right customer |
+| `RecordUITests` | record → SAVE → one register, the whole file once, one complete; FLIP, BACK, ending early; RECORD AGAIN; the recommend switch; the two-keys warning both ways; another customer's name said where the place and the time fit still asks ("It sounded like…"), a forgotten name at the right house does not; change and delete inside ten minutes; not-on-my-list (SENT TO OFFICE, no promise of an email, deletable for ten minutes and not after); double taps; and that the audit events (record, retake, override) really reach the server for the right customer |
 | `KillUITests` | the app killed mid-recording, on review, mid-upload, before "complete" is answered, and right after SAVE: after it is started again there is exactly one video on the server |
-| `NetworkUITests` | 500s, no server, an expired upload address, "not uploaded", signed out by the server, update required, a stop locked by the server, starting with no signal; "Do not delete this app" while a video waits, gone once it is sent; and a long day: twelve videos saved with no server, all arriving once and in order when it is back |
+| `NetworkUITests` | 500s, no server, an expired upload address, "not uploaded", signed out by the server, update required, a stop locked by the server, starting with no signal; "Do not delete this app" while a video waits, gone once it is sent |
+| `LongDayUITests` | the brief's own number: twenty videos saved in a row with no server, all twenty arriving once each and in order when it is back, the phone left holding no files, and My Videos saying WAITING, never SENT, until each one is really there |
 | `StorageUITests` | under 200 MB free the camera is never reached: from THIS IS IT, from RECORD for a stop not on the list, and from both RECORD AGAIN buttons, with the clip already made still there to save; under 500 MB one warning, and RECORD ANYWAY reaches the camera |
 | `DraftUITests` | with a clip unsaved, tapping another stop opens the question for the clip's own customer; a clip left since yesterday is asked about on the next open (SAVE or DELETE VIDEO, the day it was filmed, no RECORD AGAIN), saved for that day, and does not count for today's stop; a week-old one deleted; only one older than 14 days is dropped by itself, and logged |
 | `WithoutLocationUITests` | location refused: the stops show in route order, a video is recorded and arrives once with the GPS key "unknown" and no location, and nothing crashes |
-| `TeamUITests` | one video per tech per property. The lead is not shown another tech's video, his own is taken with no 409, and RECORD AGAIN replaces only his own. The helper sees DONE BY TEAM, gets no RECORD AGAIN, DELETE or CALL OFFICE on the lead's video, records his own beside it, and deleting his own leaves the lead's alone |
+| `TeamUITests` | one video per tech per property. The lead is not shown another tech's video, his own is taken with no 409, and RECORD AGAIN replaces only his own. The helper sees DONE BY TEAM, gets no RECORD AGAIN, DELETE or CALL OFFICE on the lead's video, records his own beside it, and deleting his own leaves the lead's alone and the stop reads DONE BY TEAM again. After a delete the app asks the server for the day again; for the lead the stop simply reopens |
 | `BackgroundUploadUITests` | informational: what the simulator does with the real background upload session. Skipped, with the recorded error, if the upload never arrives |
-| `ScreensUITests` | every screen (19), opened with made-up data: its main actions are on the screen, tappable and not overlapping, nothing runs off the side; the gloves rule (every main button at least 76 points tall and as wide as the screen less its gutters, the record button and ring at least 120 across, and after sign-in nothing to type, pick, slide or swipe); and Apple's accessibility audit (contrast, 44-point tap targets, clipped text, descriptions, Dynamic Type) finds nothing unexplained, with the YES / NO switch looked at in both states. Also the route of awkward names, where nothing may be cut off. Run by the `sizes` jobs on several simulators and text sizes |
+| `ScreensUITests` | every screen (19), opened with made-up data: its main actions are on the screen, tappable and not overlapping, nothing runs off the side; the gloves rule (every main button at least 76 points tall and as wide as the screen less its gutters, the record button and ring at least 120 across, and after sign-in nothing to type, pick, slide or swipe); every page that is taller than its room scrolls every line of it clear of the bars; and Apple's accessibility audit (contrast, 44-point tap targets, clipped text, descriptions, Dynamic Type) finds nothing unexplained, each row judged where it can be seen whole (one half under the tab bar is scrolled clear and audited again), with the YES / NO switch looked at in both states. Also the route of awkward names, where nothing may be cut off. Run by the `sizes` jobs on several simulators and text sizes |
 | `PerformanceUITests` | informational: launch time, time to My Route, memory on each screen and over ten videos, what is left on disk. Run by the `performance` job |
 
 Timing a tap to the tenth of a second is not something a UI test does well,
@@ -305,7 +338,7 @@ Those need a real phone.
 | `app` | macOS | generates the project, builds for an iPhone simulator, runs the unit tests |
 | `screens` | macOS | takes a picture of every screen in the simulator; download the `screens` artifact |
 | `ui-tests` | macOS, jobs `a`, `b` and `d` side by side (plus `c`, informational) | starts the fake server, runs the UI tests in the simulator; on a failure, the log names the test, the assertion and what the server saw |
-| `sizes` | macOS, three jobs side by side | pictures of every screen on the smallest iPhone (plus the awkward names), a 6.1-inch iPhone, an iPad, and at the largest text sizes; then `ScreensUITests` on each. Artifacts `screens-small`, `screens-odd-names`, `screens-mid`, `screens-ipad`, `screens-large-text` |
+| `sizes` | macOS, four jobs side by side | pictures of every screen on the smallest iPhone (plus the awkward names), a 6.1-inch iPhone, an iPad, and at the largest text sizes; then `ScreensUITests` on each. Artifacts `screens-small`, `screens-odd-names`, `screens-mid`, `screens-ipad`, `screens-large-text`, `screens-largest-accessibility` |
 | `performance` | macOS, informational | `PerformanceUITests`, plus the size of a Release build for a phone; prints a table and uploads it as `performance.txt` |
 | `testflight` | macOS, manual | archives and uploads to App Store Connect |
 
@@ -352,7 +385,8 @@ The `sizes` jobs take the same pictures on other simulators
 | `screens-odd-names` | the same phone, with a route of awkward customers |
 | `screens-mid` | a 6.1-inch iPhone |
 | `screens-ipad` | an iPad, where this iPhone-only app runs in an iPhone-sized window, as Apple's reviewer may see it |
-| `screens-large-text` | the big iPhone with the text size at the largest the app follows, and at the very largest accessibility size (which should look the same: the app stops growing there) |
+| `screens-large-text` | the big iPhone with the text size at the largest the app follows |
+| `screens-largest-accessibility` | the same phone at the very largest accessibility size (which should look the same: the app stops growing one step sooner) |
 
 `Scripts/pick_simulator.py` chooses each simulator from what the Mac has, by
 its real screen size rather than its name.

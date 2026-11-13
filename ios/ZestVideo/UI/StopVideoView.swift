@@ -12,6 +12,8 @@ struct StopVideoView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var queue: QueueStore
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     @State private var confirmingDelete = false
     @State private var busy = false
 
@@ -39,18 +41,20 @@ struct StopVideoView: View {
             // A teammate's video. Nothing here can change it; this tech can
             // add his own, and the customer gets both.
             Screen(bar: "Video", onBack: goBack) {
-                headline(summary, chip: StatusChip(text: summary.statusText, tone: .good))
-                BodyText("Another tech already recorded this stop.", bold: true)
-                BodyText("You can record your own too. The customer gets both.")
+                page(summary, chip: StatusChip(text: summary.statusText, tone: .good)) {
+                    BodyText("Another tech already recorded this stop.", bold: true)
+                    BodyText("You can record your own too. The customer gets both.")
+                }
             } footer: {
                 BigButton(title: "RECORD VIDEO", kind: .primary) { app.recordOwn(summary) }
                 back
             }
         case .waiting:
             Screen(bar: "Video", onBack: goBack) {
-                headline(summary, chip: StatusChip(text: summary.statusText, tone: .waiting))
-                BodyText("This video is waiting to send.", bold: true)
-                BodyText("It sends by itself when there is signal. You do not need to do anything.")
+                page(summary, chip: StatusChip(text: summary.statusText, tone: .waiting)) {
+                    BodyText("This video is waiting to send.", bold: true)
+                    BodyText("It sends by itself when there is signal. You do not need to do anything.")
+                }
             } footer: {
                 back
             }
@@ -58,9 +62,10 @@ struct StopVideoView: View {
             locked(summary, message: VideoWords.locked(toOffice: summary.toOffice))
         case .blocked(let message):
             Screen(bar: "Video", onBack: goBack) {
-                headline(summary, chip: nil)
-                Banner(text: message, tone: .attention)
-                officeNumber
+                page(summary, chip: nil) {
+                    Banner(text: message, tone: .attention)
+                    officeNumber
+                }
             } footer: {
                 if app.canCallOffice {
                     BigButton(title: "CALL OFFICE", kind: .primary) { app.callOffice() }
@@ -76,16 +81,17 @@ struct StopVideoView: View {
 
     private func changeable(_ summary: VideoSummary, secondsLeft: Int) -> some View {
         Screen(bar: "Video", onBack: goBack) {
-            headline(summary, chip: StatusChip(
+            page(summary, chip: StatusChip(
                 text: summary.statusText, tone: summary.statusText.hasPrefix("SENT") ? .good : .waiting
-            ))
-            // Short, so all of it shows above the three buttons. A video
-            // not on the list goes to the office, not to a customer.
-            BodyText(
-                HoldWindow.text(secondsLeft: secondsLeft, toOffice: summary.toOffice)
-                    + " " + VideoWords.afterTheWindow(toOffice: summary.toOffice),
-                bold: true
-            )
+            )) {
+                // Short, so all of it shows above the three buttons. A video
+                // not on the list goes to the office, not to a customer.
+                BodyText(
+                    HoldWindow.text(secondsLeft: secondsLeft, toOffice: summary.toOffice)
+                        + " " + VideoWords.afterTheWindow(toOffice: summary.toOffice),
+                    bold: true
+                )
+            }
         } footer: {
             BigButton(title: "RECORD AGAIN", kind: .primary) { app.recordAgain(summary) }
             BigButton(title: "DELETE VIDEO", kind: .dark) { confirmingDelete = true }
@@ -114,9 +120,10 @@ struct StopVideoView: View {
 
     private func locked(_ summary: VideoSummary, message: String) -> some View {
         Screen(bar: "Video", onBack: goBack) {
-            headline(summary, chip: StatusChip(text: summary.toOffice ? VideoWords.sentToOffice : VideoWords.sent, tone: .good))
-            BodyText(message, bold: true)
-            officeNumber
+            page(summary, chip: StatusChip(text: summary.toOffice ? VideoWords.sentToOffice : VideoWords.sent, tone: .good)) {
+                BodyText(message, bold: true)
+                officeNumber
+            }
         } footer: {
             if app.canCallOffice {
                 BigButton(title: "CALL OFFICE", kind: .primary) { app.callOffice() }
@@ -138,6 +145,24 @@ struct StopVideoView: View {
     /// card itself: these screens have up to three buttons below.
     private func headline(_ summary: VideoSummary, chip: StatusChip?) -> some View {
         StopHeadline(name: summary.name, address: summary.address, style: .tight, chip: chip)
+    }
+
+    /// The customer's card and the words about the video. The card comes
+    /// first. With the phone's text at its largest sizes the page is taller
+    /// than the room above the buttons and has to be scrolled: then the
+    /// words come first, so what has to be read is never the part that is
+    /// out of sight behind the buttons.
+    @ViewBuilder
+    private func page<Words: View>(
+        _ summary: VideoSummary, chip: StatusChip?, @ViewBuilder words: () -> Words
+    ) -> some View {
+        if LargeType.isOn(typeSize) {
+            words()
+            headline(summary, chip: chip)
+        } else {
+            headline(summary, chip: chip)
+            words()
+        }
     }
 
     /// On a device that cannot place a call, the number in words instead.

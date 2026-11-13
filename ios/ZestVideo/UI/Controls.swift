@@ -60,7 +60,7 @@ struct BigButtonStyle: ButtonStyle {
     static func foreground(_ kind: BigButton.Kind) -> Color {
         switch kind {
         case .primary, .dark: return Theme.white
-        case .plain: return Theme.blue
+        case .plain: return Theme.blueInk
         case .attention: return Theme.ink
         }
     }
@@ -295,7 +295,7 @@ struct TopBar: View {
                 if let detail {
                     Text(detail)
                         .zestFont(.label)
-                        .foregroundColor(Theme.blue)
+                        .foregroundColor(Theme.blueInk)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                 }
@@ -385,6 +385,15 @@ struct TabBar: View {
     }
 }
 
+/// The two largest text sizes the app follows. At these a page of text is
+/// often taller than the room above its buttons (it scrolls), so screens
+/// put what has to be read first and draw the customer's card smaller.
+enum LargeType {
+    static func isOn(_ size: DynamicTypeSize) -> Bool {
+        size >= .xxLarge
+    }
+}
+
 // MARK: - Surfaces
 
 /// A white card with large round corners and a soft shadow.
@@ -465,9 +474,9 @@ struct SmallLabel: View {
 /// "RECORD VIDEO", "CLOSEST STOP". Blue unless told otherwise.
 struct ActionText: View {
     let text: String
-    var color: Color = Theme.blue
+    var color: Color = Theme.blueInk
 
-    init(_ text: String, color: Color = Theme.blue) {
+    init(_ text: String, color: Color = Theme.blueInk) {
         self.text = text
         self.color = color
     }
@@ -488,7 +497,7 @@ extension StateTone {
     /// The color of the words.
     var ink: Color {
         switch self {
-        case .action: return Theme.blue
+        case .action: return Theme.blueInk
         case .good: return Theme.darkGreen
         case .waiting: return Theme.ink
         case .problem: return Theme.white
@@ -606,7 +615,18 @@ struct StopHeadline: View {
     /// The video's state, shown at the right of the CUSTOMER label.
     var chip: StatusChip?
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// With the phone's text at its two largest sizes, the tight card (the
+    /// one on screens that also carry a message and up to three buttons) is
+    /// drawn as the small one: the name is still larger than ordinary text
+    /// is at the usual size, and the message under it has room to show.
+    private var shown: Style {
+        style == .tight && LargeType.isOn(typeSize) ? .small : style
+    }
+
     var body: some View {
+        let style = shown
         Card {
             VStack(alignment: .leading, spacing: style == .small ? 4 : 6) {
                 if let chip {
@@ -669,7 +689,7 @@ struct StopHeadline: View {
 /// An underlined word that does something. At least 48 pt tall to tap.
 struct TextLink: View {
     let title: String
-    var color: Color = Theme.blue
+    var color: Color = Theme.blueInk
     /// For UI tests.
     var identifier: String = ""
     let action: () -> Void

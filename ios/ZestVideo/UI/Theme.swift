@@ -21,9 +21,17 @@ import ZestCore
 enum Theme {
     // MARK: Colors
 
-    /// Anything that can be tapped: buttons, action words, the active box.
+    /// Anything that can be tapped: the fill of the main button, borders,
+    /// the round badges. White words on it are large and bold (4.1 to 1).
     static let blue = Color(hex: 0x217DE7)
     static let bluePressed = Color(hex: 0x1A64B9)
+    /// Blue WORDS on a light ground: action words on a card ("RECORD
+    /// VIDEO"), the words of a white button, links, the date in the top bar.
+    /// A shade deeper than `blue`, so they read in bright sun: 5.5 to 1 on
+    /// white, 5.0 on the page, and still 4.5 on the pale tints. (`blue`
+    /// itself is 4.1 on white and 3.7 on the page: fine as a fill, too
+    /// faint for words.)
+    static let blueInk = Color(hex: 0x1A68C4)
     /// The back arrow and its round button. The arrow is a deep cyan: the
     /// lighter #00A7E1 it started as was only 2.3 to 1 against the pale
     /// circle, too faint in bright sun. This one is 4.7 to 1.
@@ -50,7 +58,9 @@ enum Theme {
     /// Main text.
     static let ink = Color(hex: 0x333333)
     /// Small labels and second-rank text. Never used under the minimum size.
-    static let softInk = Color(hex: 0x666666)
+    /// 7 to 1 on white and 6.4 on the page (it was #666666, 5.7 and 5.3:
+    /// enough by the book, faint for old eyes in bright sun).
+    static let softInk = Color(hex: 0x595959)
 
     /// Sent and saved. White on it is about 4.7 to 1.
     static let green = Color(hex: 0x1E8449)

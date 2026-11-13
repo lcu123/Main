@@ -54,6 +54,9 @@ struct CheckResult: Equatable {
     /// A different stop the spoken words fit better.
     var better: Stop?
     var transcript: String?
+    /// For a spoken mismatch: did the words name another stop on the list
+    /// (a contradiction, never sent without asking), or was no name heard?
+    var spokenMiss: SpokenMiss?
 }
 
 /// Starting values for the screens' own state.
@@ -196,6 +199,11 @@ final class AppModel: ObservableObject {
     private var afterStorage: (@MainActor () -> Void)?
     /// Videos the tech deleted or recorded over in this run of the app.
     private var droppedVideoIDs = Set<String>()
+    /// A teammate's video for a stop, as an earlier answer for the day
+    /// showed it (see `TeamVideoMemory`).
+    private var teamVideos: [Int: StopVideo] = [:]
+    /// The route was asked for again while it was already being fetched.
+    private var refreshQueued = false
 
     private enum Key {
         static let tech = "tech"
@@ -251,7 +259,10 @@ final class AppModel: ObservableObject {
             let dropped = local?.phase == .deleting || droppedVideoIDs.contains(video.id)
             guard lost || dropped else { return stop }
             var copy = stop
-            copy.video = nil
+            // His own video is gone. If a teammate's covered this stop
+            // before he recorded his own, it covers it again; if not, the
+            // stop is open.
+            copy.video = TeamVideoMemory.whenOwnVideoIsGone(customerId: stop.customerId, remembered: teamVideos)
             return copy
         }
     }
@@ -262,7 +273,9 @@ final class AppModel: ObservableObject {
         if let draft, draftStanding == .today, let customerId = draft.target.customerId, !draft.target.notOnMyList {
             haveVideo.insert(customerId)
         }
-        return StopRanker.rank(stops: stops, location: location.freshFix(maxAge: 300)?.coordinate, haveVideo: haveVideo)
+        return StopRanker.rank(
+            stops: stops, fix: location.freshFix(maxAge: 300), farMeters: config.farMeters, haveVideo: haveVideo
+        )
     }
 
     var waitingCount: Int { queue.items.waitingCount }
@@ -406,6 +419,7 @@ final class AppModel: ObservableObject {
         // stays: the tech is asked about it (see `askAboutEarlierDraft`).
         if let today, !AppModel.isCurrent(day: today.date, defaults: defaults) {
             self.today = nil
+            teamVideos = [:]
             todayStore.wipe()
             queue.pruneOldDays(today: workingDay)
         }
@@ -506,9 +520,23 @@ final class AppModel: ObservableObject {
     // MARK: - Today
 
     func refreshToday() async {
-        guard signedIn, !refreshing else { return }
+        guard signedIn else { return }
+        // Asked again while a fetch is in the air (a video was just deleted
+        // or confirmed, say): that fetch may have left before the change, so
+        // one more goes out as soon as it is back.
+        if refreshing {
+            refreshQueued = true
+            return
+        }
         refreshing = true
         defer { refreshing = false }
+        repeat {
+            refreshQueued = false
+            await fetchToday()
+        } while refreshQueued && signedIn
+    }
+
+    private func fetchToday() async {
         do {
             let fresh = try await api.today()
             today = fresh
@@ -528,6 +556,9 @@ final class AppModel: ObservableObject {
             // Dropped videos the server no longer lists as live can be forgotten.
             let stillLive = Set(fresh.stops.compactMap { $0.liveVideo?.id })
             droppedVideoIDs = droppedVideoIDs.intersection(stillLive)
+            // A teammate's video the server showed for a stop is remembered
+            // for as long as the server has not said the stop is open.
+            teamVideos = TeamVideoMemory.after(fresh.stops, remembered: teamVideos)
             if fresh.config.minBuild > APIClient.build {
                 route = .updateRequired
             }
@@ -626,6 +657,7 @@ final class AppModel: ObservableObject {
         api.token = nil
         tech = nil
         today = nil
+        teamVideos = [:]
         todayStore.wipe()
         defaults.removeObject(forKey: Key.tech)
         defaults.removeObject(forKey: Key.serverDay)
@@ -1007,19 +1039,25 @@ final class AppModel: ObservableObject {
             techName: tech?.firstName
         )
         // Only keys that can be read for this stop count towards the two.
-        let verdict = TwoKeys.verdict(outcome.signals, stop: stop)
-        check = .done(CheckResult(
+        // And if the words named another stop on the list, it is never
+        // clean, whatever the other two keys say.
+        let verdict = TwoKeys.verdict(outcome.signals, stop: stop, spokenMiss: outcome.spokenMiss)
+        let result = CheckResult(
             signals: outcome.signals, clean: verdict.clean, reasons: verdict.reasons,
-            better: verdict.clean ? nil : outcome.better, transcript: transcript
-        ))
+            better: verdict.clean ? nil : outcome.better, transcript: transcript,
+            spokenMiss: outcome.spokenMiss
+        )
+        check = .done(result)
         if !verdict.clean {
             Haptics.warning()
-            events.log(.twoKeysWarning, videoId: draft.id, customerId: draft.target.customerId, detail: signalDetail(outcome.signals))
+            events.log(.twoKeysWarning, videoId: draft.id, customerId: draft.target.customerId, detail: signalDetail(result))
         }
     }
 
-    private func signalDetail(_ signals: Signals) -> [String: String] {
-        ["spoken": signals.spoken.rawValue, "gps": signals.gps.rawValue, "checkIn": signals.checkIn.rawValue]
+    /// What the audit trail keeps of a check: the three keys, and for a
+    /// spoken mismatch whether another customer's name was said or none.
+    private func signalDetail(_ result: CheckResult) -> [String: String] {
+        TwoKeys.auditDetail(result.signals, spokenMiss: result.spokenMiss, better: result.better)
     }
 
     /// SAVE. The one tap: the video is queued on disk and sends by itself.
@@ -1059,7 +1097,7 @@ final class AppModel: ObservableObject {
         check = .idle
         Notifier.cancelDraftNudge()
         if override {
-            events.log(.override, videoId: item.id, customerId: item.customerId, detail: signalDetail(result.signals))
+            events.log(.override, videoId: item.id, customerId: item.customerId, detail: signalDetail(result))
         }
         Haptics.success()
         uploads.pump()

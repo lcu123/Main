@@ -65,11 +65,13 @@ final class TwoKeysTests: XCTestCase {
 
         stop.checkIn = Fixtures.at(-10)
         XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.base, stop: stop), .match, "still checked in")
-        XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(-25), stop: stop), .match, "inside the 20 minute slack")
+        XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(-18), stop: stop), .match, "inside the 10 minute slack")
+        XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(-25), stop: stop), .mismatch, "15 minutes before check-in: it matched when the slack was 20")
         XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(-45), stop: stop), .mismatch, "long before check-in")
 
         stop.checkOut = Fixtures.at(5)
-        XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(20), stop: stop), .match, "15 minutes after check-out")
+        XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(13), stop: stop), .match, "8 minutes after check-out")
+        XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(20), stop: stop), .mismatch, "15 minutes after check-out")
         XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(40), stop: stop), .mismatch, "35 minutes after check-out")
     }
 
@@ -78,8 +80,9 @@ final class TwoKeysTests: XCTestCase {
         var stop = Fixtures.quill
         stop.checkIn = Fixtures.base
         stop.checkOut = Fixtures.base.addingTimeInterval(2)
-        XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(-12), stop: stop), .match)
-        XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(12), stop: stop), .match)
+        XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(-9), stop: stop), .match)
+        XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(9), stop: stop), .match)
+        XCTAssertEqual(TwoKeys.checkInSignal(recordedAt: Fixtures.at(12), stop: stop), .mismatch, "ten minutes each side, no more")
     }
 
     func testAllThreeSignalsTogether() {

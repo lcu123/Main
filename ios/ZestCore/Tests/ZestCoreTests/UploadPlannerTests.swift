@@ -177,26 +177,30 @@ final class UploadPlannerTests: XCTestCase {
         var waiting: Int { items.waitingCount }
     }
 
-    /// Twelve stops with no signal all day, then the signal comes back.
+    /// The brief, phase 2: "Done when 20 videos in a row arrive after
+    /// airplane-mode tests, with none lost."
+    ///
+    /// Twenty stops with no signal all day, then the signal comes back.
     /// Every video goes exactly once, oldest first, never more than two at a
     /// time, and the screen never says SENT for one the server does not have.
-    func testTwelveVideosSavedWithNoSignalAllArriveOnceInOrder() {
+    func testTwentyVideosSavedWithNoSignalAllArriveOnceInOrder() {
         // Saved half an hour apart, on disk in the order they were saved.
-        let saved = (1...12).map { item($0, minutesAgo: Double((13 - $0) * 30)) }
+        let saved = (1...20).map { item($0, minutesAgo: Double((21 - $0) * 30)) }
+        XCTAssertEqual(saved.count, 20)
         let day = Day(items: saved, clock: now)
 
         // All day: no signal. The engine keeps trying; nothing is lost and
         // nothing is called sent.
         for _ in 0..<200 {
             day.turn()
-            XCTAssertEqual(day.waiting, 12)
+            XCTAssertEqual(day.waiting, 20)
             XCTAssertTrue(day.items.allSatisfy { $0.displayText == "WAITING" }, "My Videos says WAITING for every one")
             XCTAssertTrue(day.items.allSatisfy { $0.needsFile }, "every file is still on the phone")
         }
         XCTAssertTrue(day.registerOrder.isEmpty)
-        // Only the oldest was ever tried: one call per try, not twelve.
+        // Only the oldest was ever tried: one call per try, not twenty.
         XCTAssertGreaterThan(day.items[0].attempts, 0)
-        XCTAssertTrue(day.items.dropFirst().allSatisfy { $0.attempts == 0 }, "the eleven behind it were not tried out of turn")
+        XCTAssertTrue(day.items.dropFirst().allSatisfy { $0.attempts == 0 }, "the nineteen behind it were not tried out of turn")
 
         // The signal is back and the tech opens the app.
         day.online = true
@@ -215,7 +219,8 @@ final class UploadPlannerTests: XCTestCase {
         }
 
         let ids = saved.map { $0.id }
-        XCTAssertEqual(day.waiting, 0, "all twelve left the phone (took \(turns) turns)")
+        XCTAssertEqual(day.waiting, 0, "all twenty left the phone (took \(turns) turns)")
+        XCTAssertEqual(Set(ids).count, 20)
         XCTAssertEqual(day.registerOrder, ids, "the server heard of them in the order they were recorded")
         for id in ids {
             XCTAssertEqual(day.registerCalls[id], 1, "\(id) was registered once")
@@ -231,7 +236,7 @@ final class UploadPlannerTests: XCTestCase {
     /// The signal comes and goes in the middle of sending. Still exactly
     /// once each, still in order.
     func testASignalThatComesAndGoesStillSendsEachVideoOnce() {
-        let saved = (1...12).map { item($0, minutesAgo: Double((13 - $0) * 30)) }
+        let saved = (1...20).map { item($0, minutesAgo: Double((21 - $0) * 30)) }
         let day = Day(items: saved, clock: now)
         var turns = 0
         while day.waiting > 0 && turns < 4000 {
@@ -243,7 +248,7 @@ final class UploadPlannerTests: XCTestCase {
             day.turn()
             turns += 1
         }
-        XCTAssertEqual(day.waiting, 0, "all twelve left the phone (took \(turns) turns)")
+        XCTAssertEqual(day.waiting, 0, "all twenty left the phone (took \(turns) turns)")
         XCTAssertEqual(day.registerOrder, saved.map { $0.id })
         for id in saved.map({ $0.id }) {
             XCTAssertEqual(day.completes[id], 1, "\(id) was confirmed exactly once")

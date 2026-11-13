@@ -35,7 +35,7 @@ final class StopCoverTests: XCTestCase {
         XCTAssertFalse(standing.canRecordAgain)
         XCTAssertFalse(standing.canDelete)
         // And it is still his to record: the list suggests it.
-        let ranked = StopRanker.rank(stops: [stop], location: nil)
+        let ranked = StopRanker.rank(stops: [stop], fix: nil)
         XCTAssertEqual(ranked.suggested.map { $0.stop.customerId }, [2])
     }
 
@@ -109,7 +109,7 @@ final class StopCoverTests: XCTestCase {
         var teamStop = try stop(video: #"{"id": "t1", "state": "sent", "byYou": false}"#)
         teamStop.order = 1
         let route = [teamStop, Fixtures.maple, Fixtures.ostrander]
-        let ranked = StopRanker.rank(stops: route, location: nil)
+        let ranked = StopRanker.rank(stops: route, fix: nil)
         XCTAssertFalse(ranked.suggested.contains { $0.stop.customerId == 2 }, "a covered stop is not what to record next")
         XCTAssertEqual(ranked.all.last?.stop.customerId, 2, "it stays on the list, after the stops that still need a video")
         XCTAssertEqual(ranked.all.count, 3)
@@ -142,6 +142,69 @@ final class StopCoverTests: XCTestCase {
         )
         // Nor does his video for another customer, or one for no customer.
         XCTAssertEqual(StopCover.of(stillTeam, ownVideos: [own("m7", .held, customer: 3), own("m8", .held, customer: nil)]), .team(stillTeam.video!))
+    }
+
+    // MARK: A helper deletes his own video: the lead's covers the stop again
+
+    private func routeStop(_ id: Int, video: StopVideo?) -> Stop {
+        Fixtures.stop(id, "Customer \(id)", last: "Sample\(id)", "\(id) Test Rd", order: id, video: video)
+    }
+
+    /// What happened in the UI test that found this. The server shows a
+    /// helper the lead's video only while he has none of his own. He
+    /// records his own, then deletes it: the last answer the phone holds
+    /// shows his own (now deleted) video and says nothing of the lead's.
+    func testTheLeadsVideoIsRememberedWhileTheHelperHasHisOwn() {
+        let leads = StopVideo(id: "lead", state: .sent, byYou: false)
+        let mine = StopVideo(id: "mine", state: .held, byYou: true)
+
+        // 1. The first answer of the day: the lead's video covers stop 2.
+        var memory = TeamVideoMemory.after([routeStop(1, video: nil), routeStop(2, video: leads)], remembered: [:])
+        XCTAssertEqual(memory, [2: leads])
+        // 2. He records his own: the server now shows his own for that stop.
+        memory = TeamVideoMemory.after([routeStop(1, video: nil), routeStop(2, video: mine)], remembered: memory)
+        XCTAssertEqual(memory, [2: leads], "the lead's video is still there, only out of his sight")
+        // 3. He deletes his own. Before the server has answered again (or
+        //    with no signal at all), the stop is covered by the lead's.
+        XCTAssertEqual(TeamVideoMemory.whenOwnVideoIsGone(customerId: 2, remembered: memory), leads)
+        let shown = routeStop(2, video: TeamVideoMemory.whenOwnVideoIsGone(customerId: 2, remembered: memory))
+        XCTAssertEqual(StopCover.of(shown).standing(now: now), .teamCovered, "DONE BY TEAM again, and still open to record")
+        // 4. The server answers: the lead's video, as before.
+        memory = TeamVideoMemory.after([routeStop(1, video: nil), routeStop(2, video: leads)], remembered: memory)
+        XCTAssertEqual(memory, [2: leads])
+    }
+
+    func testAStopNobodyElseRecordedSimplyReopens() {
+        // The lead's own case: there never was a teammate's video for it.
+        let mine = StopVideo(id: "mine", state: .held, byYou: true)
+        let memory = TeamVideoMemory.after([routeStop(2, video: mine)], remembered: [:])
+        XCTAssertEqual(memory, [:])
+        XCTAssertNil(TeamVideoMemory.whenOwnVideoIsGone(customerId: 2, remembered: memory))
+        XCTAssertEqual(StopCover.of(routeStop(2, video: nil)).standing(now: now), .record, "open: RECORD VIDEO")
+    }
+
+    func testWhatIsRememberedFollowsTheServer() {
+        let leads = StopVideo(id: "lead", state: .held, byYou: false)
+        let mine = StopVideo(id: "mine", state: .held, byYou: true)
+        var memory = TeamVideoMemory.after([routeStop(2, video: leads), routeStop(3, video: leads)], remembered: [:])
+        XCTAssertEqual(Set(memory.keys), [2, 3])
+        // The server says stop 2 has no video at all now (the lead deleted
+        // his): forgotten. Open is the safe way to be wrong.
+        memory = TeamVideoMemory.after([routeStop(2, video: nil), routeStop(3, video: mine)], remembered: memory)
+        XCTAssertEqual(Set(memory.keys), [3])
+        XCTAssertNil(TeamVideoMemory.whenOwnVideoIsGone(customerId: 2, remembered: memory))
+        // A stop that is no longer on the list is forgotten too.
+        memory = TeamVideoMemory.after([routeStop(2, video: nil)], remembered: memory)
+        XCTAssertEqual(memory, [:])
+        // A teammate's video that was pulled or replaced does not count.
+        let pulled = StopVideo(id: "lead", state: .pulled, byYou: false)
+        XCTAssertEqual(TeamVideoMemory.after([routeStop(2, video: pulled)], remembered: [2: leads]), [:])
+        XCTAssertNil(TeamVideoMemory.whenOwnVideoIsGone(customerId: 2, remembered: [2: pulled]))
+        // His own video is never remembered as a teammate's.
+        XCTAssertNil(TeamVideoMemory.whenOwnVideoIsGone(customerId: 2, remembered: [2: mine]))
+        // The state the server last gave for the teammate's video is kept.
+        let sent = StopVideo(id: "lead", state: .sent, byYou: false)
+        XCTAssertEqual(TeamVideoMemory.after([routeStop(2, video: sent)], remembered: [2: leads]), [2: sent])
     }
 
     // MARK: The server's refusal is only ever about his own video

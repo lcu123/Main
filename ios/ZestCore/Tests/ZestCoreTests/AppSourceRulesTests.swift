@@ -107,31 +107,65 @@ final class AppSourceRulesTests: XCTestCase {
             }
             return GloveRule.contrast(a, b)
         }
-        // Ordinary words.
-        let ordinary: [(String, String)] = [
-            ("ink", "card"), ("ink", "page"), ("titleInk", "page"), ("titleInk", "card"), ("softInk", "card"), ("softInk", "page"),
-            ("ink", "paleAmber"), ("ink", "amber"), ("darkGreen", "paleGreen"), ("white", "green"), ("white", "ink"),
-            ("cyan", "paleCyan"), ("white", "navy"),
+        // Words of every size: 4.5 to 1 or better, which is the mark for
+        // small print. The app's words are large, but they are read by old
+        // eyes in bright sun, so none is let off with the easier mark.
+        let words: [(String, String)] = [
+            ("ink", "card"), ("ink", "page"), ("titleInk", "page"), ("titleInk", "card"),
+            // Small grey labels ("0.6 MILES AWAY") and second-rank text.
+            ("softInk", "card"), ("softInk", "page"), ("softInk", "paleAmber"), ("softInk", "paleGreen"), ("softInk", "paleCyan"),
+            // Blue words: action words on a card, a white button's words, links.
+            ("blueInk", "card"), ("blueInk", "page"), ("blueInk", "paleCyan"), ("blueInk", "paleAmber"),
+            // The chips and the coloured rows: "SENT ✓", "WAITING", "NOT SENT".
+            ("darkGreen", "paleGreen"), ("ink", "paleAmber"), ("ink", "amber"), ("white", "ink"), ("white", "green"),
+            ("cyan", "paleCyan"), ("navy", "card"),
             // The YES / NO switch: the word and the knob are white on both tracks.
             ("white", "switchOn"), ("white", "switchOff"),
         ]
-        for (words, ground) in ordinary {
+        for (text, ground) in words {
             XCTAssertGreaterThanOrEqual(
-                ratio(words, on: ground), GloveRule.minContrast,
-                "\(words) on \(ground) is \(String(format: "%.2f", ratio(words, on: ground))) to 1"
+                ratio(text, on: ground), GloveRule.minContrast,
+                "\(text) on \(ground) is \(String(format: "%.2f", ratio(text, on: ground))) to 1"
             )
         }
-        // Large bold words only: buttons, action words, the RECORDING sign.
-        let large: [(String, String)] = [("white", "blue"), ("blue", "card"), ("white", "bluePressed"), ("white", "recordRed"), ("blue", "paleCyan")]
-        for (words, ground) in large {
+        // The grey labels and the chips have room to spare.
+        XCTAssertGreaterThanOrEqual(ratio("softInk", on: "card"), 7, "small grey labels on a white card")
+        XCTAssertGreaterThanOrEqual(ratio("darkGreen", on: "paleGreen"), 7, "SENT on its green chip")
+        XCTAssertGreaterThanOrEqual(ratio("ink", on: "paleAmber"), 7, "WAITING on its amber chip")
+        // White words on a coloured fill, always large and bold: the main
+        // button, the RECORDING sign. (The main button's blue is the one
+        // the techs know from their route app; its words are 30-point bold.)
+        let large: [(String, String)] = [("white", "blue"), ("white", "bluePressed"), ("white", "recordRed")]
+        for (text, ground) in large {
             XCTAssertGreaterThanOrEqual(
-                ratio(words, on: ground), GloveRule.minLargeTextContrast,
-                "\(words) on \(ground) is \(String(format: "%.2f", ratio(words, on: ground))) to 1"
+                ratio(text, on: ground), GloveRule.minLargeTextContrast,
+                "\(text) on \(ground) is \(String(format: "%.2f", ratio(text, on: ground))) to 1"
             )
         }
         // The two tracks of the switch can be told from the card they sit on.
         XCTAssertGreaterThanOrEqual(ratio("switchOn", on: "card"), GloveRule.minContrast)
         XCTAssertGreaterThanOrEqual(ratio("switchOff", on: "card"), GloveRule.minContrast)
+    }
+
+    /// `Theme.blue` is a fill. Words in blue use `Theme.blueInk`, the deeper
+    /// shade that can be read on white: no screen may colour words with the
+    /// fill blue again.
+    func testBlueWordsUseTheDeeperBlue() throws {
+        var checked = 0
+        for folder in ["ZestVideo/UI"] {
+            let root = iosFolder.appendingPathComponent(folder)
+            for name in try FileManager.default.contentsOfDirectory(atPath: root.path) where name.hasSuffix(".swift") {
+                let source = try String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)
+                checked += 1
+                XCTAssertFalse(source.contains("foregroundColor(Theme.blue)"), "\(name): blue words must use Theme.blueInk")
+                XCTAssertFalse(source.contains("foregroundStyle(Theme.blue)"), "\(name): blue words must use Theme.blueInk")
+                XCTAssertFalse(source.contains("Color = Theme.blue\n"), "\(name): a default text colour must be Theme.blueInk")
+            }
+        }
+        XCTAssertGreaterThan(checked, 10)
+        let controls = try text("ZestVideo/UI/Controls.swift")
+        XCTAssertTrue(controls.contains("case .plain: return Theme.blueInk"), "a white button's words")
+        XCTAssertTrue(controls.contains("case .action: return Theme.blueInk"), "action words on a card")
     }
 
     /// The switch is drawn with those colours and no others.

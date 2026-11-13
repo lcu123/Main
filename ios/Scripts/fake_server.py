@@ -17,7 +17,7 @@ Test controls (all JSON):
   POST /__test/reset   {"test": "name", "config": {...}}   forget everything; the answer
                                                             carries a device token that is
                                                             already signed in ("token").
-                                                            "route": "long" gives twelve
+                                                            "route": "long" gives twenty
                                                             stops side by side on one street
                                                             and no locked stop.
   POST /__test/set     {"switch": value, ...}              change behaviour
@@ -104,12 +104,18 @@ DEFAULT_CONFIG = {
 
 LOCKED_VIDEO_ID = "00000000-0000-4000-8000-00000000f1ed"
 
-# Twelve made-up customers for the long route.
+# Twenty made-up customers for the long route. (The brief: "Done when 20
+# videos in a row arrive after airplane-mode tests, with none lost.")
 LONG_ROUTE_NAMES = [
     ("Ada", "Abbott"), ("Ben", "Barrow"), ("Cleo", "Castell"), ("Dev", "Dunmore"),
     ("Edie", "Ellery"), ("Finn", "Fenwick"), ("Gia", "Garrow"), ("Hugo", "Hadley"),
     ("Iris", "Ingram"), ("Joss", "Jessop"), ("Kit", "Kendrick"), ("Lena", "Lowell"),
+    ("Milo", "Marlowe"), ("Nell", "Norcott"), ("Otis", "Oakhurst"), ("Pia", "Penhale"),
+    ("Quin", "Quarry"), ("Rhea", "Rushden"), ("Seth", "Sorrel"), ("Tess", "Thornby"),
 ]
+# How far apart the long route's houses are, in metres. Twenty in a row
+# still fit inside the far-away distance (150 m) from the first one.
+LONG_ROUTE_GAP_M = 6
 
 
 def iso(moment):
@@ -182,7 +188,11 @@ class State:
 
     def stops(self):
         checked_in = iso(self.started - datetime.timedelta(minutes=10))
-        checked_out = iso(self.started - datetime.timedelta(minutes=1))
+        # "He checked out a minute ago", whenever the phone asks. The app
+        # counts a check-in as matching for ten minutes after check-out and
+        # takes a stop finished within the hour to be where the tech still
+        # is; a time fixed at the reset would run out under a slow test.
+        checked_out = iso(utc_now() - datetime.timedelta(minutes=1))
         rows = [
             # customerId, name, lastName, address, north (m), west (m), order, checked, done, service
             (205, "Tom Wilson", "Wilson", "300 Cedar Ln", -1900, -1400, 1, False, True, "Mowing"),
@@ -192,10 +202,10 @@ class State:
             (204, "Green Valley HOA", "", "5 Park Blvd", 2700, 2200, 5, False, False, "Irrigation"),
         ]
         if self.route == "long":
-            # A long day: twelve houses in a row, 8 metres apart, none checked
-            # in. Customers 301 to 312, in route order.
+            # A long day: twenty houses in a row, 6 metres apart, none checked
+            # in. Customers 301 to 320, in route order.
             rows = [
-                (301 + i, "%s %s" % (first, last), last, "%d Maple Row" % (101 + 2 * i), 0, 8 * i, i + 1, False, False, "Mowing")
+                (301 + i, "%s %s" % (first, last), last, "%d Maple Row" % (101 + 2 * i), 0, LONG_ROUTE_GAP_M * i, i + 1, False, False, "Mowing")
                 for i, (first, last) in enumerate(LONG_ROUTE_NAMES)
             ]
         out = []
@@ -842,6 +852,9 @@ def self_test():
     check(len(stops) == 5, "five stops")
     check(stops[201]["checkIn"] and stops[201]["checkOut"], "first stop was checked in and out")
     check(stops[202]["checkIn"] is None and stops[204]["lastName"] == "", "plain stop and business")
+    left = datetime.datetime.strptime(stops[201]["checkOut"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    check(0 <= (utc_now() - left).total_seconds() <= 120 and stops[201]["checkIn"] < stops[201]["checkOut"] and stops[201]["done"],
+          "201 was checked out a minute ago, however long ago the reset was: %s" % stops[201]["checkOut"])
     check(stops[205]["video"]["state"] == "sent", "one stop is locked")
     check(stops[201]["video"] is None, "no video yet")
 
@@ -943,19 +956,23 @@ def self_test():
     log = call("GET", "/__test/log")[1].decode()
     check("POST   /v1/videos/v4/complete" in log and "video v4" in log, "log text")
 
-    # The long route: twelve stops in a row, none locked, and a locked stop
+    # The long route: twenty stops in a row, none locked, and a locked stop
     # does not come back with the next ordinary reset.
     status, body = call("POST", "/__test/reset", {"test": "long", "route": "long"})
     status, today = call("GET", "/v1/today", token=body["token"])
     long_stops = today["stops"]
-    check([s["customerId"] for s in long_stops] == list(range(301, 313)), "twelve stops, 301 to 312")
+    check([s["customerId"] for s in long_stops] == list(range(301, 321)), "twenty stops, 301 to 320")
+    check(len(LONG_ROUTE_NAMES) == 20 and len(set(LONG_ROUTE_NAMES)) == 20, "twenty different customers")
     check(all(s["video"] is None and s["checkIn"] is None for s in long_stops), "no videos, no check-ins")
-    check(long_stops[0]["address"] == "101 Maple Row" and long_stops[11]["address"] == "123 Maple Row", "one street")
-    check(abs(long_stops[11]["lng"] - long_stops[0]["lng"]) < 0.0012, "all within about 90 metres")
-    for index in range(12):
+    check(long_stops[0]["address"] == "101 Maple Row" and long_stops[19]["address"] == "139 Maple Row", "one street")
+    # One degree of longitude is about 86.9 km here: 0.0015 is about 130 m,
+    # inside the 150 m far-away distance from the first house.
+    check(abs(long_stops[19]["lng"] - long_stops[0]["lng"]) < 0.0015, "all within about 130 metres")
+    check((len(long_stops) - 1) * LONG_ROUTE_GAP_M < 150, "the last house is not far from the first")
+    for index in range(20):
         check(register(body["token"], "long-%02d" % index, customer=301 + index)[0] == 200, "register %d" % index)
     state = call("GET", "/__test/state")[1]
-    check([v["customerId"] for v in state["videos"]] == list(range(301, 313)), "videos kept in the order they were registered")
+    check([v["customerId"] for v in state["videos"]] == list(range(301, 321)), "videos kept in the order they were registered")
 
     # The answers the real server gives where this one had drifted (the
     # contract test in tests/test_video_contract.py plays both).

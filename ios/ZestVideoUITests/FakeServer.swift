@@ -36,8 +36,8 @@ struct FakeServer {
     /// - Returns: a device token the server has already signed in, so a test
     ///   can start the app signed in without typing a number and a code.
     ///   `nil` when the server did not answer.
-    /// - Parameter route: "usual" (five stops, one locked) or "long" (twelve
-    ///   stops side by side, customers 301 to 312, none locked).
+    /// - Parameter route: "usual" (five stops, one locked) or "long" (twenty
+    ///   stops side by side, customers 301 to 320, none locked).
     @discardableResult
     func reset(test: String, config: [String: Any] = [:], route: String = "usual") -> String? {
         guard let reply = request("POST", "/__test/reset", json: ["test": test, "config": config, "route": route]),

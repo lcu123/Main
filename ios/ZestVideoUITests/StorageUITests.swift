@@ -57,6 +57,9 @@ final class StorageUITests: ZestUITestCase {
     /// not thrown away on the way to a camera that cannot be reached: it is
     /// still there to save, and the saved video is not replaced.
     func testAFullPhoneBlocksRecordAgainAndKeepsTheClipAlreadyMade() {
+        // An hour to change a video: this test restarts the app and waits
+        // on several screens before it looks for CHANGE VIDEO.
+        server.set(["holdMinutes": 60])
         launchSignedIn()
         openRecorder(for: Self.smith)
         recordClip()

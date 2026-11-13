@@ -16,6 +16,16 @@ final class TeamUITests: ZestUITestCase {
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "video-row-"))
     }
 
+    /// True when the app asked for the day again after its last DELETE:
+    /// that answer is what tells it how the stop stands now.
+    private func askedForTheDayAfterTheDelete() -> Bool {
+        let requests = server.state().requests
+        guard let deleted = requests.lastIndex(where: { ($0["method"] as? String) == "DELETE" }) else { return false }
+        return requests[(deleted + 1)...].contains { entry in
+            (entry["method"] as? String) == "GET" && ((entry["path"] as? String) ?? "").contains("/v1/today")
+        }
+    }
+
     /// The lead: he has his own appointment at a stop another tech already
     /// recorded. He is not shown that video, his own is taken with no fuss,
     /// and recording again replaces his own first video and nothing else.
@@ -24,6 +34,9 @@ final class TeamUITests: ZestUITestCase {
             server.otherTechRecorded(customerId: Self.johnson, state: "sent", helper: false),
             "The fake server did not take the other tech's video."
         )
+        // An hour to change a video, so a slow run cannot let it lapse
+        // between the steps below.
+        server.set(["holdMinutes": 60])
         launchSignedIn(transcript: Self.robertWords)
 
         // Nothing of the other tech's shows: the stop is his to record.
@@ -66,6 +79,25 @@ final class TeamUITests: ZestUITestCase {
         tap(app.buttons["tab-videos"], "the My Videos tab")
         waitForLabel(videoRow(Self.johnson), "his video's row", contains: "Sent")
         XCTAssertEqual(videoRows.count, 1, "My Videos lists his own newest video and nothing of the other tech's.")
+        tap(app.buttons["tab-route"], "the My Route tab")
+        waitForBar("My Route")
+
+        // He deletes his own. For him the stop simply reopens: he was never
+        // shown the other tech's video, and is not shown it now.
+        tap(stop(Self.johnson), "the stop with his own video")
+        waitForBar("Video")
+        tap(button("DELETE VIDEO"), "DELETE VIDEO")
+        waitForTitle("Delete this video?")
+        tap(button("YES, DELETE"), "YES, DELETE")
+        waitForBar("My Route")
+        waitUntil("the server marks his second video deleted") { self.server.state().videos.last?.state == "deleted" }
+        waitUntil("the app asks for the day again after the delete is confirmed", timeout: 30) {
+            self.askedForTheDayAfterTheDelete()
+        }
+        waitForLabel(stop(Self.johnson), "the stop's card", contains: "Record Video")
+        XCTAssertFalse(label(of: stop(Self.johnson)).contains("Team"))
+        XCTAssertEqual(server.state().otherTechVideos.map { $0.state }, ["sent"], "Deleting his own leaves the other tech's alone.")
+        waitForLabel(element("route-header"), "the header", contains: "Sent 1 of 5")
     }
 
     /// The helper: he has no appointment of his own at a stop the lead
@@ -76,6 +108,7 @@ final class TeamUITests: ZestUITestCase {
         // One that has gone to the customer, one still inside its ten minutes.
         XCTAssertNotNil(server.otherTechRecorded(customerId: Self.johnson, state: "sent", helper: true))
         XCTAssertNotNil(server.otherTechRecorded(customerId: Self.business, state: "held", helper: true))
+        server.set(["holdMinutes": 60])     // see the other test
         launchSignedIn(transcript: Self.robertWords)
 
         // Both read as covered, whatever became of the lead's video.
@@ -155,6 +188,11 @@ final class TeamUITests: ZestUITestCase {
         tap(button("YES, DELETE"), "YES, DELETE")
         waitForBar("My Route")
         waitUntil("the server marks his own video deleted") { server.state().videos.first?.state == "deleted" }
+        // The day is asked for again once the server has confirmed the
+        // delete: that answer is what says the lead's video covers the stop.
+        waitUntil("the app asks for the day again after the delete is confirmed", timeout: 30) {
+            self.askedForTheDayAfterTheDelete()
+        }
         seen = server.state()
         XCTAssertEqual(seen.videos.count, 1)
         XCTAssertEqual(seen.videos.first?.deletes, 1)

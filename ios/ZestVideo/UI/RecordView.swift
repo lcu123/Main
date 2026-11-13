@@ -250,7 +250,7 @@ struct RecordView: View {
             Text("FLIP")
                 .tracking(0.5)
                 .zestFont(.button)
-                .foregroundColor(Theme.blue)
+                .foregroundColor(Theme.blueInk)
                 .lineLimit(1)
                 .frame(minWidth: 120, minHeight: Theme.buttonHeight)
                 .padding(.horizontal, 10)

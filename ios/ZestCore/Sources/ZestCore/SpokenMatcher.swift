@@ -1,5 +1,18 @@
 import Foundation
 
+/// What a spoken mismatch was. The two are very different, and only the
+/// first is dangerous.
+public enum SpokenMiss: String, Codable, Equatable, Sendable {
+    /// The words fit ANOTHER stop on today's list better: he said a
+    /// different customer's name (or house number). A contradiction: the
+    /// video is never sent without asking, whatever the GPS and the
+    /// check-in say. This is the wrong house next door.
+    case otherStop = "other_stop"
+    /// Words were heard, and no customer's name was in them: he forgot to
+    /// say it, or it was misheard. A missing key, not a contradiction.
+    case noName = "no_name"
+}
+
 /// The spoken key: did the tech say this customer's name, street or house
 /// number at the start of the clip?
 ///
@@ -27,6 +40,15 @@ public enum SpokenMatcher {
         /// A different stop on today's list that the words fit better.
         public let better: Stop?
         public let target: Score
+        /// What kind of mismatch it was. `nil` unless `result` is a mismatch.
+        public let miss: SpokenMiss?
+
+        public init(result: SignalResult, better: Stop?, target: Score, miss: SpokenMiss? = nil) {
+            self.result = result
+            self.better = better
+            self.target = target
+            self.miss = miss
+        }
     }
 
     // MARK: - Public API
@@ -63,7 +85,21 @@ public enum SpokenMatcher {
         if targetScore.value > 0 && bestValue <= targetScore.value {
             return Outcome(result: .match, better: nil, target: targetScore)
         }
-        return Outcome(result: .mismatch, better: uniqueBest, target: targetScore)
+        // A mismatch is one of two different things.
+        //
+        // He said somebody else: the words fit another stop (or several,
+        // equally) strictly better than this one, and by something that
+        // belongs to one customer: a name or a house number. That
+        // contradicts the stop he picked. A street name alone is not taken
+        // that far: several customers share a street, and a word of his
+        // script may happen to be one ("I closed the backyard gate" on a
+        // route with a Gate Road).
+        //
+        // Or nobody's name was in the words: he forgot to say it, or it was
+        // misheard. A key is missing; nothing is contradicted.
+        let particular = best.contains { $0.score.lastName || $0.score.firstName || $0.score.houseNumber }
+        let saidAnother = bestValue > targetScore.value && particular
+        return Outcome(result: .mismatch, better: uniqueBest, target: targetScore, miss: saidAnother ? .otherStop : .noName)
     }
 
     public static func score(transcript: String, stop: Stop) -> Score {

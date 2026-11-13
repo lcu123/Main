@@ -179,13 +179,20 @@ struct TodayView: View {
         }
     }
 
-    /// The blue line at the top of a card: the most useful thing about it.
+    /// The blue line at the top of the first card: why it is first.
+    ///
+    /// "Checked in" is only said of the stop the list has put first for
+    /// that reason, which it does only when the check-in is believable now
+    /// (`StopRanker.believesOpenCheckIn`). A stop left checked in for hours
+    /// while the tech is at another house carries no such line.
     private func headline(for stop: Stop, first: Bool, reason: StopRanker.Reason) -> String? {
-        if stop.isCheckedInNow { return "Checked in" }
         guard first else { return nil }
         switch reason {
         case .checkedIn: return "Checked in"
         case .nearest: return "Closest stop"
+        // No location, and he completed this one within the hour without
+        // filming it: he is most likely still standing there.
+        case .justFinished: return "Just finished"
         case .routeOrder: return "Next stop"
         }
     }

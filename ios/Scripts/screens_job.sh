@@ -6,8 +6,11 @@
 #
 #   screens_job.sh small        the smallest iPhone: usual route, then the awkward names
 #   screens_job.sh mid-ipad     a 6.1-inch iPhone, then an iPad
-#   screens_job.sh large-text   the big iPhone: ordinary text, the largest the app
-#                               allows, and the largest accessibility size
+#   screens_job.sh large-text   the big iPhone with the text at the largest size the
+#                               app follows: pictures and every check
+#   screens_job.sh big          the big iPhone: every check at the ordinary text
+#                               size, then pictures and the layout checks at the
+#                               very largest accessibility size
 #
 # Pictures go to out/<artifact name>/, logs and reports to ui-artifacts/.
 # Every pass is run even if an earlier one failed; the exit code says whether
@@ -130,22 +133,31 @@ case "$VARIANT" in
   large-text)
     BIG=$(pick big) || exit 1
     boot "$BIG"
-    # First the big phone as it comes: Apple's audit at the ordinary text size.
+    # The largest text size the app follows (it stops growing there):
+    # pictures, then every check, Apple's audit included.
+    text_size "$BIG" extra-extra-extra-large
+    pictures "$BIG" screens-large-text $ALL
+    checks large-text "$BIG" large-text 0 1 1 "-only-testing:$SUITE" "-skip-testing:$ODD_TEST"
+    text_size "$BIG" large
+    ;;
+  big)
+    BIG=$(pick big) || exit 1
+    boot "$BIG"
+    # The big phone as it comes: Apple's audit at the ordinary text size.
     checks big "$BIG" big 1 1 0 "-only-testing:$SUITE" "-skip-testing:$ODD_TEST"
 
-    # The largest text size the app follows (it stops growing there).
-    text_size "$BIG" extra-extra-extra-large
-    pictures "$BIG" screens-large-text/1-largest-the-app-allows $ALL
-    checks large-text "$BIG" large-text 0 1 1 "-only-testing:$SUITE" "-skip-testing:$ODD_TEST"
-
-    # The very largest accessibility size: shows what the cap does. It should
-    # look the same as the set above.
+    # The very largest accessibility size. The app stops growing one step
+    # sooner, so these pictures should look like the large-text job's; the
+    # layout checks run again here to prove it (every page scrolls clear,
+    # what has to be read is in view). Apple's audit is not run a third
+    # time on the same layout.
     text_size "$BIG" accessibility-extra-extra-extra-large
-    pictures "$BIG" screens-large-text/2-largest-accessibility-size $ALL
+    pictures "$BIG" screens-largest-accessibility $ALL
+    checks largest-accessibility "$BIG" largest-accessibility 0 0 1 "-only-testing:$SUITE" "-skip-testing:$ODD_TEST"
     text_size "$BIG" large
     ;;
   *)
-    echo "usage: screens_job.sh small | mid-ipad | large-text"
+    echo "usage: screens_job.sh small | mid-ipad | large-text | big"
     exit 2
     ;;
 esac

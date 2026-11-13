@@ -10,6 +10,7 @@ name: iOS
 #               the run)
 #   sizes       every screen on the smallest iPhone, a 6.1-inch iPhone, an iPad
 #               and at the largest text sizes: pictures (artifacts "screens-small",
+#               "screens-largest-accessibility",
 #               "screens-odd-names", "screens-mid", "screens-ipad",
 #               "screens-large-text") plus layout checks and Apple's accessibility audit
 #   performance informational: launch time, memory, disk and app size
@@ -410,9 +411,9 @@ jobs:
             informational: false
           # Named to run last here: WithoutLocationUITests refuses the
           # location question, then puts the phone's answer back.
-          - name: storage, drafts, no location
+          - name: storage, drafts, twenty offline, no location
             slug: d
-            classes: StorageUITests DraftUITests WithoutLocationUITests
+            classes: StorageUITests DraftUITests LongDayUITests WithoutLocationUITests
             signed: false
             informational: false
           - name: background uploads, signed build, informational
@@ -703,6 +704,10 @@ jobs:
           - name: largest text
             variant: large-text
             first: screens-large-text
+            second: ""
+          - name: big iPhone, largest accessibility size
+            variant: big
+            first: screens-largest-accessibility
             second: ""
     defaults:
       run:

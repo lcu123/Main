@@ -379,6 +379,10 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
             do {
                 _ = try await api.deleteVideo(id: item.id)
                 store.apply(.deleteConfirmed, to: item.id)
+                // The server's list for the day has changed: the route is
+                // asked for again. (With his own video gone, a stop may be
+                // covered by a teammate's again, or simply be open.)
+                onChange?()
             } catch let error as APIError {
                 switch ServerSays.afterFailedDelete(status: error.status, code: error.code ?? "") {
                 case .tooLate:
@@ -389,6 +393,7 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
                 case .finished:
                     // The server never had it, or it is already gone.
                     store.apply(.deleteConfirmed, to: item.id)
+                    onChange?()
                 case .tryAgain:
                     failed(item.id, error)
                 }

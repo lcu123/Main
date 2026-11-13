@@ -90,6 +90,49 @@ public enum StopCover: Equatable, Sendable {
     }
 }
 
+/// A teammate's video for a stop, remembered from the day's answers.
+///
+/// The server shows a helper the lead's video only while the helper has none
+/// of his own for that stop. So when he records his own and then deletes it,
+/// the last answer the phone holds no longer mentions the lead's video,
+/// although it is what covers the stop again. Until the server has been
+/// asked afresh (or if it cannot be reached), the phone goes by what an
+/// earlier answer said.
+public enum TeamVideoMemory {
+    /// What is remembered after a new answer for the day.
+    ///
+    /// - A stop that shows a teammate's video: remembered.
+    /// - A stop that shows this tech's own video: what was remembered stays
+    ///   (the server hides the teammate's while he has his own).
+    /// - A stop that shows no video, or is no longer on the list: forgotten.
+    ///   The server is saying nothing covers it.
+    public static func after(_ stops: [Stop], remembered: [Int: StopVideo]) -> [Int: StopVideo] {
+        var next: [Int: StopVideo] = [:]
+        for stop in stops {
+            guard let shown = stop.liveVideo else { continue }
+            if shown.byYou {
+                if let kept = remembered[stop.customerId], !kept.state.isGone {
+                    next[stop.customerId] = kept
+                }
+            } else {
+                next[stop.customerId] = shown
+            }
+        }
+        return next
+    }
+
+    /// What a stop shows when this tech's own video for it is gone as far
+    /// as the phone knows (he deleted it, or it never reached the server)
+    /// and the server has not answered since: the teammate's video an
+    /// earlier answer showed, so the stop still reads as covered; or
+    /// nothing, and the stop is open. Open is the safe way to be wrong: at
+    /// worst he records one video more.
+    public static func whenOwnVideoIsGone(customerId: Int, remembered: [Int: StopVideo]) -> StopVideo? {
+        guard let team = remembered[customerId], !team.byYou, !team.state.isGone else { return nil }
+        return team
+    }
+}
+
 public extension StopCover.Standing {
     /// He can start a recording here that replaces nothing.
     var canRecordNew: Bool { self == .record || self == .teamCovered }

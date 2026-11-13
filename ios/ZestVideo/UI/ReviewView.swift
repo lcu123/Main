@@ -14,6 +14,7 @@ import ZestCore
 /// VIDEO, since he is not at that stop any more to record it again.
 struct ReviewView: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     enum Stage: Equatable {
         case ask
@@ -209,18 +210,15 @@ struct ReviewView: View {
     private var warning: some View {
         let result = currentResult
         return Screen(bar: "Check Stop", title: "Is this the right stop?") {
-            if let draft = app.draft {
-                // The smaller card: the warning under it has to show too.
-                StopHeadline(name: draft.target.name, address: draft.target.address, style: .small)
-            }
-            if let filmed = app.draftFilmedText {
-                BodyText(filmed, bold: true)
-            }
-            ForEach(result?.reasons ?? [], id: \.self) { reason in
-                Banner(text: reason, tone: .attention)
-            }
-            if let better = result?.better {
-                BodyText("It sounded like \(better.listName).", bold: true)
+            // With the phone's text at its largest sizes this page has to
+            // be scrolled above its three buttons. Then why the app is
+            // asking comes first, so it is never the part out of sight.
+            if LargeType.isOn(typeSize) {
+                warningReasons(result)
+                warningStop
+            } else {
+                warningStop
+                warningReasons(result)
             }
         } footer: {
             BigButton(title: "SAVE ANYWAY", kind: .attention) {
@@ -240,6 +238,32 @@ struct ReviewView: View {
                 // pick and nothing to record again.
                 deleteButton
             }
+        }
+    }
+
+    /// The stop that was picked, and the day for a clip from an earlier one.
+    @ViewBuilder
+    private var warningStop: some View {
+        if let draft = app.draft {
+            // The smaller card: the warning has to show too.
+            StopHeadline(name: draft.target.name, address: draft.target.address, style: .small)
+        }
+        if let filmed = app.draftFilmedText {
+            BodyText(filmed, bold: true)
+        }
+    }
+
+    /// Why the app is asking, and the stop the words fit better.
+    @ViewBuilder
+    private func warningReasons(_ result: CheckResult?) -> some View {
+        ForEach(result?.reasons ?? [], id: \.self) { reason in
+            Banner(text: reason, tone: .attention)
+        }
+        if let better = result?.better {
+            BodyText("It sounded like \(better.listName).", bold: true)
+        } else if result?.spokenMiss == .otherStop {
+            // Another customer's name was said, but two of them share it.
+            BodyText("It sounded like another customer.", bold: true)
         }
     }
 

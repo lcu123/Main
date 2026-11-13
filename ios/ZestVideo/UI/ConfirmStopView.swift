@@ -67,7 +67,8 @@ struct ConfirmStopView: View {
 
     private func farWarning(_ target: RecordTarget) -> some View {
         Screen(bar: "Confirm Stop", onBack: { app.backToToday() }, title: "You look far from this address") {
-            StopHeadline(name: target.name, address: target.address, cityLine: target.cityLine)
+            // The tight card: this screen has a three-line question above it.
+            StopHeadline(name: target.name, address: target.address, cityLine: target.cityLine, style: .tight)
             Banner(text: "Still right?", tone: .attention)
         } footer: {
             BigButton(title: "YES, STILL RIGHT", kind: .attention) {

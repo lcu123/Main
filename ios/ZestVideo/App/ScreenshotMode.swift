@@ -411,7 +411,8 @@ enum ScreenshotMode {
         let signals = Signals(spoken: .mismatch, gps: .match, checkIn: .unknown)
         return CheckResult(
             signals: signals, clean: false, reasons: TwoKeys.verdict(signals).reasons,
-            better: better, transcript: PromptText.fill("Hi {name}. Here's what I did.", name: better.greetingName)
+            better: better, transcript: PromptText.fill("Hi {name}. Here's what I did.", name: better.greetingName),
+            spokenMiss: .otherStop
         )
     }
 

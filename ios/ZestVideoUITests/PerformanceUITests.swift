@@ -128,7 +128,7 @@ final class PerformanceUITests: ZestUITestCase {
         executionTimeAllowance = 600
         resetServer(route: "long")
         let customers = Array(301...310)
-        // One set of words for twelve customers, so no first name: the street,
+        // One set of words for all the customers, so no first name: the street,
         // a silent backup, is what the spoken key goes by here.
         launchSignedIn(transcript: "this is the stop on Maple Row", metrics: true, firstStop: customers[0])
         pause(1.5)
@@ -158,7 +158,7 @@ final class PerformanceUITests: ZestUITestCase {
             before = count("route=today")
             saveClip()
             waitForHeld(count: index + 1, timeout: 60)
-            waitForLabel(element("route-header"), "the header", contains: "Sent \(index + 1) of 12", timeout: 40)
+            waitForLabel(element("route-header"), "the header", contains: "Sent \(index + 1) of 20", timeout: 40)
             // Let it settle before the reading that counts.
             pause(2)
             _ = metric("route=today", after: before)

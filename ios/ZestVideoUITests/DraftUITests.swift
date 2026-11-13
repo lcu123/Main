@@ -66,7 +66,8 @@ final class DraftUITests: ZestUITestCase {
     /// SAVE or DELETE VIDEO (RECORD AGAIN makes no sense a day later). SAVE
     /// sends it for the day it was filmed, and today's stop for the same
     /// customer is still open.
-    func testYesterdaysUnsavedClipIsStillThereAndCanBeSaved() {
+    func testYesterdaysUnsavedClipIsStillThereAndCanBeSaved() throws {
+        try skipIfMidnightIsNear(within: 6)
         leaveAnUnsavedClip()
         ageDraftDays = 1
         relaunch()
@@ -108,7 +109,8 @@ final class DraftUITests: ZestUITestCase {
     /// The same clip, a week old, deleted instead: YES, DELETE removes it
     /// from the phone, nothing is sent, and the server is told it was
     /// thrown away (`draft_discarded`).
-    func testAnOldUnsavedClipCanBeDeleted() {
+    func testAnOldUnsavedClipCanBeDeleted() throws {
+        try skipIfMidnightIsNear(within: 6)
         leaveAnUnsavedClip()
         ageDraftDays = 7
         relaunch()
@@ -144,7 +146,8 @@ final class DraftUITests: ZestUITestCase {
     /// Only a clip too old for the server to take (more than 14 days) is
     /// dropped by itself. Nothing is asked, the file goes, and it is logged.
     /// One day younger and it is still there to save.
-    func testOnlyAClipOlderThanFourteenDaysIsDroppedByItself() {
+    func testOnlyAClipOlderThanFourteenDaysIsDroppedByItself() throws {
+        try skipIfMidnightIsNear(within: 6)
         leaveAnUnsavedClip()
         ageDraftDays = 14
         relaunch()

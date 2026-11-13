@@ -368,8 +368,9 @@ final class RecordUITests: ZestUITestCase {
         tap(button("BACK"), "BACK")
         waitForBar("My Route")
 
-        // Back inside the ten minutes: DELETE VIDEO really deletes it.
-        server.set(["holdMinutes": 10])
+        // Back inside the time to change it: DELETE VIDEO really deletes it.
+        // (An hour, so a slow run cannot let it lapse before the tap.)
+        server.set(["holdMinutes": 60])
         leaveAndComeBack()
         tap(app.buttons["tab-videos"], "the My Videos tab")
         waitForLabel(row, "the video's row", contains: "Min Left", timeout: 40)
@@ -385,6 +386,101 @@ final class RecordUITests: ZestUITestCase {
         XCTAssertEqual(server.state().count("DELETE", "/v1/videos/", status: 409), 0, "The delete was not refused.")
         tap(app.buttons["tab-videos"], "the My Videos tab")
         waitForText("No videos yet today.")
+    }
+
+    /// He says ANOTHER customer's name ("Hi Robert") at Jane Smith's, where
+    /// everything else fits: the phone is on her lawn and he checked out a
+    /// minute ago. The place and the time agree, and still the video does
+    /// not go without asking: this is the wrong house next door. The
+    /// warning names the customer it sounded like, PICK THE RIGHT STOP moves
+    /// the clip there, and the audit trail records which kind of mismatch
+    /// it was.
+    func testAnotherCustomersNameAlwaysAsksEvenWhenPlaceAndTimeFit() {
+        launchSignedIn(transcript: "Hi Robert. Here's what I did. Here's what I recommend. I closed the backyard gate.")
+        openRecorder(for: Self.smith)
+        recordClip()
+
+        tap(button("SAVE"), "SAVE")
+        waitForTitle("Is this the right stop?")
+        waitForText("I did not hear this customer's name.")
+        waitForText("It sounded like Johnson, Robert.")
+        XCTAssertTrue(hasText("Smith, Jane"), "The warning shows the stop that was picked.")
+        XCTAssertTrue(server.state().videos.isEmpty, "Nothing is sent while the warning is up.")
+
+        tap(button("PICK THE RIGHT STOP"), "PICK THE RIGHT STOP")
+        waitForTitle("Pick the right stop")
+        waitForText("It sounded like this one")
+        tap(stop(Self.johnson), "the stop it sounded like")
+        waitForTitle("Save this video?")
+        XCTAssertTrue(hasText("Johnson, Robert"), "The clip now belongs to the stop that was picked.")
+        saveClip()
+        waitForHeld()
+
+        let video = theOnlyVideo()
+        XCTAssertEqual(video.customerId, Self.johnson, "The video went to the customer whose name was said.")
+        XCTAssertFalse(video.override, "With the right stop picked there was nothing to get past.")
+        XCTAssertEqual(video.signals["spoken"], "match")
+        XCTAssertEqual(video.signals["gps"], "match")
+        waitForLabel(stop(Self.smith), "the stop first picked by mistake", contains: "Record Video")
+
+        // The audit trail: asked about at Jane's, because another stop was named.
+        leaveAndComeBack()
+        waitUntil("the server holds the two-keys warning", timeout: 60) {
+            self.eventTypes(for: Self.smith).contains("two_keys_warning")
+        }
+        let warning = server.state().events.first {
+            ($0["type"] as? String) == "two_keys_warning" && ($0["customerId"] as? Int) == Self.smith
+        }
+        let detail = warning?["detail"] as? [String: Any]
+        XCTAssertEqual(detail?["spoken"] as? String, "mismatch", "The warning's detail: \(String(describing: detail))")
+        XCTAssertEqual(detail?["spokenMiss"] as? String, "other_stop", "It says another stop was named.")
+        XCTAssertEqual(detail?["soundedLike"] as? String, String(Self.johnson), "And which one.")
+        XCTAssertEqual(detail?["gps"] as? String, "match", "The place fitted: that is why this case has its own rule.")
+        XCTAssertEqual(detail?["checkIn"] as? String, "match", "So did the time.")
+        XCTAssertFalse(server.state().events.contains { ($0["type"] as? String) == "override" }, "Nothing was saved past the warning.")
+    }
+
+    /// He forgets to say a name. At the right house, on the pin, inside his
+    /// check-in, he is not nagged: the place and the time agree and nothing
+    /// contradicts them. At a house where he has not checked in, only the
+    /// place agrees: he is asked, with no other customer to suggest, and
+    /// SAVE ANYWAY is logged as "no name", not as "another stop".
+    func testAForgottenNameAtTheRightHouseIsNotAskedAbout() {
+        launchSignedIn(transcript: "Here's what I did. Here's what I recommend. I closed the backyard gate.")
+        recordAndSave(for: Self.smith)     // SAVE goes straight through: no warning screen
+        waitForHeld()
+        let first = theOnlyVideo()
+        XCTAssertEqual(first.customerId, Self.smith)
+        XCTAssertFalse(first.override, "Nothing was overridden: he was not asked.")
+        XCTAssertEqual(first.signals["spoken"], "mismatch", "No name was heard.")
+        XCTAssertEqual(first.signals["gps"], "match")
+        XCTAssertEqual(first.signals["checkIn"], "match")
+
+        // Next door, not checked in: one key only.
+        openRecorder(for: Self.johnson)
+        recordClip()
+        tap(button("SAVE"), "SAVE")
+        waitForTitle("Is this the right stop?")
+        waitForText("I did not hear this customer's name.")
+        XCTAssertFalse(hasText("It sounded like"), "No other customer was named, so none is suggested.")
+        tap(button("SAVE ANYWAY"), "SAVE ANYWAY")
+        waitFor(app.buttons["tab-route"], "My Route after SAVE ANYWAY", timeout: 30)
+        answerFirstSaveQuestion()
+        waitForHeld(count: 2)
+        let second = server.state().videos.last ?? ServerVideo(raw: [:])
+        XCTAssertEqual(second.customerId, Self.johnson)
+        XCTAssertTrue(second.override)
+
+        leaveAndComeBack()
+        waitUntil("the server holds the override", timeout: 60) { self.eventTypes(for: Self.johnson).contains("override") }
+        let override = server.state().events.first { ($0["type"] as? String) == "override" }
+        let detail = override?["detail"] as? [String: Any]
+        XCTAssertEqual(detail?["spokenMiss"] as? String, "no_name", "The override says no name was heard: \(String(describing: detail))")
+        XCTAssertNil(detail?["soundedLike"], "And names no other customer.")
+        XCTAssertFalse(
+            server.state().events.contains { ($0["type"] as? String) == "two_keys_warning" && ($0["customerId"] as? Int) == Self.smith },
+            "At the right house there was no warning at all."
+        )
     }
 
     /// The audit trail really reaches the server (`POST /v1/events`): after
@@ -431,6 +527,11 @@ final class RecordUITests: ZestUITestCase {
         }
         let override = seen.events.first { ($0["type"] as? String) == "override" }
         XCTAssertEqual(override?["videoId"] as? String, video.id, "The override names the video that was saved.")
+        // And which kind of mismatch was saved past: he said "Hi Jane" at
+        // Robert Johnson's, so another stop was named, and which.
+        let detail = override?["detail"] as? [String: Any]
+        XCTAssertEqual(detail?["spokenMiss"] as? String, "other_stop", "The override's detail: \(String(describing: detail))")
+        XCTAssertEqual(detail?["soundedLike"] as? String, String(Self.smith))
         let retake = seen.events.first { ($0["type"] as? String) == "retake" }
         XCTAssertNotEqual(retake?["videoId"] as? String, video.id, "The retake names the clip that was thrown away, not the one kept.")
     }

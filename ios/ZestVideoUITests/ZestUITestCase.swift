@@ -97,7 +97,7 @@ class ZestUITestCase: XCTestCase {
     }
 
     /// Clean server, new token. Called before every test; a test that wants
-    /// the long route (twelve stops in a row) calls it again before launching.
+    /// the long route (twenty stops in a row) calls it again before launching.
     func resetServer(route: String = "usual", config: [String: Any] = ["maxSeconds": 3]) {
         // Three-second clips keep the tests quick.
         issuedToken = server.reset(test: shortName, config: config, route: route)
@@ -589,6 +589,18 @@ class ZestUITestCase: XCTestCase {
     func answerLocationQuestion() {
         allowSystemQuestions(wait: Self.answeredLocation ? 0 : 2.5)
         Self.answeredLocation = true
+    }
+
+    /// A test that counts days (a clip "from yesterday", a route for
+    /// "today") gives a wrong answer if midnight falls in the middle of it.
+    /// Rather than fail once in a blue moon, it is skipped when it would
+    /// start that close to midnight, and says so.
+    func skipIfMidnightIsNear(within minutes: Int) throws {
+        let now = Date()
+        let calendar = Calendar.current
+        guard let midnight = calendar.nextDate(after: now, matching: DateComponents(hour: 0, minute: 0, second: 0), matchingPolicy: .nextTime) else { return }
+        let left = Int(midnight.timeIntervalSince(now) / 60)
+        try XCTSkipIf(left < minutes, "Midnight is \(left) minutes away and this test counts days: skipped, not failed. Run it again.")
     }
 
     /// Makes the phone forget its answer about location, so the next launch
