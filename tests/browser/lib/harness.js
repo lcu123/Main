@@ -37,8 +37,12 @@ const test = base.test.extend({
       expire: (token) => control('/expire?token=' + token, { method: 'POST' }),
       /** The office takes the video down, now. */
       pull: (token) => control('/pull?token=' + token, { method: 'POST' }),
-      /** The bucket stops sending this video in mid-answer (a dropped signal), or lets it flow again. Needs throttle=. */
-      stall: (token, on = true) => control(`/stall?token=${token}&on=${on ? 1 : 0}`, { method: 'POST' }),
+      /**
+       * The bucket stops sending this video in mid-answer (a dropped signal), or lets it flow
+       * again. Needs throttle=. With `from` (a byte count) only the file from that byte on is
+       * held back, so the signal drops at the same place in every browser.
+       */
+      stall: (token, on = true, from = 0) => control(`/stall?token=${token}&on=${on ? 1 : 0}${from ? `&from=${from}` : ''}`, { method: 'POST' }),
       /** An address of this test's own for which the REAL rate limiter is on (see serve.py). Send it as X-Forwarded-For. */
       limitedAddress: () => `198.18.${1 + Math.floor(Math.random() * 250)}.${1 + Math.floor(Math.random() * 250)}`,
       emailUrl: (token) => `${CONTROL}/email?token=${token}`,
@@ -55,7 +59,10 @@ const test = base.test.extend({
   problems: async ({ page }, use) => {
     const found = [];
     const allowed = [EXPECTED_STATUS_NOISE];
-    page.on('pageerror', (error) => found.push(`uncaught error: ${error.message}`));
+    page.on('pageerror', (error) => {
+      if (allowed.some((pattern) => pattern.test(error.message))) return; // only what a test has named, with its reason
+      found.push(`uncaught error: ${error.message}`);
+    });
     page.on('console', (message) => {
       if (message.type() !== 'error') return;
       const text = message.text();

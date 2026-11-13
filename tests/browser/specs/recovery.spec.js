@@ -23,7 +23,7 @@
 // failed player, and a spinner with no words at all when the signal dropped.
 
 const {
-  test, expect, projectFacts, videoState, waitForMetadata, pressPlay, waitForTime, watchNote, notesShown, sourceReloads,
+  test, expect, projectFacts, videoState, waitForMetadata, pressPlay, watchNote, notesShown, sourceReloads,
   press, pixelsAround, twoColours, contrast,
 } = require('../lib/harness');
 
@@ -63,6 +63,9 @@ test('a video taken down as the page opens: two tries, then the note; a press tr
     await route.continue();
   });
   problems.allow(/status of 410/);
+  // Firefox's own play button calls play() on the failed player and lets the refusal go
+  // unhandled; that is the browser's doing, not the page's (watch.js catches its own).
+  problems.allow(/media resource indicated by the src attribute .* was not suitable/);
   await page.goto(clip.watch);
 
   // It tried, and it stopped trying.
@@ -207,6 +210,7 @@ test('a video this customer\'s connection cannot fetch: taps and "try again" are
   // a dead spot). The office must not see "watched" for a customer who saw a yellow note.
   await page.route('**/w/*/video', (route) => route.abort('connectionfailed'));
   problems.allow(/Failed to load resource/);
+  problems.allow(/media resource indicated by the src attribute .* was not suitable/); // Firefox's own play button, as above
   await page.goto(clip.watch);
   await expect(note(page)).toBeVisible();
   await expect(note(page)).toHaveText(FAILED);
@@ -236,25 +240,28 @@ test('a video this customer\'s connection cannot fetch: taps and "try again" are
 
 test.describe('a weak signal', () => {
   // The bucket trickles the file a little faster than it plays (it needs 340 KB a second), and
-  // can be told to stop in mid-answer. Not much faster: a browser that asks for the whole file
-  // at once (Safari) must not have all of it before the signal is cut.
+  // can be told to stop in mid-answer.
   const film = (server) => server.newVideo({ file: 'stretched', throttle: 420000 });
+  // The signal drops at this byte of the file: the index and about two and a half seconds of
+  // picture arrive, and nothing after them. The place is fixed before the page opens, so it
+  // is the same in every browser. (Cutting the signal once play had started was a race that
+  // Safari won: it asks for the whole file at once, and on a slow test machine had all of it.)
+  const DROPS_AT = 900_000;
 
-  /** Play, then cut the signal. Returns when the picture has stopped, with the time it stopped. */
+  /** Open the page with the signal set to drop part-way into the file, and press play. Returns when the picture has stopped, with the time it stopped. */
   async function playThenStall(page, server, clip, testInfo) {
+    await server.stall(clip.token, true, DROPS_AT);
     await page.goto(clip.watch);
     await waitForMetadata(page, 30_000);
     await watchNote(page);
     expect(await pressPlay(page, testInfo)).not.toBe('');
-    await waitForTime(page, 0.6);
-    await server.stall(clip.token, true);
     // The picture runs on for as long as the browser has something left, then stops.
     let at = -1;
     let since = Date.now();
     await expect.poll(async () => {
       const s = await videoState(page);
       if (s.time !== at) { at = s.time; since = Date.now(); }
-      return s.ended ? 'the clip ended before the signal could be cut: the browser already had all of it' : (Date.now() - since >= 700 ? 'stopped' : 'still moving');
+      return s.ended ? 'the clip ended although the bucket held back most of the file' : (Date.now() - since >= 700 && s.time > 0.3 ? 'stopped' : 'still moving');
     }, { message: 'the picture never stopped although the bucket stopped sending', timeout: 20_000, intervals: [150] }).toBe('stopped');
     return since;
   }

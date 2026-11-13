@@ -41,6 +41,10 @@ A control API, added by wrapping the app HERE and never in src/:
     POST /__test/stall?token=TOKEN&on=1 the bucket stops sending this object in mid-answer, as when
                                         a phone loses its signal; on=0 lets it flow again. Only for
                                         a video filmed with throttle= (those are sent in pieces).
+           from=BYTES                   only the file from this byte on is held back: what lies
+                                        before it still arrives. Set before the page is opened,
+                                        the signal "drops" at the same place in every browser,
+                                        however much of the file that browser asks for at once.
 
 The refusal. A real S3-compatible bucket refuses an expired link with status 403 and a body that
 starts `<?xml version="1.0" encoding="UTF-8"?><Error>...`, sent as application/xml. That is the
@@ -245,6 +249,7 @@ class Bucket(MemoryStorage):
         self.throttle: dict[str, tuple[int, int]] = {}  # per object: (bytes a second, first byte ms)
         self.dead_before: dict[str, float] = {}  # per object: links signed before this are dead
         self.held: set[str] = set()  # objects whose answers are stopped in mid-flow (no signal)
+        self.hold_from: dict[str, int] = {}  # per held object: the byte from which nothing is sent (default 0)
         self.refusal: dict[str, str] = {}  # per object: "visible" leaves the XML declaration off
         self.requests: list[dict[str, Any]] = []
         self.links: list[dict[str, Any]] = []
@@ -274,12 +279,14 @@ class Bucket(MemoryStorage):
 
 
 def bucket_app(bucket: Bucket, prefix: str = "") -> Starlette:
-    async def trickle(key: str, part: bytes, rate: int, first_byte_ms: int, row: dict[str, Any]):
+    async def trickle(key: str, part: bytes, rate: int, first_byte_ms: int, row: dict[str, Any], start: int = 0):
         if first_byte_ms:
             await asyncio.sleep(first_byte_ms / 1000)
         step = max(512, min(rate, 2_000_000) // 20)
         for i in range(0, len(part), step):
-            while key in bucket.held:  # the signal has dropped: nothing more arrives until it is back
+            # The signal has dropped: nothing more arrives until it is back. With a place in the
+            # file given (hold_from), what lies before that place still arrives.
+            while key in bucket.held and start + i >= bucket.hold_from.get(key, 0):
                 await asyncio.sleep(0.05)
             piece = part[i:i + step]
             yield piece
@@ -309,7 +316,7 @@ def bucket_app(bucket: Bucket, prefix: str = "") -> Starlette:
         etag = hashlib.md5(body, usedforsecurity=False).hexdigest()
         head = {"Accept-Ranges": "bytes", "Content-Type": "video/mp4", "ETag": f'"{etag}"',
                 "Last-Modified": "Fri, 13 Nov 2026 17:00:00 GMT"}
-        status, part = 200, body
+        status, part, start = 200, body, 0
         rng = request.headers.get("range")
         if rng and rng.startswith("bytes=") and "," not in rng:
             a, _, b = rng[6:].partition("-")
@@ -330,7 +337,7 @@ def bucket_app(bucket: Bucket, prefix: str = "") -> Starlette:
         rate, first_byte_ms = bucket.throttle.get(key, (0, 0))
         if rate or first_byte_ms:
             row["status"], row["bytes"] = status, len(part)
-            return StreamingResponse(trickle(key, part, rate or 10**9, first_byte_ms, row), status, headers=head)
+            return StreamingResponse(trickle(key, part, rate or 10**9, first_byte_ms, row, start), status, headers=head)
         row["sent"] = len(part)
         return done(Response(part, status, headers=head), len(part))
 
@@ -651,9 +658,11 @@ async def main() -> None:
         if row.object_key not in bucket.throttle:
             return JSONResponse({"error": "only a video filmed with throttle= can be stalled"}, status_code=400)
         if request.query_params.get("on", "1") in ("1", "true", "yes"):
+            bucket.hold_from[row.object_key] = int(request.query_params.get("from") or 0)
             bucket.held.add(row.object_key)
         else:
             bucket.held.discard(row.object_key)
+            bucket.hold_from.pop(row.object_key, None)
         return JSONResponse({"ok": True, "stalled": row.object_key in bucket.held})
 
     async def bucket_seen(request: Request) -> Response:
