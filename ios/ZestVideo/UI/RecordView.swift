@@ -211,15 +211,16 @@ struct RecordView: View {
     private func nameCard(withAddress: Bool) -> some View {
         if let target = app.target {
             VStack(alignment: .leading, spacing: 4) {
+                // Full size, as many lines as each needs (held to two, a
+                // 45-letter business was squeezed here too). The record
+                // button below gives way.
                 Text(target.name)
                     .zestFont(.rowName)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.6)
+                    .customerText()
                 if withAddress && !target.notOnMyList {
                     Text(target.address)
                         .zestFont(.rowStreet)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.7)
+                        .customerText()
                 }
             }
             .foregroundColor(.white)

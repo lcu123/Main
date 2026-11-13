@@ -440,10 +440,21 @@ though the line is whole: the emoji comes from another font, which claims
 more height than it draws. For such a line the test measures the air round
 the drawn text in the line's own frame (`PixelContrast.air`): clear
 background above it, below it and at its end, or it fails. Those rows are
-in the same table and are read again by `measure_contrast.py`. The same
-audit was right about the town on a route card: held to one line, it was
-drawn at about 80% of its size on the smallest iPhone. It now takes a
-second line at full size.
+in the same table and are read again by `measure_contrast.py`.
+
+**A customer's name, street and town are never squeezed.** The same audit
+was right twice. Held to one line, the town on a route card was drawn at
+about 80% of its size on the smallest iPhone; held to two, a 45-letter
+business name on the review screen at about 90% (and on the camera screen
+too, which the audit did not flag). Neither was cut, but one more word and
+they would have ended in "…". Now everything that comes from a customer's
+record is drawn one way, `customerText()` in `Controls.swift`: at its full
+size, on as many lines as it needs; the card or page grows and scrolls.
+The one case in which it is drawn smaller is a single word too long for
+the line ("Christopherson," in the largest type on the smallest phone):
+that word is shrunk, to three quarters at the least, rather than broken in
+two. A ZestCore test reads the screens' source and fails if a name, street
+or town is given a line limit of its own.
 
 **The clock holds still in screenshot mode.** "7 MIN LEFT" on a card stays
 "7 MIN LEFT" for as long as the screen is open, so a check that takes two

@@ -303,36 +303,24 @@ struct StopCard: View {
                                 ActionText(headline)
                             }
                             MetaLines(parts: meta)
-                            // Three lines and a little shrinking: a long
-                            // business name must never end in "…".
+                            // Each at its full size, on as many lines as
+                            // it needs: a long business name must never be
+                            // squeezed or end in "…". (Held to one line, a
+                            // 20-letter town was drawn at about 80% on the
+                            // smallest phone.)
                             Text(stop.listName)
                                 .zestFont(.rowName)
                                 .foregroundColor(Theme.ink)
-                                .lineLimit(3)
-                                .minimumScaleFactor(0.7)
-                                .multilineTextAlignment(.leading)
-                                .fixedSize(horizontal: false, vertical: true)
+                                .customerText()
                             Text(stop.address)
                                 .zestFont(.rowStreet)
                                 .foregroundColor(Theme.ink)
-                                .lineLimit(3)
-                                .minimumScaleFactor(0.7)
-                                .multilineTextAlignment(.leading)
-                                .fixedSize(horizontal: false, vertical: true)
+                                .customerText()
                             if !stop.cityLine.isEmpty {
-                                // At its full size, on a second line when
-                                // it has to be. On one line it was squeezed
-                                // to about 80% on the smallest phone for a
-                                // 20-letter town, and a 26-letter one
-                                // ("El Dorado Hills, CA 95762" is 25) would
-                                // have ended in "…".
                                 Text(stop.cityLine)
                                     .zestFont(.rowStreet)
                                     .foregroundColor(Theme.softInk)
-                                    .lineLimit(2)
-                                    .minimumScaleFactor(0.7)
-                                    .multilineTextAlignment(.leading)
-                                    .fixedSize(horizontal: false, vertical: true)
+                                    .customerText()
                             }
                         }
                         Spacer(minLength: 0)

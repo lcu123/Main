@@ -64,10 +64,7 @@ struct QueueView: View {
                             Text(item.customerName)
                                 .zestFont(.rowName)
                                 .foregroundColor(Theme.ink)
-                                .lineLimit(3)
-                                .minimumScaleFactor(0.7)
-                                .multilineTextAlignment(.leading)
-                                .fixedSize(horizontal: false, vertical: true)
+                                .customerText()
                             // A video saved late says which day it was filmed.
                             if let filmed = app.filmedText(for: item) {
                                 Text(filmed)

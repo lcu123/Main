@@ -194,6 +194,12 @@ enum Theme {
         max(role.floor, (role.base * scale).rounded())
     }
 
+    /// How far one word that is too long for its line may be drawn smaller
+    /// rather than broken in two (see `customerText()`). Three quarters:
+    /// "Christopherson," in the largest type on the smallest iPhone needs
+    /// about 0.87. A word that would need less than this is broken instead.
+    static let longWordShrink: CGFloat = 0.75
+
     // MARK: Controls and layout
 
     /// Cards and buttons.

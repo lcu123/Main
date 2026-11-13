@@ -195,28 +195,55 @@ final class AppSourceRulesTests: XCTestCase {
         XCTAssertFalse(model.contains("frozenNow ="), "only screenshot mode may set it")
     }
 
-    /// On a route card, what comes from the customer's record (name,
-    /// street, town) takes a second line at its full size when it does not
-    /// fit on one. It is never held to one line and squeezed: on the
-    /// smallest iPhone that drew a 20-letter town at about 80% of its size,
-    /// and a longer one would have ended in "…".
-    func testNothingFromTheCustomersRecordIsHeldToOneLineOnARouteCard() throws {
-        let lines = try text("ZestVideo/UI/TodayView.swift").components(separatedBy: "\n")
-        var found = 0
-        for (index, line) in lines.enumerated() where line.contains("Text(stop.") {
-            found += 1
-            let what = line.trimmingCharacters(in: .whitespaces)
-            // Its modifiers: the lines that follow, up to the next view.
-            var modifiers: [String] = []
-            for next in lines[(index + 1)...] {
-                let trimmed = next.trimmingCharacters(in: .whitespaces)
-                guard trimmed.hasPrefix(".") else { break }
-                modifiers.append(trimmed)
+    /// What comes from a customer's record (a name, a street, a town) is
+    /// drawn the same way on every screen: at its full size, on as many
+    /// lines as it needs (`customerText()`). It is never held to a number of
+    /// lines of its own, because that is what squeezes it: held to one
+    /// line, a 20-letter town was drawn at about 80% on the smallest iPhone;
+    /// held to two, a 45-letter business name at about 90% on the review
+    /// screen. One more letter than fits at the smallest size allowed, and
+    /// the line ends in "…".
+    func testEverythingFromTheCustomersRecordIsDrawnAtFullSizeOnAsManyLinesAsItNeeds() throws {
+        let places: [(file: String, texts: [String])] = [
+            ("ZestVideo/UI/TodayView.swift", ["Text(stop.listName)", "Text(stop.address)", "Text(stop.cityLine)"]),
+            ("ZestVideo/UI/QueueView.swift", ["Text(item.customerName)"]),
+            ("ZestVideo/UI/ReviewView.swift", ["Text(draft.target.name)"]),
+            ("ZestVideo/UI/RecordView.swift", ["Text(target.name)", "Text(target.address)"]),
+            // The big card on the confirm, video and warning screens.
+            ("ZestVideo/UI/Controls.swift", ["Text(name)", "Text(address)", "Text(cityLine)"]),
+        ]
+        for place in places {
+            let lines = try text(place.file).components(separatedBy: "\n")
+            for wanted in place.texts {
+                let hits = lines.indices.filter { lines[$0].trimmingCharacters(in: .whitespaces) == wanted }
+                XCTAssertEqual(hits.count, 1, "\(wanted) should be drawn in one place in \(place.file)")
+                for index in hits {
+                    // Its modifiers: the lines that follow, up to the next view.
+                    var modifiers: [String] = []
+                    for next in lines[(index + 1)...] {
+                        let trimmed = next.trimmingCharacters(in: .whitespaces)
+                        guard trimmed.hasPrefix(".") else { break }
+                        modifiers.append(trimmed)
+                    }
+                    XCTAssertTrue(modifiers.contains(".customerText()"), "\(wanted) in \(place.file) must be drawn with customerText()")
+                    XCTAssertEqual(modifiers.filter { $0.hasPrefix(".lineLimit(") }, [], "\(wanted) in \(place.file) is held to a number of lines")
+                    XCTAssertEqual(modifiers.filter { $0.hasPrefix(".minimumScaleFactor(") }, [], "\(wanted) in \(place.file) has a squeeze of its own")
+                }
             }
-            XCTAssertFalse(modifiers.contains(".lineLimit(1)"), "\(what) is held to one line")
-            XCTAssertTrue(modifiers.contains(".fixedSize(horizontal: false, vertical: true)"), "\(what) must be free to grow down the card")
         }
-        XCTAssertEqual(found, 3, "the name, the street and the town")
+
+        // And `customerText()` is what it says.
+        let controls = try text("ZestVideo/UI/Controls.swift")
+        let start = try XCTUnwrap(controls.range(of: "struct CustomerText: ViewModifier {"))
+        let body = String(controls[start.upperBound...].prefix(400))
+        XCTAssertTrue(body.contains(".lineLimit(nil)"), "no limit on lines")
+        XCTAssertTrue(body.contains(".fixedSize(horizontal: false, vertical: true)"), "free to grow down the page")
+        XCTAssertTrue(body.contains(".minimumScaleFactor(Theme.longWordShrink)"), "only an over-long word is shrunk, and only so far")
+        // That far is not far: three quarters at the least.
+        let theme = try text("ZestVideo/UI/Theme.swift")
+        let found = try XCTUnwrap(theme.range(of: "static let longWordShrink: CGFloat = "))
+        let number = theme[found.upperBound...].prefix { $0.isNumber || $0 == "." }
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(Double(number)), 0.75)
     }
 
     /// No third-party code, and no sharing of a video out of the app.

@@ -63,17 +63,19 @@ struct ReviewView: View {
     // MARK: Ask
 
     private var ask: some View {
-        // `squeeze`: the clip takes whatever height is left, so the name, the
-        // whole "I recommended something" row and both buttons always show
-        // on first view, on every phone, with nothing below the fold.
+        // `squeeze`: the clip takes whatever height is left, so with an
+        // ordinary name the name, the whole "I recommended something" row
+        // and both buttons show on first view. The name is never what gives
+        // way: a long one takes the lines it needs at its full size (held
+        // to two, a 45-letter business was drawn at about 90% on the
+        // smallest phone), the clip goes down to its smallest, and then the
+        // page scrolls.
         Screen(bar: "Review", title: "Save this video?", squeeze: true) {
             if let draft = app.draft {
                 Text(draft.target.name)
                     .zestFont(.rowName)
                     .foregroundColor(Theme.ink)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.7)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .customerText()
                 // A clip from an earlier day says which day.
                 if let filmed = app.draftFilmedText {
                     Text(filmed)

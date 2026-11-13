@@ -651,15 +651,13 @@ struct StopHeadline: View {
                 } else {
                     SmallLabel("Customer")
                 }
-                // Up to four lines: a 45-letter business name has to show
-                // whole on the smallest phone, in this very large type.
+                // As many lines as it needs: a 45-letter business name
+                // has to show whole, at this size, on the smallest phone.
                 Text(name)
                     .zestFont(style == .small ? .heroStreet : .heroName)
                     .fontWeight(.semibold)
                     .foregroundColor(Theme.ink)
-                    .lineLimit(4)
-                    .minimumScaleFactor(0.6)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .customerText()
                 if !address.isEmpty {
                     if style != .small {
                         Hairline()
@@ -669,20 +667,47 @@ struct StopHeadline: View {
                     Text(address)
                         .zestFont(style == .small ? .rowStreet : .heroStreet)
                         .foregroundColor(Theme.ink)
-                        .lineLimit(3)
-                        .minimumScaleFactor(0.6)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .customerText()
                     if !cityLine.isEmpty {
                         Text(cityLine)
                             .zestFont(.body)
                             .foregroundColor(Theme.softInk)
-                            .fixedSize(horizontal: false, vertical: true)
+                            .customerText()
                     }
                 }
             }
             .padding(style == .full ? 20 : 14)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// How every line that comes from a customer's record is drawn: a name, a
+/// street, a town.
+///
+/// **At its full size, on as many lines as it needs.** It is never held to a
+/// number of lines, so it is never squeezed to fit one and never ends in
+/// "…". The card or page it is on grows, and scrolls if it has to.
+///
+/// The one case in which it is drawn smaller: a single word too long for
+/// the line (a 15-letter surname in the largest type on the smallest
+/// phone). That word is shrunk, to no less than `Theme.longWordShrink` of
+/// its size, rather than broken in two. With no limit on lines, nothing
+/// else makes the text shrink.
+struct CustomerText: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .lineLimit(nil)
+            .minimumScaleFactor(Theme.longWordShrink)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+extension View {
+    /// A line from a customer's record: full size, as many lines as it needs.
+    func customerText() -> some View {
+        modifier(CustomerText())
     }
 }
 
