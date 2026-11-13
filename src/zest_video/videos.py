@@ -136,7 +136,8 @@ async def register(ctx: Ctx, device: Device, body: dict[str, Any]) -> dict[str, 
         raise ApiError(400, "bad_request", "Pick a stop for this video.")
 
     snapshot = {"customer_name": "", "address": "", "city_line": ""}
-    appointment_ids = [i for i in (to_int(x) for x in body.get("appointmentIds") or []) if i]
+    raw_ids = body.get("appointmentIds")
+    appointment_ids = [i for i in (to_int(x) for x in (raw_ids if isinstance(raw_ids, list) else [])) if i and i > 0]
     stop = None
     if customer_id is not None:
         if device.demo:
@@ -354,6 +355,17 @@ async def send_due(ctx: Ctx) -> int:
                 .limit(50)
             )
         ).all()
+    # One FieldRoutes read for the whole pass instead of one per email: the daily quota
+    # is shared with everything else that touches the office, and a busy afternoon can
+    # have dozens of videos due at once.
+    known: dict[int, dict[str, Any]] | None = None
+    ids = sorted({v.customer_id for v in due if v.customer_id and v.customer_id > 0 and not v.demo})
+    if len(ids) > 1 and ctx.cfg.email_mode != "off" and ctx.mailer.delivers:
+        try:
+            known = await ctx.fr.customers(ids)
+        except FieldRoutesError:
+            known = None  # each video then asks for itself, and waits if FieldRoutes is down
+
     sent = 0
     for video in due:
         # Take a lease first: if this process dies mid-send, the next pass retries
@@ -364,7 +376,7 @@ async def send_due(ctx: Ctx) -> int:
                 .where(db.videos.c.id == video.id, db.videos.c.state == "held", db.videos.c.email_due_at <= now)
                 .values(email_due_at=now + EMAIL_RETRY)
             )
-        if claimed.rowcount and await _deliver(ctx, video):
+        if claimed.rowcount and await _deliver(ctx, video, known):
             sent += 1
     return sent
 
@@ -377,8 +389,9 @@ async def _finish(ctx: Ctx, video: Any, state: str, **values: Any) -> bool:
     return bool(result.rowcount)
 
 
-async def _deliver(ctx: Ctx, video: Any) -> bool:
-    """Decide whether this video's customer gets an email, send it, and file the link."""
+async def _deliver(ctx: Ctx, video: Any, known: dict[int, dict[str, Any]] | None = None) -> bool:
+    """Decide whether this video's customer gets an email, send it, and file the link.
+    `known` is this pass's customer records when they were fetched together."""
     cfg = ctx.cfg
     settings = await get_settings(ctx)
     link = watch_url(ctx, video.token)
@@ -460,10 +473,13 @@ async def _deliver(ctx: Ctx, video: Any) -> bool:
     if opted_out:
         return await no_email("opted_out")
 
-    try:
-        customer = (await ctx.fr.customers([video.customer_id])).get(video.customer_id)
-    except FieldRoutesError:
-        return False  # FieldRoutes is down; the lease brings this video back in a few minutes
+    if known is not None:
+        customer = known.get(video.customer_id)
+    else:
+        try:
+            customer = (await ctx.fr.customers([video.customer_id])).get(video.customer_id)
+        except FieldRoutesError:
+            return False  # FieldRoutes is down; the lease brings this video back in a few minutes
     address = clean((customer or {}).get("email")).lower()
     if customer is None or "@" not in address or "." not in address.rpartition("@")[2]:
         return await no_email(

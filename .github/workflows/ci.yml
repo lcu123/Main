@@ -51,7 +51,7 @@ jobs:
       - name: Run the video server tests against the database production uses
         env:
           VIDEO_TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/zest_test
-        run: pytest -q tests/test_video_app.py tests/test_video_web.py tests/test_video_edges.py
+        run: pytest -q tests/test_video_app.py tests/test_video_web.py tests/test_video_edges.py tests/test_video_hostile.py
 
   docker-build:
     name: docker build

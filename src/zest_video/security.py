@@ -51,7 +51,10 @@ def csrf_token(secret: str, session_token: str) -> str:
 
 def normalize_phone(raw: str) -> str:
     """US numbers down to their last 10 digits; '' when it is not a phone number."""
-    digits = re.sub(r"\D", "", raw or "")
+    raw = (raw or "").strip()
+    if not re.fullmatch(r"[0-9 +().\-]{7,24}", raw):
+        return ""  # letters or other text around the digits: not a phone number someone typed
+    digits = re.sub(r"\D", "", raw)
     if len(digits) == 11 and digits.startswith("1"):
         digits = digits[1:]
     return digits if len(digits) == 10 else ""

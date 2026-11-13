@@ -140,6 +140,17 @@ Proven:
   machine, 10-minute window, phone-number formatting) has its own test suite
   that also runs on Linux.
 
+- Server under stress (`scripts/video_load_test.py`, on Postgres): 200 techs
+  filming 15 stops each, all at once and every request sent twice. 3,000
+  videos, 3,000 emails, exactly one per customer, 73 FieldRoutes reads for the
+  whole day. One request alone takes about 14 ms to register and 4 ms to serve
+  the watch page.
+- Server against hostile input (`tests/test_video_hostile.py`): garbage in
+  every field, broken bodies on every endpoint, script and SQL text in names,
+  comments and sign-in fields, one tech reaching for another's video, office
+  pages without a session, malformed FieldRoutes records, clock changes and
+  midnight. Nothing crashes, leaks or crosses over.
+
 Not proven until it runs on real phones with real accounts:
 
 - Recording, background upload and speech-to-text on a physical iPhone. The
