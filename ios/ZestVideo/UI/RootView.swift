@@ -47,6 +47,8 @@ struct RootView: View {
             StopVideoView()
         case .queue:
             QueueView()
+        case .storage:
+            StorageView()
         case .remindersOffer:
             RemindersOfferView()
         case .updateRequired:

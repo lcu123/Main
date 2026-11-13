@@ -131,7 +131,7 @@ struct RecordView: View {
     /// The ring and the record button share one size: about two thirds of
     /// the screen's width, or less when the screen is too short for that.
     private func controlDiameter(in size: CGSize, reserved: CGFloat) -> CGFloat {
-        max(120, min(size.width * Theme.ringShare, size.height - reserved))
+        max(Theme.minRoundControl, min(size.width * Theme.ringShare, size.height - reserved))
     }
 
     private func readyOverlay(size: CGSize) -> some View {
@@ -164,7 +164,7 @@ struct RecordView: View {
             // squeezed or pushed off the screen.
             GeometryReader { room in
                 let wordsHeight = (Theme.size(.recordLabel) * 1.25 + 16) * typeScale
-                let side = max(120, min(diameter, room.size.height - wordsHeight - 12))
+                let side = max(Theme.minRoundControl, min(diameter, room.size.height - wordsHeight - 12))
                 VStack(spacing: 12) {
                     Button(action: capturePressed) {
                         ZStack {
@@ -284,7 +284,7 @@ struct RecordView: View {
             // it a little smaller, so that nothing is squeezed or cut off.
             GeometryReader { room in
                 let wordsHeight = (Theme.size(.bodyBold) * 2.5 + 16) * typeScale
-                let side = max(120, min(diameter, room.size.height - wordsHeight - 12))
+                let side = max(Theme.minRoundControl, min(diameter, room.size.height - wordsHeight - 12))
                 VStack(spacing: 12) {
                     // Tapping the ring ends the clip early (after the first
                     // three seconds).

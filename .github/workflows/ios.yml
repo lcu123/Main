@@ -5,8 +5,9 @@ name: iOS
 #   app         real Xcode build + unit tests on an iPhone simulator
 #   screens     pictures of every screen, taken in the simulator (artifact "screens")
 #   ui-tests    end-to-end tests: the real app in the simulator against a fake
-#               server on the runner (artifacts "ui-tests-a", "ui-tests-b";
-#               "ui-tests-c" is informational and cannot fail the run)
+#               server on the runner (artifacts "ui-tests-a", "ui-tests-b",
+#               "ui-tests-d"; "ui-tests-c" is informational and cannot fail
+#               the run)
 #   sizes       every screen on the smallest iPhone, a 6.1-inch iPhone, an iPad
 #               and at the largest text sizes: pictures (artifacts "screens-small",
 #               "screens-odd-names", "screens-mid", "screens-ipad",
@@ -285,7 +286,7 @@ jobs:
           blank=""
           slow=""
           number=0
-          for name in login code today today2 confirm far record recording review warning saved stopvideo locked queue update team; do
+          for name in login code today today2 confirm far record recording review warning saved stopvideo locked queue update team lowspace full olddraft; do
             number=$((number + 1))
             file=$(printf "screens/%02d-%s.png" "$number" "$name")
             ok=1
@@ -405,6 +406,13 @@ jobs:
           - name: kills, bad network
             slug: b
             classes: KillUITests NetworkUITests TeamUITests BackgroundUploadUITests
+            signed: false
+            informational: false
+          # Named to run last here: WithoutLocationUITests refuses the
+          # location question, then puts the phone's answer back.
+          - name: storage, drafts, no location
+            slug: d
+            classes: StorageUITests DraftUITests WithoutLocationUITests
             signed: false
             informational: false
           - name: background uploads, signed build, informational

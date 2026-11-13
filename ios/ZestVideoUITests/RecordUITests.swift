@@ -303,7 +303,11 @@ final class RecordUITests: ZestUITestCase {
         )
     }
 
-    /// STOP NOT ON MY LIST records with no customer; the office matches it.
+    /// STOP NOT ON MY LIST records with no customer. The video goes to the
+    /// office to be matched, and the app says so: "SENT TO OFFICE", never
+    /// "sent to the customer", and no countdown to an email (the server
+    /// sends no email time for it). The ten minutes to change or delete it
+    /// still run, counted from when it was filmed.
     func testNotOnMyListRecordsWithoutCustomer() {
         launchSignedIn()
         tap(app.buttons["not-on-my-list"], "STOP NOT ON MY LIST")
@@ -312,18 +316,123 @@ final class RecordUITests: ZestUITestCase {
         waitFor(app.buttons["record-button"], "the red record button")
         recordClip()
         saveClip()
-        waitForHeld()
+        waitUntil("the server holds the whole file, waiting for the office to match it", timeout: 60) {
+            server.state().videos.first?.isWithTheOffice ?? false
+        }
 
         let video = theOnlyVideo()
         XCTAssertTrue(video.notOnMyList, "notOnMyList: true goes with the video.")
         XCTAssertNil(video.customerId, "No customer is sent for a stop that is not on the list.")
         XCTAssertFalse(video.override)
         XCTAssertEqual(video.completes, [200])
+        XCTAssertEqual(video.state, "unmatched", "The server keeps it for the office to match.")
 
         // It does not count for any stop on the route.
         XCTAssertTrue(routeHeader.contains("Sent 1 of 5"), "The header says: \(routeHeader)")
         tap(app.buttons["tab-videos"], "the My Videos tab")
-        waitForLabel(app.buttons["video-row-offlist"], "the video's row", contains: "Sent")
+        let row = app.buttons["video-row-offlist"]
+        waitForLabel(row, "the video's row", contains: "Sent To Office")
+        XCTAssertTrue(label(of: row).contains("Min Left"), "Inside its ten minutes it can still be changed. The row says: \(label(of: row))")
+        waitForLabel(element("held-space"), "the space line", contains: "holding 0 MB")
+        XCTAssertFalse(element("keep-app-warning").exists, "The server has it: nothing is left on the phone.")
+
+        // Its screen, inside the ten minutes: where it goes, in true words.
+        tap(row, "the video's row")
+        waitForBar("Video")
+        waitForText("Then the office matches it to the customer.")
+        XCTAssertTrue(hasText("Sent To Office") || hasText("SENT TO OFFICE"))
+        XCTAssertFalse(hasText("goes to the customer"), "No email is on its way: the screen must not say it goes to the customer.")
+        XCTAssertFalse(hasText("email"))
+        XCTAssertTrue(button("RECORD AGAIN").exists)
+        XCTAssertTrue(button("DELETE VIDEO").exists, "The ten minutes to delete it run from when it was filmed.")
+        tap(button("BACK"), "BACK")
+        waitForBar("My Route")
+
+        // Once the time to change it has passed (the office sets how long;
+        // here it is set to nothing): it is the office's, and says so.
+        server.set(["holdMinutes": 0])
+        leaveAndComeBack()
+        tap(app.buttons["tab-videos"], "the My Videos tab")
+        waitUntil("the row no longer offers to change the video", timeout: 40) {
+            let words = self.label(of: row)
+            return words.contains("Sent To Office") && !words.contains("Min Left") && !words.contains("Change Video")
+        }
+        tap(row, "the video's row")
+        waitForBar("Video")
+        waitForText("This video went to the office.")
+        waitForText("They will match it to the customer.")
+        XCTAssertFalse(hasText("already went to the customer"))
+        XCTAssertFalse(button("DELETE VIDEO").exists, "After the ten minutes it cannot be deleted from the phone.")
+        XCTAssertFalse(button("RECORD AGAIN").exists)
+        XCTAssertEqual(theOnlyVideo().state, "unmatched", "Looking changes nothing.")
+        tap(button("BACK"), "BACK")
+        waitForBar("My Route")
+
+        // Back inside the ten minutes: DELETE VIDEO really deletes it.
+        server.set(["holdMinutes": 10])
+        leaveAndComeBack()
+        tap(app.buttons["tab-videos"], "the My Videos tab")
+        waitForLabel(row, "the video's row", contains: "Min Left", timeout: 40)
+        tap(row, "the video's row")
+        waitForBar("Video")
+        tap(button("DELETE VIDEO"), "DELETE VIDEO")
+        waitForTitle("Delete this video?")
+        tap(button("YES, DELETE"), "YES, DELETE")
+        waitForBar("My Route")
+        waitUntil("the server marks the video deleted") { server.state().videos.first?.state == "deleted" }
+        let deleted = theOnlyVideo()
+        XCTAssertEqual(deleted.deletes, 1)
+        XCTAssertEqual(server.state().count("DELETE", "/v1/videos/", status: 409), 0, "The delete was not refused.")
+        tap(app.buttons["tab-videos"], "the My Videos tab")
+        waitForText("No videos yet today.")
+    }
+
+    /// The audit trail really reaches the server (`POST /v1/events`): after
+    /// a recording, a retake and a video saved past a warning, the server
+    /// holds each of those events, for the right customer.
+    func testAuditEventsReachTheServer() {
+        // "Hi Jane" said at Robert Johnson's: the spoken key does not match.
+        launchSignedIn(transcript: "Hi Jane. Here's what I did.")
+        openRecorder(for: Self.johnson)
+        recordClip()
+        tap(button("RECORD AGAIN"), "RECORD AGAIN")
+        waitFor(app.buttons["record-button"], "the record screen again")
+        recordClip()
+        tap(button("SAVE"), "SAVE")
+        waitForTitle("Is this the right stop?")
+        tap(button("SAVE ANYWAY"), "SAVE ANYWAY")
+        waitFor(app.buttons["tab-route"], "My Route after SAVE ANYWAY", timeout: 30)
+        answerFirstSaveQuestion()
+        waitForHeld()
+        let video = theOnlyVideo()
+        XCTAssertTrue(video.override)
+
+        // Events go when a video moves, and whenever the app is opened.
+        let wanted: Set<String> = ["record_start", "record_stop", "retake", "two_keys_warning", "override"]
+        leaveAndComeBack()
+        waitUntil("the server holds the record, retake and override events", timeout: 60) {
+            wanted.isSubset(of: Set(self.eventTypes(for: Self.johnson)))
+        }
+
+        let seen = server.state()
+        XCTAssertGreaterThanOrEqual(seen.calls("POST", exactly: "/v1/events", status: 200), 1, "The app posted its events.")
+        let types = eventTypes(for: Self.johnson)
+        func count(_ type: String) -> Int { types.filter { $0 == type }.count }
+        XCTAssertEqual(count("record_start"), 2, "Two clips were recorded. Events: \(types)")
+        XCTAssertEqual(count("record_stop"), 2, "Both stopped. Events: \(types)")
+        XCTAssertEqual(count("retake"), 1, "RECORD AGAIN was tapped once. Events: \(types)")
+        XCTAssertEqual(count("override"), 1, "SAVE ANYWAY was tapped once. Events: \(types)")
+        XCTAssertGreaterThanOrEqual(count("two_keys_warning"), 1, "The warning was shown. Events: \(types)")
+
+        // Each of them names the stop that was picked, and nobody else's.
+        for event in seen.events where wanted.contains((event["type"] as? String) ?? "") {
+            XCTAssertEqual(event["customerId"] as? Int, Self.johnson, "\(event["type"] ?? "?") is for the stop that was picked.")
+            XCTAssertNotNil(event["at"], "Every event says when.")
+        }
+        let override = seen.events.first { ($0["type"] as? String) == "override" }
+        XCTAssertEqual(override?["videoId"] as? String, video.id, "The override names the video that was saved.")
+        let retake = seen.events.first { ($0["type"] as? String) == "retake" }
+        XCTAssertNotEqual(retake?["videoId"] as? String, video.id, "The retake names the clip that was thrown away, not the one kept.")
     }
 
     /// A gloved thumb taps twice. The second tap must never answer the

@@ -8,6 +8,10 @@ import ZestCore
 /// the video is queued on the phone and sends by itself. While the clip
 /// plays, the two-keys check runs; if it does not pass, one warning is shown
 /// here and the tech fixes it himself.
+///
+/// The draft stays: a clip left unsaved is still here the next day. Then the
+/// screen says which day it was filmed and the choice is SAVE or DELETE
+/// VIDEO, since he is not at that stop any more to record it again.
 struct ReviewView: View {
     @EnvironmentObject private var app: AppModel
 
@@ -16,6 +20,8 @@ struct ReviewView: View {
         case checking
         case warning
         case saved
+        /// "Delete this video?", for a clip from an earlier day.
+        case confirmDelete
     }
 
     @State private var stage: Stage
@@ -37,6 +43,7 @@ struct ReviewView: View {
             case .ask, .checking: ask
             case .warning: warning
             case .saved: saved
+            case .confirmDelete: deleteQuestion
             }
         }
         .onAppear(perform: startPlayer)
@@ -66,6 +73,16 @@ struct ReviewView: View {
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
                     .fixedSize(horizontal: false, vertical: true)
+                // A clip from an earlier day says which day.
+                if let filmed = app.draftFilmedText {
+                    Text(filmed)
+                        .zestFont(.bodyBold)
+                        .foregroundColor(Theme.ink)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.7)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("draft-filmed")
+                }
             }
             clip
             if app.config.recommendButton {
@@ -75,9 +92,46 @@ struct ReviewView: View {
             BigButton(title: stage == .checking ? "CHECKING…" : "SAVE", kind: .primary, isBusy: stage == .checking) {
                 save(override: false)
             }
-            BigButton(title: "RECORD AGAIN", kind: .plain) {
+            if filmedToday {
+                BigButton(title: "RECORD AGAIN", kind: .plain) {
+                    stopPlayer()
+                    app.recordAgainFromReview()
+                }
+            } else {
+                deleteButton
+            }
+        }
+    }
+
+    /// RECORD AGAIN only makes sense at the stop, on the day.
+    private var filmedToday: Bool {
+        DraftRule.canRecordAgain(app.draftStanding)
+    }
+
+    private var deleteButton: some View {
+        BigButton(title: "DELETE VIDEO", kind: .dark) {
+            stage = .confirmDelete
+        }
+    }
+
+    // MARK: Delete (a clip from an earlier day)
+
+    private var deleteQuestion: some View {
+        Screen(bar: "Delete Video", title: "Delete this video?") {
+            if let draft = app.draft {
+                StopHeadline(name: draft.target.name, address: draft.target.address, style: .tight)
+            }
+            if let filmed = app.draftFilmedText {
+                BodyText(filmed, bold: true)
+            }
+            BodyText("The customer will not get a video for this visit.")
+        } footer: {
+            BigButton(title: "YES, DELETE", kind: .dark) {
                 stopPlayer()
-                app.recordAgainFromReview()
+                app.deleteDraft()
+            }
+            BigButton(title: "NO, KEEP IT", kind: .plain) {
+                stage = .ask
             }
         }
     }
@@ -159,6 +213,9 @@ struct ReviewView: View {
                 // The smaller card: the warning under it has to show too.
                 StopHeadline(name: draft.target.name, address: draft.target.address, style: .small)
             }
+            if let filmed = app.draftFilmedText {
+                BodyText(filmed, bold: true)
+            }
             ForEach(result?.reasons ?? [], id: \.self) { reason in
                 Banner(text: reason, tone: .attention)
             }
@@ -169,13 +226,19 @@ struct ReviewView: View {
             BigButton(title: "SAVE ANYWAY", kind: .attention) {
                 save(override: true)
             }
-            BigButton(title: "PICK THE RIGHT STOP", kind: .plain) {
-                stopPlayer()
-                app.showStopPicker()
-            }
-            BigButton(title: "RECORD AGAIN", kind: .plain) {
-                stopPlayer()
-                app.recordAgainFromReview()
+            if filmedToday {
+                BigButton(title: "PICK THE RIGHT STOP", kind: .plain) {
+                    stopPlayer()
+                    app.showStopPicker()
+                }
+                BigButton(title: "RECORD AGAIN", kind: .plain) {
+                    stopPlayer()
+                    app.recordAgainFromReview()
+                }
+            } else {
+                // Another day's list is gone: there is no other stop to
+                // pick and nothing to record again.
+                deleteButton
             }
         }
     }
@@ -315,9 +378,11 @@ struct PickStopView: View {
     }
 }
 
-/// A large on/off switch, drawn to match the rest of the app: blue with
-/// "YES" when on, grey with "NO" when off. It only shows the state; the whole
-/// row it sits in is the button.
+/// A large on/off switch, drawn to match the rest of the app: deep blue with
+/// "YES" and the knob on the right when on, dark grey with "NO" and the knob
+/// on the left when off. The word and the knob are white on both, so each
+/// reads against its track in bright sun (see `Theme.switchOn`). It only
+/// shows the state; the whole row it sits in is the button.
 struct BigSwitch: View {
     let isOn: Bool
 
@@ -325,7 +390,7 @@ struct BigSwitch: View {
         let knob: CGFloat = 46
         ZStack {
             Capsule()
-                .fill(isOn ? Theme.blue : Theme.hairline)
+                .fill(isOn ? Theme.switchOn : Theme.switchOff)
             HStack(spacing: 0) {
                 if isOn {
                     word
@@ -344,7 +409,7 @@ struct BigSwitch: View {
     private var word: some View {
         Text(isOn ? "YES" : "NO")
             .font(.system(size: Theme.size(.pill), weight: .bold))
-            .foregroundColor(isOn ? Color.white : Theme.ink)
+            .foregroundColor(Theme.white)
             .lineLimit(1)
             .minimumScaleFactor(0.7)
             .frame(maxWidth: .infinity)

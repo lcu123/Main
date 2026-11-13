@@ -507,6 +507,10 @@ extension StateTone {
 }
 
 /// A video's state in words on a colored chip: never a bare icon.
+///
+/// The chip is as wide as its words and is never shrunk or cut off. Where
+/// there is not the width for them on one line (a small phone with the
+/// largest text), they take a second line.
 struct StatusChip: View {
     let text: String
     let tone: StateTone
@@ -516,12 +520,16 @@ struct StatusChip: View {
             .tracking(0.5)
             .zestFont(.pill)
             .foregroundColor(tone == .action ? Theme.softInk : tone.ink)
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
+            .multilineTextAlignment(.center)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
-            .background(Capsule().fill(tone.fill))
-            .overlay(Capsule().strokeBorder(tone == .action ? Theme.hairline : Color.clear, lineWidth: 2))
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(tone.fill))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(tone == .action ? Theme.hairline : Color.clear, lineWidth: 2)
+            )
     }
 }
 
@@ -601,12 +609,27 @@ struct StopHeadline: View {
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: style == .small ? 4 : 6) {
-                HStack(alignment: .center, spacing: 10) {
-                    SmallLabel("Customer")
-                    Spacer(minLength: 0)
-                    if let chip {
-                        chip
+                if let chip {
+                    // The label and the video's state share a line when both
+                    // fit whole, each at its own full width. When they do
+                    // not (a long state such as DONE BY TEAM on a narrower
+                    // phone, or larger text), the state goes under the
+                    // label. Neither is ever squeezed.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .center, spacing: 10) {
+                            SmallLabel("Customer")
+                                .fixedSize()
+                            Spacer(minLength: 0)
+                            chip
+                                .fixedSize()
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            SmallLabel("Customer")
+                            chip
+                        }
                     }
+                } else {
+                    SmallLabel("Customer")
                 }
                 // Up to four lines: a 45-letter business name has to show
                 // whole on the smallest phone, in this very large type.

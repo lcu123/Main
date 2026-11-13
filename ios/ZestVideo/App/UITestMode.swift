@@ -1,6 +1,7 @@
 #if targetEnvironment(simulator)
 import Foundation
 import UserNotifications
+import ZestCore
 
 /// UI-test mode. **Simulator only**: this whole file is compiled out of any
 /// build that can run on a real phone, so it cannot be reached there.
@@ -33,6 +34,12 @@ import UserNotifications
 /// 7. With `ZEST_TEST_METRICS=1` (the performance tests only) the app also
 ///    posts a line of numbers a second after each screen change: its memory
 ///    footprint, what it holds on disk, and the time since it started.
+/// 8. `ZEST_TEST_FREE_MB` says how much free space the phone "has", so the
+///    almost-full and full screens can be reached without filling a disk.
+///    The check that reads it is the real one.
+/// 9. `ZEST_TEST_DRAFT_AGE_DAYS` makes the unsaved clip found at launch that
+///    many days old, as if the phone had been put away with it. What the
+///    app then does with an old clip is the real code.
 ///
 /// `-ZestUITestReset 1` wipes everything the app has stored first, so a test
 /// starts from a clean install. With `ZEST_TEST_TOKEN` in the environment
@@ -48,6 +55,8 @@ enum UITestMode {
     static let tokenVariable = "ZEST_TEST_TOKEN"
     static let backgroundUploadsVariable = "ZEST_TEST_BACKGROUND_UPLOADS"
     static let metricsVariable = "ZEST_TEST_METRICS"
+    static let freeSpaceVariable = "ZEST_TEST_FREE_MB"
+    static let draftAgeVariable = "ZEST_TEST_DRAFT_AGE_DAYS"
 
     static var isOn: Bool { flag(argument) }
 
@@ -70,6 +79,37 @@ enum UITestMode {
     /// Use the real background URLSession for uploads (one test asks for it).
     static var backgroundUploads: Bool {
         isOn && ProcessInfo.processInfo.environment[backgroundUploadsVariable] == "1"
+    }
+
+    /// The free space the phone is to "have", in bytes, if the test said.
+    static var freeBytes: Int64? {
+        guard isOn, let megabytes = Int64(ProcessInfo.processInfo.environment[freeSpaceVariable] ?? "") else { return nil }
+        return megabytes * 1024 * 1024
+    }
+
+    /// How many days old the unsaved clip found at launch is to be made.
+    static var draftAgeDays: Int? {
+        guard isOn, let days = Int(ProcessInfo.processInfo.environment[draftAgeVariable] ?? ""), days > 0 else { return nil }
+        return days
+    }
+
+    /// The same clip, filmed `days` days earlier. (Its stop's check-in
+    /// times move with it, as they would have been on that day.)
+    static func aged(_ draft: Draft, days: Int) -> Draft {
+        let back = TimeInterval(-days * 86_400)
+        var old = draft
+        old.recordedAt = draft.recordedAt.addingTimeInterval(back)
+        old.createdAt = draft.createdAt.addingTimeInterval(back)
+        old.stopDate = ZestDates.dayString(
+            (ZestDates.parseISO(draft.stopDate + "T12:00:00Z") ?? draft.recordedAt).addingTimeInterval(back),
+            timeZone: TimeZone(identifier: "UTC") ?? .current
+        )
+        if var stop = old.target.stop {
+            stop.checkIn = stop.checkIn?.addingTimeInterval(back)
+            stop.checkOut = stop.checkOut?.addingTimeInterval(back)
+            old.target.stop = stop
+        }
+        return old
     }
 
     /// Tells the test server something worth reading in a failure report:

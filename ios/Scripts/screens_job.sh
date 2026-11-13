@@ -21,7 +21,7 @@ cd "$HERE/.."
 APP="build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app"
 SUITE="ZestVideoUITests/ScreensUITests"
 ODD_TEST="$SUITE/testOddNamesAreNeverCutOff"
-ALL="login code today today2 confirm far record recording review warning saved stopvideo locked queue update team"
+ALL="login code today today2 confirm far record recording review warning saved stopvideo locked queue update team lowspace full olddraft"
 # The awkward names: the lists, then the screen with the largest type for
 # every customer, then the other screens for the four longest names.
 ODD="today today2 queue queue@4 queue@8"

@@ -29,6 +29,12 @@ struct QueueView: View {
             // The rows say how many minutes are left to change a video.
             TimelineView(.periodic(from: Date(), by: 20)) { context in
                 VStack(alignment: .leading, spacing: 18) {
+                    // Deleting the app deletes what is still on the phone.
+                    if let warning = KeepApp.warning(videosOnPhone: app.videosOnPhoneCount) {
+                        Banner(text: warning, tone: .attention)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityIdentifier("keep-app-warning")
+                    }
                     if rows.isEmpty {
                         Banner(text: "No videos yet today.", tone: .info)
                     }
@@ -62,6 +68,14 @@ struct QueueView: View {
                                 .minimumScaleFactor(0.7)
                                 .multilineTextAlignment(.leading)
                                 .fixedSize(horizontal: false, vertical: true)
+                            // A video saved late says which day it was filmed.
+                            if let filmed = app.filmedText(for: item) {
+                                Text(filmed)
+                                    .zestFont(.rowStreet)
+                                    .foregroundColor(Theme.softInk)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                             // Where the video is, in words, whatever the row below offers.
                             StatusChip(text: item.displayText, tone: tone(item))
                         }
@@ -76,7 +90,7 @@ struct QueueView: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(item.customerName). \(item.displayText.capitalized). \(state.text.capitalized).")
+        .accessibilityLabel("\(item.customerName). \(app.filmedText(for: item).map { $0 + ". " } ?? "")\(item.displayText.capitalized). \(state.text.capitalized).")
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("video-row-" + (item.notOnMyList ? "offlist" : String(item.customerId ?? 0)))
     }

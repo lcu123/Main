@@ -46,6 +46,11 @@ struct RecordTarget: Codable, Equatable {
     /// a business's name. Nil for a video with no customer picked (and in a
     /// recording saved by an older build), which reads as plain "Hi".
     var greeting: String?
+    /// The stop as it was when it was picked: its map pin and check-in
+    /// times. An unsaved clip can outlive the day's list (the list is wiped
+    /// every night, the clip stays), and this is what it is checked against
+    /// then. Only what `/v1/today` sent: a name, an address, a pin.
+    var stop: Stop?
 
     init(stop: Stop) {
         customerId = stop.customerId
@@ -56,6 +61,7 @@ struct RecordTarget: Codable, Equatable {
         appointmentIds = stop.appointmentIds
         notOnMyList = false
         greeting = stop.greetingName
+        self.stop = stop
     }
 
     private init() {
@@ -66,6 +72,7 @@ struct RecordTarget: Codable, Equatable {
         appointmentIds = []
         notOnMyList = true
         greeting = nil
+        stop = nil
     }
 
     static let notOnMyList = RecordTarget()

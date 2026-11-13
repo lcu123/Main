@@ -217,14 +217,13 @@ struct TodayView: View {
         if let notice = app.notice {
             Banner(text: notice, tone: .attention)
         }
-        if app.waitingCount > 0 {
+        // While a video is still on the phone, deleting the app would lose
+        // it: the same line says so.
+        if let waiting = KeepApp.waitingBanner(waiting: app.waitingCount) {
             Button {
                 app.showQueue()
             } label: {
-                Banner(
-                    text: app.waitingCount == 1 ? "1 video waiting to send" : "\(app.waitingCount) videos waiting to send",
-                    tone: .attention
-                )
+                Banner(text: waiting, tone: .attention)
             }
             .buttonStyle(.plain)
             .accessibilityHint("Opens My Videos")

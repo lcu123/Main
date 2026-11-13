@@ -11,13 +11,10 @@ struct ConfirmStopView: View {
     enum Stage: Equatable {
         case confirm
         case far
-        case storageWarn
-        case storageBlocked
     }
 
     @State private var stage: Stage
     @State private var acceptedFar = false
-    @State private var acceptedStorage = false
 
     /// The default is the real flow. Other values only come from `ScreenSeeds`.
     init(stage: Stage = .confirm) {
@@ -29,8 +26,6 @@ struct ConfirmStopView: View {
             switch stage {
             case .confirm: confirm(target)
             case .far: farWarning(target)
-            case .storageWarn: storageWarning
-            case .storageBlocked: storageBlocked
             }
         } else {
             Screen(bar: "Confirm Stop", onBack: { app.backToToday() }, title: "Pick a stop") {
@@ -85,55 +80,16 @@ struct ConfirmStopView: View {
         }
     }
 
-    private var storageWarning: some View {
-        Screen(bar: "Storage", onBack: { app.backToToday() }, title: "Your phone is almost full") {
-            BodyText("You can still record this video.", bold: true)
-            BodyText("Please free up some space on your phone soon.")
-        } footer: {
-            BigButton(title: "RECORD ANYWAY", kind: .attention) {
-                acceptedStorage = true
-                proceed()
-            }
-            BigButton(title: "BACK", kind: .plain) {
-                app.backToToday()
-            }
-        }
-    }
-
-    private var storageBlocked: some View {
-        Screen(bar: "Storage", onBack: { app.backToToday() }, title: "Your phone is full") {
-            BodyText("There is no room to record a video.", bold: true)
-            BodyText("Delete some photos or apps you do not need, then try again.")
-            if app.waitingCount > 0 {
-                BodyText("Videos waiting to send will clear by themselves when there is signal.")
-            }
-        } footer: {
-            BigButton(title: "TRY AGAIN", kind: .primary) {
-                stage = .confirm
-            }
-            BigButton(title: "BACK", kind: .plain) {
-                app.backToToday()
-            }
-        }
-    }
-
     // MARK: Guards, in order
 
     private func proceed() {
-        let level = StorageMonitor.level()
-        if level == .block {
-            app.logStorage(blocked: true)
-            stage = .storageBlocked
-            return
-        }
-        if !acceptedFar, isFar {
+        // A full phone is said first: no point asking "still right?" when
+        // nothing can be recorded. Otherwise the far-away question comes
+        // before the camera, and the free-space check (which every way into
+        // the camera shares, see `AppModel.enterCamera`) comes last.
+        if !acceptedFar, isFar, !app.phoneIsFull {
             app.logFarWarning()
             stage = .far
-            return
-        }
-        if level == .warn, !acceptedStorage {
-            app.logStorage(blocked: false)
-            stage = .storageWarn
             return
         }
         app.confirmTarget()

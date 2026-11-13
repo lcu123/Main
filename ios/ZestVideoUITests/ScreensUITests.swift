@@ -1,4 +1,5 @@
 import XCTest
+import ZestCore
 
 /// Every screen of the app, opened with made-up data (the app's screenshot
 /// mode, `-ZestScreen <name>`), and checked two ways:
@@ -7,7 +8,12 @@ import XCTest
 ///    on top of each other, and can be tapped: without scrolling on a
 ///    6.1-inch phone and bigger, after scrolling at most on the smallest
 ///    phone and on an iPad.
-/// 2. **Apple's accessibility audit** (`performAccessibilityAudit`): contrast,
+/// 2. **The gloves rule.** Every main button is at least 76 points tall and
+///    spans the screen from gutter to gutter; the record button and the ring
+///    are at least 120 points across; and after sign-in no screen has
+///    anything to type into, pick from or slide. The numbers are the app's
+///    own (`GloveRule` in ZestCore, which `Theme` is built from).
+/// 3. **Apple's accessibility audit** (`performAccessibilityAudit`): contrast,
 ///    tap targets of 44 points, clipped text, element descriptions, Dynamic
 ///    Type.
 ///
@@ -85,6 +91,12 @@ final class ScreensUITests: ZestUITestCase {
             return Plan(anchor: "tab-videos", actions: ["tab-route", "tab-videos"], reachable: ["link-signout", "held-space"])
         case "update":
             return Plan(anchor: "screen-title", showing: ["screen-title"])
+        case "lowspace":
+            return Plan(anchor: "RECORD ANYWAY", actions: ["RECORD ANYWAY", "BACK"], showing: ["bar-back"])
+        case "full":
+            return Plan(anchor: "TRY AGAIN", actions: ["TRY AGAIN", "BACK"], showing: ["bar-back"])
+        case "olddraft":
+            return Plan(anchor: "DELETE VIDEO", actions: ["SAVE", "DELETE VIDEO"], showing: ["clip", "draft-filmed"])
         default:
             return Plan(anchor: "screen-title")
         }
@@ -107,6 +119,9 @@ final class ScreensUITests: ZestUITestCase {
     func testTeam() { check("team") }
     func testQueue() { check("queue") }
     func testUpdate() { check("update") }
+    func testAlmostFull() { check("lowspace") }
+    func testFull() { check("full") }
+    func testOldDraft() { check("olddraft") }
 
     /// The route of awkward customers (an apostrophe, accents, a hyphen, a
     /// 45-letter business, all capitals, an emoji, one word, a unit, a PO
@@ -177,13 +192,50 @@ final class ScreensUITests: ZestUITestCase {
         if screen == "team" {
             problems += teamProblems(on: name)
         }
+        if screen == "olddraft" {
+            // A clip from an earlier day is saved or deleted, never re-recorded.
+            if button("RECORD AGAIN").exists {
+                problems.append("\(name): RECORD AGAIN must not be offered for a clip from an earlier day.")
+            }
+            if !label(of: element("draft-filmed")).hasPrefix("Filmed ") {
+                problems.append("\(name): the screen should say which day the clip was filmed; it says \"\(label(of: element("draft-filmed")))\".")
+            }
+        }
+        if screen == "full", element("record-button").exists || button("RECORD ANYWAY").exists {
+            problems.append("\(name): a full phone must offer no way to the camera.")
+        }
+        problems += glovesProblems(on: name, screen: screen)
         if Self.bigText {
             problems += textSizeProblems(on: name, screen: screen)
         }
         if Self.runAudit {
             problems += auditProblems(audits, on: name, screen: screen)
+            if screen == "review", odd == nil {
+                // The picture is taken with the switch at NO. YES is looked
+                // at too: its white word and knob on the blue track.
+                problems += switchOnProblems(on: name)
+            }
         }
         return problems
+    }
+
+    /// Turns the "I recommended something" switch on and runs the contrast
+    /// and clipped-text audits again, so both of its states are checked.
+    private func switchOnProblems(on name: String) -> [String] {
+        let toggle = app.buttons["recommend-switch"]
+        guard toggle.exists else { return [] }   // reported as missing by the layout check
+        if !Self.mustShowWithoutScrolling {
+            bringIntoView(toggle)
+        }
+        toggle.tap()
+        for _ in 0..<20 where (toggle.value as? String) != "Yes" {
+            pause(0.25)
+        }
+        guard (toggle.value as? String) == "Yes" else {
+            return ["\(name): tapping the \"I recommended something\" switch did not turn it on (it says \(String(describing: toggle.value)))."]
+        }
+        pause(0.5)
+        return auditProblems([.contrast, .textClipped], on: "\(name) (switch at YES)", screen: "review")
     }
 
     // MARK: The words to say
@@ -235,6 +287,85 @@ final class ScreensUITests: ZestUITestCase {
         return problems
     }
 
+    // MARK: The gloves rule
+
+    /// The round controls on the camera, and the two tabs: main actions that
+    /// are not full-width buttons.
+    private static let roundControls: Set<String> = ["record-button", "countdown-ring"]
+    private static let tabs: Set<String> = ["tab-route", "tab-videos"]
+
+    /// "Main actions span the full width of the screen." Every main button
+    /// is at least `GloveRule.minButtonHeight` tall and as wide as the
+    /// screen less its two gutters. The record button and the ring are at
+    /// least `GloveRule.minRoundControl` across. A tab is at least Apple's
+    /// minimum (two share the width).
+    private func sizeProblems(_ identifier: String, frame: CGRect, screenWidth: Double, on name: String) -> [String] {
+        let width = Double(frame.width), height = Double(frame.height)
+        let size = "\(Int(width)) x \(Int(height)) points"
+        if Self.roundControls.contains(identifier) {
+            let floor = GloveRule.minRoundControl
+            if width < floor - 1 || height < floor - 1 {
+                return ["\(name): \"\(identifier)\" is only \(size); it must be at least \(Int(floor)) across."]
+            }
+            return []
+        }
+        if Self.tabs.contains(identifier) {
+            let floor = GloveRule.minTapTarget
+            if width < floor || height < floor {
+                return ["\(name): \"\(identifier)\" is only \(size); a gloved thumb needs \(Int(floor))."]
+            }
+            return []
+        }
+        var problems: [String] = []
+        if height < GloveRule.minButtonHeight - 0.5 {
+            problems.append("\(name): \"\(identifier)\" is only \(Int(height)) points tall; a main button is never under \(Int(GloveRule.minButtonHeight)).")
+        }
+        let wanted = GloveRule.actionWidth(screenWidth: screenWidth)
+        if width < wanted - 2 {
+            problems.append("\(name): \"\(identifier)\" is \(Int(width)) points wide; a main button spans the screen, \(Int(wanted)) points here.")
+        }
+        return problems
+    }
+
+    /// "No menus, no swipes, no typing after setup." After sign-in no screen
+    /// may hold a text field, a picker, a slider, a stepper or a menu. (The
+    /// two sign-in screens have the one field each that setup needs.)
+    private func glovesProblems(on name: String, screen: String) -> [String] {
+        guard let tree = try? app.snapshot() else {
+            return ["\(name): the screen could not be read to check for text fields and menus."]
+        }
+        let typing: [XCUIElement.ElementType: String] = [
+            .textField: "a text field", .secureTextField: "a password field", .textView: "a text box",
+            .searchField: "a search box", .keyboard: "a keyboard",
+        ]
+        let fiddly: [XCUIElement.ElementType: String] = [
+            .picker: "a picker", .pickerWheel: "a picker wheel", .datePicker: "a date picker", .slider: "a slider",
+            .stepper: "a stepper", .segmentedControl: "a segmented control", .menu: "a menu", .menuButton: "a menu button",
+            .popUpButton: "a pop-up menu", .comboBox: "a combo box", .pageIndicator: "pages to swipe through",
+        ]
+        let signIn = ["login", "code"].contains(screen)
+        var found: [String: Int] = [:]
+        collect(in: tree) { node in
+            if let what = fiddly[node.elementType] {
+                found[what, default: 0] += 1
+            } else if !signIn, let what = typing[node.elementType] {
+                found[what, default: 0] += 1
+            }
+        }
+        return found.keys.sorted().map { what in
+            signIn
+                ? "\(name): the screen has \(what); nothing in the app is picked, slid or swiped."
+                : "\(name): the screen has \(what); after sign-in there is nothing to type, pick, slide or swipe."
+        }
+    }
+
+    private func collect(in node: XCUIElementSnapshot, _ visit: (XCUIElementSnapshot) -> Void) {
+        visit(node)
+        for child in node.children {
+            collect(in: child, visit)
+        }
+    }
+
     // MARK: Layout
 
     private func layoutProblems(_ plan: Plan, on name: String) -> [String] {
@@ -261,9 +392,7 @@ final class ScreensUITests: ZestUITestCase {
                 bringIntoView(item)
             }
             let frame = item.frame
-            if frame.width < 44 || frame.height < 44 {
-                problems.append("\(name): \"\(identifier)\" is only \(Int(frame.width)) x \(Int(frame.height)) points; a gloved thumb needs 44.")
-            }
+            problems += sizeProblems(identifier, frame: frame, screenWidth: Double(window.width), on: name)
             if !screen.contains(frame) {
                 let how = Self.mustShowWithoutScrolling ? "does not show whole without scrolling" : "cannot be brought whole onto the screen"
                 problems.append("\(name): \"\(identifier)\" \(how) (\(describe(frame))).")

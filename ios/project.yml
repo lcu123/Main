@@ -91,8 +91,13 @@ targets:
     platform: iOS
     sources:
       - path: ZestVideoUITests
+    # ZestCore is linked here too: the UI tests run in their own process (not
+    # inside the app), and read the same size rules the app is laid out with
+    # (GloveRule) instead of keeping a copy of the numbers.
     dependencies:
       - target: ZestVideo
+      - package: ZestCore
+        product: ZestCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zestlawnpest.video.uitests

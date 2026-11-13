@@ -7,10 +7,19 @@ final class NetworkUITests: ZestUITestCase {
     /// The video for the first stop is on the phone and shown as waiting.
     private func expectWaitingOnPhone(file: StaticString = #filePath, line: UInt = #line) {
         waitFor(app.buttons["waiting-banner"], "the \"1 video waiting to send\" line", timeout: 20, file: file, line: line)
+        // A video still on the phone would be lost with the app: both
+        // screens say so for as long as it is there.
+        let banner = label(of: app.buttons["waiting-banner"])
+        XCTAssertTrue(banner.contains("1 video waiting to send"), "The line says how many. It says: \(banner)", file: file, line: line)
+        XCTAssertTrue(banner.contains("Do not delete this app"), "The line warns not to delete the app. It says: \(banner)", file: file, line: line)
         XCTAssertTrue(routeHeader.contains("Waiting 1"), "The header counts it as waiting. It says: \(routeHeader)", file: file, line: line)
         XCTAssertTrue(routeHeader.contains("Sent 1 of 5"), "It must not be counted as sent. The header says: \(routeHeader)", file: file, line: line)
         tap(app.buttons["waiting-banner"], "the waiting line", file: file, line: line)
         waitForBar("My Videos", file: file, line: line)
+        waitForLabel(
+            element("keep-app-warning"), "the warning at the top of My Videos",
+            contains: "Do not delete this app. 1 video is still on this phone.", timeout: 10, file: file, line: line
+        )
         let row = label(of: videoRow(Self.smith))
         XCTAssertTrue(row.contains("Waiting"), "The row says WAITING. It says: \(row)", file: file, line: line)
         XCTAssertFalse(row.contains("Sent"), "A video the server does not have must never say SENT. It says: \(row)", file: file, line: line)
@@ -28,6 +37,8 @@ final class NetworkUITests: ZestUITestCase {
         tap(app.buttons["tab-videos"], "the My Videos tab", file: file, line: line)
         waitForLabel(videoRow(Self.smith), "the video's row", contains: "Sent", file: file, line: line)
         waitForLabel(element("held-space"), "the space line", contains: "holding 0 MB", file: file, line: line)
+        XCTAssertFalse(element("keep-app-warning").exists, "Nothing is on the phone any more, so nothing warns about deleting the app.", file: file, line: line)
+        XCTAssertFalse(hasText("Do not delete this app"), "The warning goes once the video has been sent.", file: file, line: line)
     }
 
     /// The server answers 500 to everything at SAVE. The video waits on the

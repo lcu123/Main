@@ -158,11 +158,13 @@ class State:
                     LOCKED_VIDEO_ID, 205, state="sent",
                     recorded=self.started - datetime.timedelta(minutes=40), fixture=True)
 
-    def _video(self, video_id, customer_id, state, recorded, fixture=False, tech=None):
+    def _video(self, video_id, customer_id, state, recorded, fixture=False, tech=None, day=None):
         return {
             "id": video_id,
             "customerId": customer_id,
             "techId": TECH["id"] if tech is None else tech,
+            # The day's route the video belongs to (the stopDate it was sent with).
+            "day": day or datetime.date.today().isoformat(),
             "state": state,
             "recordedAt": iso(recorded),
             "emailAt": iso(recorded + datetime.timedelta(minutes=self.config["holdMinutes"])),
@@ -224,12 +226,15 @@ class State:
             })
         return out
 
-    def live_video(self, customer_id, tech=None):
-        """The newest video one tech made for a customer that still counts.
-        (The signed-in tech's, unless another tech is named.)"""
+    def live_video(self, customer_id, tech=None, day=None):
+        """The newest video one tech made for a customer on one day that
+        still counts. (The signed-in tech's and today's, unless told.)
+        A video saved late for an earlier day belongs to that day's visit:
+        it is not on today's stop, and today's video does not replace it."""
         tech = TECH["id"] if tech is None else tech
+        day = day or datetime.date.today().isoformat()
         live = [v for v in self.videos.values()
-                if v["customerId"] == customer_id and v["techId"] == tech
+                if v["customerId"] == customer_id and v["techId"] == tech and v["day"] == day
                 and v["state"] not in ("deleted", "replaced", "pulled")]
         if not live:
             return None
@@ -257,9 +262,12 @@ class State:
             "config": self.config,
             "stops": self.stops(),
             "videos": [
-                {"id": v["id"], "customerId": v["customerId"], "state": v["state"], "emailAt": v["emailAt"]}
+                {"id": v["id"], "customerId": v["customerId"], "state": v["state"],
+                 # Not on the list: no email is waiting until the office matches it.
+                 "emailAt": None if v["state"] == "unmatched" else v["emailAt"]}
                 for v in self.videos.values()
-                if v["techId"] == TECH["id"] and v["state"] not in ("deleted", "replaced", "pulled")
+                if v["techId"] == TECH["id"] and v["day"] == datetime.date.today().isoformat()
+                and v["state"] not in ("deleted", "replaced", "pulled")
             ],
         }
 
@@ -464,7 +472,8 @@ class Handler(BaseHTTPRequestHandler):
             with STATE.lock:
                 STATE.push_tokens.append(body)
             return self.reply(200, {"ok": True})
-        return self.error(404, "not_found", "No such call.")
+        # (The real server's word for an address it does not have.)
+        return self.error(404, "bad_request", "No such address.")
 
     # -- the app's calls ---------------------------------------------------
 
@@ -506,6 +515,16 @@ class Handler(BaseHTTPRequestHandler):
                 "This video already went to the customer. Call the office to change it.",
                 existing={"id": LOCKED_VIDEO_ID, "state": "sent", "byYou": True, "techFirstName": TECH["firstName"]})
 
+        # The real server takes a video up to 14 days after its stop (a phone
+        # that was offline for days still gets to send), and no older.
+        try:
+            filmed = datetime.datetime.strptime(str(body.get("stopDate") or ""), "%Y-%m-%d").date()
+        except ValueError:
+            return self.error(400, "bad_request", "This video has a bad date.")
+        age = (datetime.date.today() - filmed).days
+        if not -1 <= age <= 14:
+            return self.error(400, "bad_request", "This video is too old to send.")
+
         with STATE.lock:
             customer = body.get("customerId")
             existing = STATE.videos.get(video_id)
@@ -515,7 +534,7 @@ class Handler(BaseHTTPRequestHandler):
                 # customer the stop takes no new one from him, and before
                 # that recording again replaces it. Another tech's video is
                 # never replaced and never stands in the way.
-                current = STATE.live_video(customer) if customer is not None else None
+                current = STATE.live_video(customer, day=filmed.isoformat()) if customer is not None else None
                 if current is not None and current["state"] in ("sent", "watched"):
                     locked = current
                 else:
@@ -533,7 +552,7 @@ class Handler(BaseHTTPRequestHandler):
                             body.get("recordedAt", ""), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
                     except ValueError:
                         pass
-                    existing = STATE._video(video_id, customer, "awaiting_upload", recorded)
+                    existing = STATE._video(video_id, customer, "awaiting_upload", recorded, day=filmed.isoformat())
                     STATE.videos[video_id] = existing
                     STATE.order.append(video_id)
                 existing["payload"] = body
@@ -617,8 +636,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wait("completeDelay")
         with STATE.lock:
             video = STATE.videos.get(video_id)
-        if video is None:
-            return self.error(404, "not_found", "No such video.")
+        if video is None or video["techId"] != TECH["id"]:
+            return self.error(404, "bad_request", "We do not know this video.")
         if self.take("failNextComplete"):
             with STATE.lock:
                 video["completes"].append(500)
@@ -638,31 +657,50 @@ class Handler(BaseHTTPRequestHandler):
                 answer = None
             else:
                 if video["state"] == "awaiting_upload":
-                    video["state"] = "held"
+                    # Not on the list: it waits for the office to pick the
+                    # customer. No email is due until then.
+                    off_list = bool((video["payload"] or {}).get("notOnMyList")) or video["customerId"] is None
+                    video["state"] = "unmatched" if off_list else "held"
                 video["completes"].append(200)
-                answer = {"id": video_id, "state": video["state"], "emailAt": video["emailAt"]}
+                answer = {"id": video_id, "state": video["state"],
+                          "emailAt": None if video["state"] == "unmatched" else video["emailAt"]}
         if answer is None:
             return self.error(409, "not_uploaded", "The server did not get the whole file.")
         self.reply(200, answer)
 
     def delete(self, video_id):
+        message = "This video already went to the customer. Call the office to change it."
         with STATE.lock:
             video = STATE.videos.get(video_id)
             if video is None or video["techId"] != TECH["id"]:
-                # Another tech's video is not his to delete.
+                # Unknown, or another tech's: not his to delete.
                 answer, status = None, 404
-            elif video["state"] in ("sent", "watched"):
+            elif video["state"] in ("deleted", "replaced"):
+                # A repeat is answered the same way. It is still counted, so
+                # a test can tell that the app only asked once.
+                video["deletes"] += 1
+                answer, status = {"id": video_id, "state": video["state"]}, 200
+            elif video["state"] not in ("awaiting_upload", "held", "unmatched"):
                 answer, status = None, 409
+            elif video["state"] == "unmatched" and utc_now() > self.delete_closes(video):
+                # Not on the list: no email closes the window, so the same
+                # ten minutes are counted from when it was filmed.
+                answer, status = None, 409
+                message = "The time to delete this video has passed. Call the office to change it."
             else:
                 video["deletes"] += 1
-                if video["state"] != "replaced":
-                    video["state"] = "deleted"
+                video["state"] = "deleted"
                 answer, status = {"id": video_id, "state": "deleted"}, 200
         if status == 404:
-            return self.error(404, "not_found", "No such video.")
+            return self.error(404, "bad_request", "We do not know this video.")
         if status == 409:
-            return self.error(409, "too_late", "This video already went to the customer. Call the office to change it.")
+            return self.error(409, "too_late", message)
         self.reply(200, answer)
+
+    @staticmethod
+    def delete_closes(video):
+        recorded = datetime.datetime.strptime(video["recordedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+        return recorded + datetime.timedelta(minutes=STATE.config["holdMinutes"])
 
     # -- the tests' calls --------------------------------------------------
 
@@ -918,6 +956,66 @@ def self_test():
         check(register(body["token"], "long-%02d" % index, customer=301 + index)[0] == 200, "register %d" % index)
     state = call("GET", "/__test/state")[1]
     check([v["customerId"] for v in state["videos"]] == list(range(301, 313)), "videos kept in the order they were registered")
+
+    # The answers the real server gives where this one had drifted (the
+    # contract test in tests/test_video_contract.py plays both).
+    status, body = call("POST", "/__test/reset", {"test": "like the real server", "config": {"maxSeconds": 3}})
+    token = body["token"]
+    # (1) Not on my list: complete answers "unmatched" with no email time,
+    #     and it stays that way in the day's videos.
+    status, body = register(token, "loose", customer=None)
+    check(status == 200 and put(body["upload"]["url"], video_bytes)[0] == 200, "off-list register and upload")
+    status, body = call("POST", "/v1/videos/loose/complete", {"sizeBytes": len(video_bytes)}, token)
+    check(status == 200 and body == {"id": "loose", "state": "unmatched", "emailAt": None}, "off-list complete: %s" % body)
+    check(call("POST", "/v1/videos/loose/complete", {"sizeBytes": len(video_bytes)}, token)[1]["state"] == "unmatched", "and on a repeat")
+    status, body = register(token, "loose", customer=None)
+    check(body["state"] == "unmatched" and body["upload"] is None, "a repeat register says the server has it")
+    listed = [v for v in call("GET", "/v1/today", token=token)[1]["videos"] if v["id"] == "loose"]
+    check(listed == [{"id": "loose", "customerId": None, "state": "unmatched", "emailAt": None}], "in the day's videos: %s" % listed)
+    # Inside the ten minutes it can still be deleted; after them it cannot.
+    status, body = register(token, "loose-old", customer=None, recordedAt=iso(utc_now() - datetime.timedelta(minutes=11)))
+    check(put(body["upload"]["url"], video_bytes)[0] == 200, "an off-list video filmed 11 minutes ago")
+    check(call("POST", "/v1/videos/loose-old/complete", {"sizeBytes": len(video_bytes)}, token)[1]["state"] == "unmatched", "unmatched")
+    status, body = call("DELETE", "/v1/videos/loose-old", token=token)
+    check(status == 409 and body["error"] == "too_late" and "passed" in body["message"], "too late to delete it: %s %s" % (status, body))
+    status, body = call("DELETE", "/v1/videos/loose", token=token)
+    check(status == 200 and body == {"id": "loose", "state": "deleted"}, "the fresh one can be deleted")
+    check(call("DELETE", "/v1/videos/loose", token=token)[1] == {"id": "loose", "state": "deleted"}, "and a repeat says the same")
+    # A video on the list still answers "held" with the time its email goes.
+    status, body = register(token, "kept", customer=202)
+    put(body["upload"]["url"], video_bytes)
+    status, body = call("POST", "/v1/videos/kept/complete", {"sizeBytes": len(video_bytes)}, token)
+    check(body["state"] == "held" and bool(body["emailAt"]), "on the list: held, with an email time")
+    # (2) A video nobody knows, and an address nobody has: 404 "bad_request".
+    status, body = call("DELETE", "/v1/videos/no-such-video", token=token)
+    check(status == 404 and body["error"] == "bad_request" and body["message"], "delete of an unknown video: %s %s" % (status, body))
+    status, body = call("POST", "/v1/videos/no-such-video/complete", {"sizeBytes": 5}, token)
+    check(status == 404 and body["error"] == "bad_request" and body["message"], "complete of an unknown video: %s %s" % (status, body))
+    status, body = call("GET", "/v1/no-such-call", token=token)
+    check(status == 404 and body["error"] == "bad_request" and body["message"], "an unknown address: %s %s" % (status, body))
+    # (3) The day on a video: up to 14 days back, and no older.
+    def on_day(days_ago):
+        return (datetime.date.today() - datetime.timedelta(days=days_ago)).isoformat()
+    check(register(token, "day-1", customer=203, stopDate=on_day(1))[0] == 200, "yesterday's video is taken")
+    check(register(token, "day-14", customer=204, stopDate=on_day(14))[0] == 200, "so is one from 14 days ago")
+    status, body = register(token, "day-15", customer=204, stopDate=on_day(15))
+    check(status == 400 and body["error"] == "bad_request" and "too old" in body["message"], "15 days is too old: %s %s" % (status, body))
+    check(register(token, "day+1", customer=201, stopDate=on_day(-1))[0] == 200, "a phone a day ahead is taken")
+    check(register(token, "day+2", customer=201, stopDate=on_day(-2))[0] == 400, "two days ahead is not")
+    check(register(token, "no-day", customer=201, stopDate="soon")[0] == 400, "nor a date that is not one")
+    kept = [v["id"] for v in call("GET", "/__test/state")[1]["videos"]]
+    check("day-15" not in kept and "day-14" in kept, "a refused video is not kept: %s" % kept)
+    # A video saved late for yesterday is yesterday's: today's stop for the
+    # same customer is still open, and today's video does not replace it.
+    today = call("GET", "/v1/today", token=token)[1]
+    check({s["customerId"]: s for s in today["stops"]}[203]["video"] is None, "yesterday's video is not on today's stop")
+    check("day-1" not in [v["id"] for v in today["videos"]], "nor among today's videos")
+    check(register(token, "today-203", customer=203)[0] == 200, "today's video for the same customer is taken")
+    by_id = {v["id"]: v for v in call("GET", "/__test/state")[1]["videos"]}
+    check(by_id["day-1"]["state"] == "awaiting_upload" and by_id["today-203"]["state"] == "awaiting_upload", "and neither replaces the other")
+    check(register(token, "day-1-again", customer=203, stopDate=on_day(1))[0] == 200, "recording again for yesterday")
+    by_id = {v["id"]: v for v in call("GET", "/__test/state")[1]["videos"]}
+    check(by_id["day-1"]["state"] == "replaced" and by_id["today-203"]["state"] == "awaiting_upload", "replaces yesterday's only")
 
     # One video per tech, per property, per day.
     def stop_video(token, customer):

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ZestCore
 
 /// The app's colors and every size in it.
 ///
@@ -30,6 +31,13 @@ enum Theme {
     static let paleCyan = Color(hex: 0xCCEFF5)
     /// The selected tab.
     static let navy = Color(hex: 0x1A1353)
+    /// The YES / NO switch. Each track is dark enough that its white word
+    /// and its white knob both stand out in bright sun: white on the deep
+    /// blue is 5.9 to 1, white on the grey is 5.7 to 1. (The first version
+    /// had a pale grey track for NO; its white knob was 1.5 to 1 on it, and
+    /// Apple's accessibility audit said so.)
+    static let switchOn = Color(hex: 0x1A64B9)
+    static let switchOff = Color(hex: 0x666666)
 
     /// The page behind the cards.
     static let page = Color(hex: 0xF5F5F5)
@@ -69,7 +77,8 @@ enum Theme {
 
     /// 1.0 on a 430 pt wide phone or wider, 0.87 at 375 pt, never under 0.78
     /// (a 320 pt screen, which is also what Apple uses to run the app on an iPad).
-    @MainActor static let scale: CGFloat = min(1, max(0.78, screenWidth / 430))
+    /// (The numbers are in `GloveRule`, where the tests read them too.)
+    @MainActor static let scale: CGFloat = CGFloat(GloveRule.scale(screenWidth: Double(screenWidth)))
 
     /// A very short screen (the 320 x 480 iPad compatibility size). Screens
     /// put their buttons inside the scrolling part so nothing is squeezed out.
@@ -180,9 +189,9 @@ enum Theme {
     /// Cards and buttons.
     static let corner: CGFloat = 20
     /// Space at the left and right of every screen.
-    @MainActor static let gutter: CGFloat = screenWidth < 360 ? 14 : 18
+    @MainActor static let gutter: CGFloat = CGFloat(GloveRule.gutter(screenWidth: Double(screenWidth)))
     /// Buttons: 88 pt tall on a wide phone, never under 76.
-    @MainActor static let buttonHeight: CGFloat = max(76, (88 * scale).rounded())
+    @MainActor static let buttonHeight: CGFloat = CGFloat(GloveRule.buttonHeight(screenWidth: Double(screenWidth)))
     /// The action row at the foot of a card.
     @MainActor static let actionRowHeight: CGFloat = max(64, (72 * scale).rounded())
     /// The top bar, and the back arrow's tap target inside it.
@@ -198,6 +207,8 @@ enum Theme {
     @MainActor static let fieldHeight: CGFloat = max(84, (100 * scale).rounded())
     /// The ring's stroke.
     @MainActor static let ringStroke: CGFloat = max(16, (22 * scale).rounded())
+    /// The record button and the ring are never smaller than this across.
+    static let minRoundControl: CGFloat = CGFloat(GloveRule.minRoundControl)
     /// The ring and the record button are this share of the screen's width.
     static let ringShare: CGFloat = 0.64
     /// The seconds-left number is this share of the ring's diameter.

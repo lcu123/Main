@@ -35,6 +35,9 @@ struct VideoSummary: Equatable {
     var stop: Stop?
     var itemID: String?
     var serverVideoID: String?
+    /// Filmed as "not on my list": it goes to the office to be matched, not
+    /// to a customer. No screen may say an email is on its way.
+    var toOffice = false
 }
 
 /// The two-keys check for the clip on the review screen.
@@ -129,8 +132,19 @@ final class AppModel: ObservableObject {
         case pickStop
         case stopVideo
         case queue
+        /// "Your phone is almost full" / "Your phone is full", on the way to
+        /// the camera (see `enterCamera`).
+        case storage
         case remindersOffer
         case updateRequired
+    }
+
+    /// Why the tech was stopped on the way to the camera.
+    enum StorageStop: Equatable {
+        /// Under 500 MB free: he can still record.
+        case warn
+        /// Under 200 MB free: no recording.
+        case blocked
     }
 
     enum RecordPhase: Equatable {
@@ -155,6 +169,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var check: CheckState = .idle
     @Published private(set) var recordPhase: RecordPhase = .idle
     @Published private(set) var focus: VideoFocus?
+    @Published private(set) var storageStop: StorageStop?
     @Published private(set) var offline = false
     @Published private(set) var refreshing = false
     /// One line for the top of Today, e.g. "Video deleted."
@@ -177,6 +192,8 @@ final class AppModel: ObservableObject {
     private var started = false
     private var signingOut = false
     private var checkTask: Task<Void, Never>?
+    /// What RECORD ANYWAY or TRY AGAIN on the storage screen goes on to do.
+    private var afterStorage: (@MainActor () -> Void)?
     /// Videos the tech deleted or recorded over in this run of the app.
     private var droppedVideoIDs = Set<String>()
 
@@ -240,8 +257,9 @@ final class AppModel: ObservableObject {
     }
 
     var ranked: StopRanker.Result {
-        var haveVideo = queue.items.customersWithVideo
-        if let draft, let customerId = draft.target.customerId, !draft.target.notOnMyList {
+        var haveVideo = queue.items.customersWithVideo(day: workingDay)
+        // (A clip from an earlier day is not today's video for its customer.)
+        if let draft, draftStanding == .today, let customerId = draft.target.customerId, !draft.target.notOnMyList {
             haveVideo.insert(customerId)
         }
         return StopRanker.rank(stops: stops, location: location.freshFix(maxAge: 300)?.coordinate, haveVideo: haveVideo)
@@ -262,7 +280,7 @@ final class AppModel: ObservableObject {
 
     /// What a stop's card shows, and so what tapping it does.
     func rowState(for stop: Stop, now: Date = Date()) -> RowState {
-        if let draft, !draft.target.notOnMyList, draft.target.customerId == stop.customerId {
+        if let draft, draftStanding == .today, !draft.target.notOnMyList, draft.target.customerId == stop.customerId {
             return RowState(badge: .waiting, text: "NOT SAVED YET · FINISH IT", tone: .waiting)
         }
         return rowState(summary(for: .stop(stop.customerId), now: now), number: routeNumber(of: stop), now: now)
@@ -270,13 +288,25 @@ final class AppModel: ObservableObject {
 
     /// What a video's row on My Videos shows.
     func rowState(for item: QueueItem, now: Date = Date()) -> RowState {
-        let focus: VideoFocus
-        if let customerId = item.customerId, !item.notOnMyList, queue.items.liveItem(customerId: customerId)?.id == item.id {
-            focus = .stop(customerId)
-        } else {
-            focus = .item(item.id)
+        rowState(summary(for: videoFocus(for: item), now: now), number: nil, now: now)
+    }
+
+    /// A video is looked at through its stop when it is today's video for
+    /// that stop, and by itself otherwise (off the list, replaced, or from
+    /// an earlier day: yesterday's video is not about today's stop).
+    private func videoFocus(for item: QueueItem) -> VideoFocus {
+        if let customerId = item.customerId, !item.notOnMyList,
+           queue.items.liveItem(customerId: customerId, day: workingDay)?.id == item.id {
+            return .stop(customerId)
         }
-        return rowState(summary(for: focus, now: now), number: nil, now: now)
+        return .item(item.id)
+    }
+
+    /// The day a video on My Videos was filmed, when it was not today:
+    /// "Filmed Thursday, Nov 12".
+    func filmedText(for item: QueueItem) -> String? {
+        guard DraftRule.standing(stopDate: item.stopDate, today: workingDay) != .today else { return nil }
+        return DraftRule.filmedText(stopDate: item.stopDate)
     }
 
     private func rowState(_ summary: VideoSummary, number: Int?, now: Date) -> RowState {
@@ -296,7 +326,8 @@ final class AppModel: ObservableObject {
             let text = summary.statusText == "WAITING" ? "WAITING TO SEND" : summary.statusText
             return RowState(badge: .waiting, text: text, tone: .waiting)
         case .locked:
-            return RowState(badge: .sent, text: "SENT ✓", tone: .good)
+            // "SENT ✓", or "SENT TO OFFICE" for a video not on the list.
+            return RowState(badge: .sent, text: summary.toOffice ? VideoWords.sentToOffice : VideoWords.sent, tone: .good)
         case .blocked:
             return RowState(badge: .problem, text: "NOT SENT · SEE WHY", tone: .problem)
         }
@@ -318,18 +349,22 @@ final class AppModel: ObservableObject {
     /// For the header: how many of today's stops have a video the server
     /// holds. A stop a teammate covered counts: it is not waiting on anyone.
     var videosSentCount: Int {
-        let sentHere = Set(queue.items.filter { $0.phase == .done && !$0.notOnMyList }.compactMap { $0.customerId })
+        let sentHere = Set(queue.items.forDay(workingDay).filter { $0.phase == .done && !$0.notOnMyList }.compactMap { $0.customerId })
         return stops.filter { stop in
             sentHere.contains(stop.customerId) || (stop.liveVideo?.state.serverHasFile ?? false)
         }.count
     }
 
     private func blockedItem(customerId: Int) -> QueueItem? {
-        queue.items.first { $0.customerId == customerId && !$0.notOnMyList && $0.phase == .blocked }
+        queue.items.forDay(workingDay).first { $0.customerId == customerId && !$0.notOnMyList && $0.phase == .blocked }
     }
 
+    /// Videos that deleting the app would lose: waiting or sending, and a
+    /// clip that is recorded and not saved yet.
+    var videosOnPhoneCount: Int { waitingCount + (draft == nil ? 0 : 1) }
+
     private func hasVideo(_ stop: Stop) -> Bool {
-        queue.items.liveItem(customerId: stop.customerId) != nil
+        queue.items.liveItem(customerId: stop.customerId, day: workingDay) != nil
             || blockedItem(customerId: stop.customerId) != nil
             || stop.liveVideo != nil
     }
@@ -367,14 +402,16 @@ final class AppModel: ObservableObject {
     /// The app came to the front.
     func becameActive() {
         guard started else { return }
-        // A new day: yesterday's route and finished rows go.
+        // A new day: yesterday's route and finished rows go. An unsaved clip
+        // stays: the tech is asked about it (see `askAboutEarlierDraft`).
         if let today, !AppModel.isCurrent(day: today.date, defaults: defaults) {
             self.today = nil
             todayStore.wipe()
             queue.pruneOldDays(today: workingDay)
-            discardStaleDraft()
         }
+        discardExpiredDraft()
         guard signedIn else { return }
+        askAboutEarlierDraft()
         location.askWhenInUse()
         location.refresh(precise: false)
         uploads.pump(wake: true)
@@ -432,6 +469,9 @@ final class AppModel: ObservableObject {
     /// A video reached the server or left the queue.
     private func queueChanged() {
         syncNudges()
+        // A video just moved, so there is signal: send the audit trail too.
+        // (Otherwise it would wait for the app to be opened again.)
+        events.flush(using: api)
         // The route's own view of each stop is now out of date.
         Task { await refreshToday() }
     }
@@ -630,11 +670,7 @@ final class AppModel: ObservableObject {
     }
 
     func open(item: QueueItem) {
-        if let customerId = item.customerId, !item.notOnMyList {
-            focus = .stop(customerId)
-        } else {
-            focus = .item(item.id)
-        }
+        focus = videoFocus(for: item)
         route = .stopVideo
     }
 
@@ -650,16 +686,69 @@ final class AppModel: ObservableObject {
     /// "This is it": on to the camera.
     func confirmTarget() {
         guard target != nil else { return }
-        route = .record
-        camera.prepare()
+        enterCamera { [weak self] in
+            self?.route = .record
+            self?.camera.prepare()
+        }
     }
 
     func logFarWarning() {
         events.log(.farWarning, customerId: target?.customerId)
     }
 
-    func logStorage(blocked: Bool) {
-        events.log(blocked ? .storageBlock : .storageWarn)
+    // MARK: - The one door to the camera
+
+    /// True when there is no room to record at all. (The confirm screen
+    /// asks, so that a full phone is said before anything else is.)
+    var phoneIsFull: Bool { StorageMonitor.level() == .block }
+
+    /// Every way into the camera goes through here: THIS IS IT, RECORD
+    /// AGAIN on the review screen, RECORD AGAIN on a stop's video.
+    ///
+    /// "Check free space before recording. Warn under 500 MB free and block
+    /// under 200 MB." Under 200 MB the camera is not reached and `enter`
+    /// never runs, so nothing is lost on the way (RECORD AGAIN deletes the
+    /// old clip only once the new one can be recorded). Under 500 MB the
+    /// tech is told once and RECORD ANYWAY carries on.
+    private func enterCamera(acceptedWarning: Bool = false, _ enter: @escaping @MainActor () -> Void) {
+        let level = StorageMonitor.level()
+        if level == .block || (level == .warn && !acceptedWarning) {
+            events.log(level == .block ? .storageBlock : .storageWarn, customerId: target?.customerId)
+            storageStop = level == .block ? .blocked : .warn
+            afterStorage = enter
+            route = .storage
+            return
+        }
+        storageStop = nil
+        afterStorage = nil
+        enter()
+    }
+
+    /// RECORD ANYWAY on "Your phone is almost full".
+    func recordAnyway() {
+        guard route == .storage, let enter = afterStorage else { return }
+        // The space is looked at again: it may have run out while he read.
+        enterCamera(acceptedWarning: true, enter)
+    }
+
+    /// TRY AGAIN on "Your phone is full", after freeing some space.
+    func tryStorageAgain() {
+        guard route == .storage, let enter = afterStorage else { return }
+        enterCamera(enter)
+    }
+
+    /// BACK on either storage screen: nothing was recorded and nothing was
+    /// deleted. An unsaved clip is still there to be saved.
+    func leaveStorage() {
+        storageStop = nil
+        afterStorage = nil
+        if draft != nil {
+            target = nil
+            focus = nil
+            openReview()
+        } else {
+            backToToday()
+        }
     }
 
     /// Back to the list from confirm, record, queue or a video screen.
@@ -682,6 +771,16 @@ final class AppModel: ObservableObject {
     /// One tap (or a volume button): start the clip.
     func startRecording() {
         guard recordPhase == .idle, camera.status == .ready, let target else { return }
+        // The same check once more at the button: the phone may have filled
+        // up while the camera was open (or a clip that did not save is
+        // being recorded again).
+        if StorageMonitor.level() == .block {
+            enterCamera { [weak self] in
+                self?.route = .record
+                self?.camera.prepare()
+            }
+            return
+        }
         recordPhase = .arming
         recordProblem = nil
 
@@ -778,6 +877,12 @@ final class AppModel: ObservableObject {
     }
 
     private func loadDraft() {
+        #if targetEnvironment(simulator)
+        // UI tests only: make the saved clip some days old (see UITestMode).
+        if let days = UITestMode.draftAgeDays, let saved = draftStore.loadDraft() {
+            draftStore.saveDraft(UITestMode.aged(saved, days: days))
+        }
+        #endif
         draft = draftStore.loadDraft()
         // Killed between "queued" and "draft cleared": the video is already
         // in the queue, so the leftover draft record must not offer it again.
@@ -785,14 +890,39 @@ final class AppModel: ObservableObject {
             draftStore.clearDraft()
             draft = nil
         }
-        discardStaleDraft()
+        discardExpiredDraft()
     }
 
-    /// An unsaved clip from an earlier day is thrown away.
-    private func discardStaleDraft() {
-        if let draft, !ZestDates.isToday(ZestDates.dayString(draft.createdAt)) {
-            discardDraft(log: true)
-        }
+    /// Where the unsaved clip stands: filmed today, on an earlier day, or
+    /// too long ago to send.
+    var draftStanding: DraftRule.Standing {
+        guard let draft else { return .today }
+        return DraftRule.standing(stopDate: draft.stopDate, today: workingDay)
+    }
+
+    /// "Filmed Thursday, Nov 12", for a clip from an earlier day.
+    var draftFilmedText: String? {
+        guard let draft, draftStanding != .today else { return nil }
+        return DraftRule.filmedText(stopDate: draft.stopDate)
+    }
+
+    /// The draft stays. An unsaved clip is not thrown away because the day
+    /// changed; only when it is too old for the server to take (14 days),
+    /// and then it is logged.
+    private func discardExpiredDraft() {
+        guard let draft, case .expired(let daysOld) = draftStanding else { return }
+        events.log(
+            .draftDiscarded, videoId: draft.id, customerId: draft.target.customerId,
+            detail: ["reason": "too_old", "daysOld": String(daysOld), "stopDate": draft.stopDate]
+        )
+        discardDraft(log: false)
+    }
+
+    /// On the next open after the day changed, the one question about the
+    /// clip that was left unsaved: save it or delete it.
+    private func askAboutEarlierDraft() {
+        guard signedIn, draft != nil, DraftRule.canDelete(draftStanding), route == .today else { return }
+        openReview()
     }
 
     private func discardDraft(log: Bool) {
@@ -844,7 +974,9 @@ final class AppModel: ObservableObject {
         }
 
         check = .running
-        let hints = SpokenMatcher.hints(for: stops)
+        // The names to listen for: today's list, and the clip's own stop
+        // (which is not on today's list when the clip is from an earlier day).
+        let hints = SpokenMatcher.hints(for: (draft.target.stop.map { [$0] } ?? []) + stops)
         let fileURL = Files.video(draft.fileName)
         let draftID = draft.id
         checkTask = Task { @MainActor in
@@ -856,15 +988,21 @@ final class AppModel: ObservableObject {
 
     private func finishCheck(transcript: String?) {
         guard let draft else { return }
-        guard let stop = self.stop(customerId: draft.target.customerId) else {
-            // The stop is not on the saved list any more: nothing to compare.
+        // A clip filmed today is checked against today's list. A clip from
+        // an earlier day is checked against the stop as it was when it was
+        // filmed, which the draft carries: that day's list is gone, and the
+        // same customer on today's list is a different visit.
+        let filmedToday = draftStanding == .today
+        let liveStop = filmedToday ? self.stop(customerId: draft.target.customerId) : nil
+        guard let stop = liveStop ?? draft.target.stop else {
+            // Nothing to compare with.
             let verdict = TwoKeys.verdict(.allUnknown)
             check = .done(CheckResult(signals: .allUnknown, clean: false, reasons: verdict.reasons, better: nil, transcript: transcript))
             return
         }
         let outcome = TwoKeys.signals(
             transcript: transcript, fix: draft.location, recordedAt: draft.recordedAt,
-            stop: stop, all: stops, farMeters: config.farMeters,
+            stop: stop, all: liveStop == nil ? [stop] : stops, farMeters: config.farMeters,
             // "This is Sam with Zest" must not point at a customer called Sam.
             techName: tech?.firstName
         )
@@ -900,8 +1038,11 @@ final class AppModel: ObservableObject {
 
         // Recording again replaces the old one by itself: no question asked.
         if let customerId = item.customerId, !item.notOnMyList {
+            // Only that day's: a late-saved clip from yesterday and today's
+            // video for the same customer are two visits, and both are kept.
             let old = queue.items.filter {
                 $0.customerId == customerId && !$0.notOnMyList && $0.id != item.id && $0.phase != .deleting
+                    && $0.stopDate == item.stopDate
             }
             for previous in old {
                 droppedVideoIDs.insert(previous.id)
@@ -961,20 +1102,39 @@ final class AppModel: ObservableObject {
         route = signedIn ? .today : .login
     }
 
-    /// RECORD AGAIN from the review screen: the clip is deleted at once.
+    /// RECORD AGAIN from the review screen. The old clip is deleted only
+    /// once there is room to record the new one.
     func recordAgainFromReview() {
         guard let old = draft else {
             // A second tap of the same button: the first already moved on.
             if route == .review { route = .today }
             return
         }
+        // A clip from an earlier day cannot be recorded again: the tech is
+        // not at that stop any more. It is saved or deleted.
+        guard DraftRule.canRecordAgain(draftStanding) else { return }
         target = old.target
-        events.log(.retake, videoId: old.id, customerId: old.target.customerId)
-        discardDraft(log: false)
-        recordProblem = nil
-        route = .record
-        camera.prepare()
-        location.refresh(precise: true)
+        enterCamera { [weak self] in
+            guard let self, let old = self.draft else { return }
+            self.events.log(.retake, videoId: old.id, customerId: old.target.customerId)
+            self.discardDraft(log: false)
+            self.recordProblem = nil
+            self.route = .record
+            self.camera.prepare()
+            self.location.refresh(precise: true)
+        }
+    }
+
+    /// YES, DELETE on the question about a clip from an earlier day.
+    func deleteDraft() {
+        guard draft != nil else {
+            if route == .review { route = signedIn ? .today : .login }
+            return
+        }
+        discardDraft(log: true)
+        target = nil
+        notice = "Video deleted."
+        route = signedIn ? .today : .login
     }
 
     /// Leaves the review screen without deciding. The draft stays.
@@ -1009,7 +1169,7 @@ final class AppModel: ObservableObject {
         switch focus {
         case .stop(let customerId):
             stop = self.stop(customerId: customerId)
-            item = queue.items.liveItem(customerId: customerId) ?? blockedItem(customerId: customerId)
+            item = queue.items.liveItem(customerId: customerId, day: workingDay) ?? blockedItem(customerId: customerId)
         case .item(let id):
             item = queue.item(id)
         }
@@ -1020,7 +1180,7 @@ final class AppModel: ObservableObject {
         if let item {
             var summary = VideoSummary(
                 name: name, address: address, statusText: item.displayText, mode: .waiting,
-                stop: stop, itemID: item.id, serverVideoID: nil
+                stop: stop, itemID: item.id, serverVideoID: nil, toOffice: item.goesToOffice
             )
             if item.phase == .blocked {
                 summary.mode = .blocked(item.blockedMessage ?? UploadManager.lockedMessage)
@@ -1083,12 +1243,15 @@ final class AppModel: ObservableObject {
         } else {
             target = .notOnMyList
         }
-        events.log(.retake, videoId: summary.itemID ?? summary.serverVideoID, customerId: summary.stop?.customerId)
-        recordProblem = nil
-        focus = nil
-        route = .record
-        camera.prepare()
-        location.refresh(precise: true)
+        enterCamera { [weak self] in
+            guard let self else { return }
+            self.events.log(.retake, videoId: summary.itemID ?? summary.serverVideoID, customerId: summary.stop?.customerId)
+            self.recordProblem = nil
+            self.focus = nil
+            self.route = .record
+            self.camera.prepare()
+            self.location.refresh(precise: true)
+        }
     }
 
     /// DELETE VIDEO, after the confirming tap. Only ever his own video.
@@ -1183,7 +1346,7 @@ final class AppModel: ObservableObject {
             location.clearLeaveRegions()
             return
         }
-        let haveVideo = queue.items.customersWithVideo
+        let haveVideo = queue.items.customersWithVideo(day: workingDay)
         let wanted = stops.filter { !$0.done && $0.liveVideo == nil && !haveVideo.contains($0.customerId) }
         location.setLeaveRegions(wanted)
     }
@@ -1239,6 +1402,7 @@ extension AppModel {
         draft = shot.draft
         check = shot.check
         focus = shot.focus
+        storageStop = shot.storageStop
         recordPhase = shot.recordPhase
         seeds = shot.seeds
         offline = false

@@ -16,13 +16,18 @@ enum Files {
     /// `Application Support/ZestVideo/Videos`: clips waiting to send.
     static let videos: URL = prepare(root.appendingPathComponent("Videos", isDirectory: true))
 
+    /// How the app's folders and video files are protected: unreadable
+    /// until the phone has been unlocked once after a restart, readable from
+    /// then on, so an upload can carry on with the phone locked in a pocket.
+    static let protection = FileProtectionType.completeUntilFirstUserAuthentication
+
     /// Creates a private folder: excluded from backup, readable while locked.
     @discardableResult
     static func prepare(_ directory: URL) -> URL {
         let manager = FileManager.default
         try? manager.createDirectory(at: directory, withIntermediateDirectories: true)
         try? manager.setAttributes(
-            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            [.protectionKey: protection],
             ofItemAtPath: directory.path
         )
         var values = URLResourceValues()
@@ -52,7 +57,7 @@ enum Files {
     /// Lets the upload service read the file while the phone is locked.
     static func protect(_ url: URL) {
         try? FileManager.default.setAttributes(
-            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            [.protectionKey: protection],
             ofItemAtPath: url.path
         )
     }

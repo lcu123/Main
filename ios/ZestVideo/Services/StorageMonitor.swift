@@ -5,6 +5,10 @@ import ZestCore
 /// checks before every recording and never fills one up.
 enum StorageMonitor {
     static func freeBytes() -> Int64? {
+        #if targetEnvironment(simulator)
+        // UI tests only: the free space the test said the phone has.
+        if let pretend = UITestMode.freeBytes { return pretend }
+        #endif
         let home = URL(fileURLWithPath: NSHomeDirectory())
         let values = try? home.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         return values?.volumeAvailableCapacityForImportantUsage

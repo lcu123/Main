@@ -242,6 +242,10 @@ struct ServerVideo {
     var payload: [String: Any] { (raw["payload"] as? [String: Any]) ?? [:] }
 
     var sizeSent: Int { (payload["sizeBytes"] as? Int) ?? -1 }
+    /// The day the video was filmed for, as the app sent it ("2026-11-13").
+    var stopDate: String { (payload["stopDate"] as? String) ?? "" }
+    /// True when the app sent no location at all (`"location": null`).
+    var sentNoLocation: Bool { payload["location"] == nil || payload["location"] is NSNull }
     var recommend: Bool { (payload["recommend"] as? Bool) ?? false }
     var override: Bool { (payload["override"] as? Bool) ?? false }
     var notOnMyList: Bool { (payload["notOnMyList"] as? Bool) ?? false }
@@ -249,6 +253,10 @@ struct ServerVideo {
 
     /// The server holds the whole file and has confirmed it.
     var isHeld: Bool { state == "held" && bytes > 0 && bytes == sizeSent }
+
+    /// The same for a video not on the list: the whole file is there, and
+    /// it waits for the office to match it to a customer.
+    var isWithTheOffice: Bool { state == "unmatched" && bytes > 0 && bytes == sizeSent }
 
     /// Uploads that arrived whole.
     var goodUploads: Int { puts.filter { $0 == "200" }.count }

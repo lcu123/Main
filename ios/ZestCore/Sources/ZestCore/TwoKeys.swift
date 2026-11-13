@@ -147,10 +147,12 @@ public enum HoldWindow {
     }
 
     /// "You can change it for 7 more minutes."
-    public static func text(secondsLeft: Int) -> String {
+    /// - Parameter toOffice: the video was filmed as "not on my list": it
+    ///   goes to the office to be matched, not to a customer.
+    public static func text(secondsLeft: Int, toOffice: Bool = false) -> String {
         let minutes = minutesLeft(secondsLeft: secondsLeft)
         switch minutes {
-        case 0: return "It has gone to the customer."
+        case 0: return toOffice ? "It has gone to the office." : "It has gone to the customer."
         case 1: return "You can change it for 1 more minute."
         default: return "You can change it for \(minutes) more minutes."
         }

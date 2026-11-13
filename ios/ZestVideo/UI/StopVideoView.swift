@@ -55,7 +55,7 @@ struct StopVideoView: View {
                 back
             }
         case .locked:
-            locked(summary, message: UploadManager.lockedMessage)
+            locked(summary, message: VideoWords.locked(toOffice: summary.toOffice))
         case .blocked(let message):
             Screen(bar: "Video", onBack: goBack) {
                 headline(summary, chip: nil)
@@ -79,8 +79,13 @@ struct StopVideoView: View {
             headline(summary, chip: StatusChip(
                 text: summary.statusText, tone: summary.statusText.hasPrefix("SENT") ? .good : .waiting
             ))
-            // One sentence, so all of it shows above the three buttons.
-            BodyText(HoldWindow.text(secondsLeft: secondsLeft) + " Then it goes to the customer.", bold: true)
+            // Short, so all of it shows above the three buttons. A video
+            // not on the list goes to the office, not to a customer.
+            BodyText(
+                HoldWindow.text(secondsLeft: secondsLeft, toOffice: summary.toOffice)
+                    + " " + VideoWords.afterTheWindow(toOffice: summary.toOffice),
+                bold: true
+            )
         } footer: {
             BigButton(title: "RECORD AGAIN", kind: .primary) { app.recordAgain(summary) }
             BigButton(title: "DELETE VIDEO", kind: .dark) { confirmingDelete = true }
@@ -109,7 +114,7 @@ struct StopVideoView: View {
 
     private func locked(_ summary: VideoSummary, message: String) -> some View {
         Screen(bar: "Video", onBack: goBack) {
-            headline(summary, chip: StatusChip(text: "SENT ✓", tone: .good))
+            headline(summary, chip: StatusChip(text: summary.toOffice ? VideoWords.sentToOffice : VideoWords.sent, tone: .good))
             BodyText(message, bold: true)
             officeNumber
         } footer: {

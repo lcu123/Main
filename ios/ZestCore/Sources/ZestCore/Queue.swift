@@ -170,9 +170,81 @@ public struct QueueItem: Codable, Equatable, Identifiable, Sendable {
         switch display {
         case .waiting: return "WAITING"
         case .sending(let percent): return "SENDING \(percent)%"
-        case .sent: return "SENT ✓"
+        case .sent: return goesToOffice ? VideoWords.sentToOffice : VideoWords.sent
         case .blocked: return "NOT SENT"
         }
+    }
+
+    /// The video goes to the office, not to a customer: it was filmed as
+    /// "not on my list" and waits there to be matched. No email is on its
+    /// way, so nothing on screen may say one is.
+    ///
+    /// The server's word once it has given one (`unmatched`, and after the
+    /// office matches it `held` or `sent` like any other); until then, what
+    /// the phone knows itself.
+    public var goesToOffice: Bool {
+        if let serverState, serverState != .awaitingUpload, serverState != .unknown {
+            return serverState == .unmatched
+        }
+        return notOnMyList
+    }
+}
+
+/// The words for where a video has gone. A video on the list goes to its
+/// customer; one filmed as "not on my list" goes to the office to be matched.
+public enum VideoWords {
+    public static let sent = "SENT ✓"
+    public static let sentToOffice = "SENT TO OFFICE"
+
+    /// What follows "You can change it for 7 more minutes."
+    public static func afterTheWindow(toOffice: Bool) -> String {
+        toOffice ? "Then the office matches it to the customer." : "Then it goes to the customer."
+    }
+
+    /// Once the time to change it has passed.
+    public static func locked(toOffice: Bool) -> String {
+        toOffice
+            ? "This video went to the office. They will match it to the customer. Call the office to change it."
+            : "This video already went to the customer. Call the office to change it."
+    }
+}
+
+/// What the server's "no" means for a video, worked out from the status
+/// and the error word alone, so it is the same whatever message comes with
+/// it. (The server's word for a video it does not know is `bad_request`
+/// with a 404; nothing here reads that word.)
+public enum ServerSays {
+    /// A failed `complete`. `nil` when it is not for this function to say
+    /// (signed out, update needed, no answer: the caller's usual handling).
+    public static func afterFailedComplete(status: Int?, code: String) -> QueueEvent? {
+        // The whole file is not there: upload it again.
+        if code == "not_uploaded" { return .notUploaded }
+        // The server has no record of this video at all. Start again from
+        // the top: register it afresh and send the file again. The video
+        // stays on the phone until that has worked.
+        if status == 404 { return .notUploaded }
+        return nil
+    }
+
+    public enum Delete: Equatable, Sendable {
+        /// The video is gone from the server, or was never there: done.
+        case finished
+        /// It reached the customer (or the office) before the delete did.
+        case tooLate
+        /// No answer worth acting on: try again later.
+        case tryAgain
+    }
+
+    /// The answer to telling the server a video was deleted.
+    public static func afterFailedDelete(status: Int?, code: String) -> Delete {
+        if code == "too_late" { return .tooLate }
+        // Signed out or an old build: the delete still has to reach the
+        // server once that is put right.
+        if status == 401 || status == 426 { return .tryAgain }
+        // Any other plain "no" (404 above all: the server never had it, or
+        // it is already gone) means there is nothing left to delete.
+        if let status, (400..<500).contains(status), status != 429, status != 408 { return .finished }
+        return .tryAgain
     }
 }
 
@@ -492,14 +564,26 @@ public extension Array where Element == QueueItem {
     /// How many videos still have to leave the phone.
     var waitingCount: Int { filter { $0.isWaiting }.count }
 
-    /// The newest video that counts for a customer today.
-    func liveItem(customerId: Int) -> QueueItem? {
-        filter { $0.customerId == customerId && !$0.notOnMyList && $0.countsForStop }
+    /// Videos filmed for `day`'s route. A video from an earlier day that is
+    /// still on the phone (saved late, or waiting for signal overnight)
+    /// belongs to that day's visit: it must not make today's stop for the
+    /// same customer look done, and a new video today must not replace it.
+    func forDay(_ day: String) -> [QueueItem] {
+        filter { item in
+            guard let age = ZestDates.daysBetween(item.stopDate, day) else { return true }
+            return age <= 0
+        }
+    }
+
+    /// The newest video that counts for a customer on `day`.
+    func liveItem(customerId: Int, day: String) -> QueueItem? {
+        forDay(day)
+            .filter { $0.customerId == customerId && !$0.notOnMyList && $0.countsForStop }
             .max { $0.recordedAt < $1.recordedAt }
     }
 
-    /// Customers that already have a video on this phone.
-    var customersWithVideo: Set<Int> {
-        Set(filter { $0.countsForStop && !$0.notOnMyList }.compactMap { $0.customerId })
+    /// Customers that already have a video on this phone for `day`.
+    func customersWithVideo(day: String) -> Set<Int> {
+        Set(forDay(day).filter { $0.countsForStop && !$0.notOnMyList }.compactMap { $0.customerId })
     }
 }

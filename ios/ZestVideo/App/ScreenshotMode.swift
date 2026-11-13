@@ -42,6 +42,12 @@ enum ScreenshotMode {
         case team
         case queue
         case update
+        /// "Your phone is almost full", on the way to the camera.
+        case lowspace
+        /// "Your phone is full": no recording.
+        case full
+        /// "Save this video?" for a clip left unsaved since yesterday.
+        case olddraft
     }
 
     /// The screen asked for on the command line, if any.
@@ -97,6 +103,7 @@ enum ScreenshotMode {
         var draft: Draft?
         var check: CheckState = .idle
         var focus: VideoFocus?
+        var storageStop: AppModel.StorageStop?
         var recordPhase: AppModel.RecordPhase = .idle
         var seeds = ScreenSeeds()
     }
@@ -251,6 +258,25 @@ enum ScreenshotMode {
             fillHeldSpace(for: app.queue)
         case .update:
             shot.route = .updateRequired
+        case .lowspace:
+            shot.route = .storage
+            shot.target = RecordTarget(stop: target)
+            shot.storageStop = .warn
+        case .full:
+            shot.route = .storage
+            shot.target = RecordTarget(stop: target)
+            shot.storageStop = .blocked
+        case .olddraft:
+            // Recorded yesterday and never saved: the draft stays, and the
+            // choice is SAVE or DELETE VIDEO.
+            var old = draft(now: now, day: today.date, cast: cast)
+            old.stopDate = ZestDates.dayString(now.addingTimeInterval(-86_400))
+            old.recordedAt = now.addingTimeInterval(-86_400)
+            old.createdAt = old.recordedAt
+            shot.route = .review
+            shot.draft = old
+            shot.check = .done(cleanCheck)
+            shot.seeds.standInPicture = true
         }
 
         app.loadScreenshot(shot)
@@ -357,8 +383,12 @@ enum ScreenshotMode {
         sending = QueueMachine.reduce(sending, .progress(0.4), now: now)
         // Recorded 25 minutes ago with no signal since: WAITING TO SEND.
         let waiting = item("screenshot-waiting", cast.waiting, secondsAgo: 25 * 60)
-        // A stop that was not on the list, recorded a minute ago.
-        let offList = item("screenshot-offlist", nil, secondsAgo: 60)
+        // A stop that was not on the list, recorded a minute ago: it has
+        // gone to the office to be matched (no email is on its way).
+        let offList = QueueMachine.reduce(
+            item("screenshot-offlist", nil, secondsAgo: 60),
+            .serverAlreadyHas(state: .unmatched, emailAt: nil), now: now.addingTimeInterval(-30)
+        )
 
         return [sent, changeable, sending, waiting, offList]
     }

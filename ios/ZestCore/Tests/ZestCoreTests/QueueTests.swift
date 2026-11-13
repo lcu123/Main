@@ -346,9 +346,34 @@ final class QueueTests: XCTestCase {
         let items = [waiting, newer, done, blocked, offList]
 
         XCTAssertEqual(items.waitingCount, 3)
-        XCTAssertEqual(items.liveItem(customerId: 2)?.id, "b", "the newest one for the stop")
-        XCTAssertEqual(items.liveItem(customerId: 3)?.id, "c")
-        XCTAssertNil(items.liveItem(customerId: 4), "a blocked video does not count for its stop")
-        XCTAssertEqual(items.customersWithVideo, [2, 3])
+        XCTAssertEqual(items.liveItem(customerId: 2, day: "2026-11-13")?.id, "b", "the newest one for the stop")
+        XCTAssertEqual(items.liveItem(customerId: 3, day: "2026-11-13")?.id, "c")
+        XCTAssertNil(items.liveItem(customerId: 4, day: "2026-11-13"), "a blocked video does not count for its stop")
+        XCTAssertEqual(items.customersWithVideo(day: "2026-11-13"), [2, 3])
+    }
+
+    /// A video from an earlier day that is still on the phone (saved late,
+    /// or waiting for signal overnight) belongs to that day's visit.
+    func testAVideoFromAnEarlierDayDoesNotCountForTodaysStop() {
+        var yesterday = Fixtures.item(id: "y", customerId: 2, recordedAt: Fixtures.at(-24 * 60))
+        yesterday.stopDate = "2026-11-12"
+        let today = Fixtures.item(id: "t", customerId: 3, recordedAt: Fixtures.at(0))
+        let items = [yesterday, today]
+
+        XCTAssertEqual(items.waitingCount, 2, "both still have to leave the phone")
+        XCTAssertNil(items.liveItem(customerId: 2, day: "2026-11-13"), "yesterday's video is not today's video for the same customer")
+        XCTAssertEqual(items.customersWithVideo(day: "2026-11-13"), [3], "so today's stop for that customer still asks for one")
+        XCTAssertEqual(items.liveItem(customerId: 2, day: "2026-11-12")?.id, "y", "it is still that day's video")
+        XCTAssertEqual(items.forDay("2026-11-13").map { $0.id }, ["t"])
+
+        // A phone whose calendar is a day ahead of the office's files a video
+        // under tomorrow's date: it is still today's.
+        var ahead = Fixtures.item(id: "a", customerId: 4)
+        ahead.stopDate = "2026-11-14"
+        XCTAssertEqual([ahead].liveItem(customerId: 4, day: "2026-11-13")?.id, "a")
+        // A date that cannot be read never hides a video.
+        var odd = Fixtures.item(id: "o", customerId: 5)
+        odd.stopDate = "not a date"
+        XCTAssertEqual([odd].customersWithVideo(day: "2026-11-13"), [5])
     }
 }

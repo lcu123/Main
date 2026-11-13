@@ -88,8 +88,33 @@ No third-party code. Apple frameworks only, system font, one bundled image
 - **Uploads** run in a background `URLSession`: they carry on with the app
   closed, on cellular, and the app is woken to tell the server when one ends.
 - **Phone storage**: videos live in the app's private folder (never Photos,
-  never iCloud backup). The app checks free space before recording, shows
-  what it is holding on *My videos*, and sweeps up stray files.
+  never iCloud backup). The app shows what it is holding on *My Videos* and
+  sweeps up stray files.
+- **Free space** is checked on every way into the camera, by one function
+  (`AppModel.enterCamera`): THIS IS IT, RECORD for a stop not on the list,
+  and both RECORD AGAIN buttons. Under 500 MB the tech is warned and can
+  RECORD ANYWAY; under 200 MB the camera is not reached, and nothing is
+  deleted on the way (RECORD AGAIN throws the old clip away only once the
+  new one can be recorded).
+- **"Do not delete this app."** While any video is still on the phone
+  (waiting, sending, or recorded and not saved), My Route's waiting line
+  and the top of My Videos say so (`KeepApp`): deleting the app would lose it.
+- **The draft stays** (`DraftRule`). A clip recorded and not saved is never
+  thrown away because the day changed. The next time the app is opened the
+  tech gets the one question for it, with the customer and the day it was
+  filmed: SAVE or DELETE VIDEO (RECORD AGAIN only for a clip filmed today).
+  It is checked against the stop as it was that day, which the draft
+  carries, and sent for that day; it is not today's video for the same
+  customer. Only after 14 days, when the server would refuse it, is it
+  dropped by itself, and `draft_discarded` is logged.
+- **Not on my list** goes to the office, not to a customer: the server
+  answers `unmatched` with no email time. The app says SENT TO OFFICE and
+  never promises an email (`VideoWords`); the ten minutes to change or
+  delete it run from when it was filmed.
+- **The gloves rule** (`GloveRule`): main buttons at least 76 pt tall and as
+  wide as the screen less its gutters, round controls at least 120 pt,
+  nothing to type after sign-in. `Theme` is built from these numbers and
+  `ScreensUITests` measures the real screens against the same ones.
 
 ## Build and run
 
@@ -118,8 +143,19 @@ in that file).
 cd ios/ZestCore && swift test
 ```
 
-runs the logic tests anywhere, Linux included. The app's own tests run in
-Xcode (⌘U) or in CI.
+runs the logic tests anywhere, Linux included (201 tests). Among them are
+rules about the app's own source, checked by reading the files
+(`AppSourceRulesTests`): no photo-library key or call, no share sheet,
+Apple frameworks only, and every pair of colours the screens use has the
+contrast to be read in bright sun (the colours are read from `Theme.swift`).
+
+The app's own tests (27, in `ZestVideoTests/`) run in Xcode (⌘U) or in CI,
+inside the app on a simulator: the queue on disk, the wire models, that the
+videos folder is out of backup and protected (`FilesTests`), that an
+unsaved clip carries what it needs to be checked and sent on a later day
+(`DraftStoreTests`), and the settings of the background upload session, so
+a later edit cannot quietly make uploads wait for Wi-Fi
+(`UploadSessionTests`).
 
 ## UI tests
 
@@ -131,7 +167,10 @@ on the screen and what the server got.
 **The server** is `Scripts/fake_server.py` (standard-library Python). It
 speaks `docs/video/API.md`, keeps everything in memory, and can be told to
 misbehave: answer 500, drop the connection, sign the phone out, ask for an
-update, expire an upload address, say "not uploaded", or answer slowly. It
+update, expire an upload address, say "not uploaded", or answer slowly. The
+repository's `tests/test_video_contract.py` plays the same day against it
+and against the real server and compares the answers, so it cannot drift
+from what a real phone will meet. It
 also plays a second tech who already recorded a stop (`/__test/other-tech`),
 with the signed-in tech as the lead or as a helper there. The list of
 switches is at the top of the file. It checks itself with:
@@ -167,18 +206,21 @@ issues the token when a test resets it), so only the sign-in tests type a
 number and a code. A test that kills the app starts it again *without* the
 reset: what the app kept is what is being tested.
 
-**What is covered** (64 tests):
+**What is covered** (76 tests):
 
 | Class | What it proves |
 | --- | --- |
 | `SignInUITests` | the number and the code typed one key at a time arrive whole and are sent once; a country code in front; too short and too long; wrong and right code; the loading line right after sign-in; email instead and back; a new code; both ways back; Terms and Privacy; sign out with its question |
 | `RouteUITests` | header counts, nearest stop first, both tabs, locked stop, WRONG STOP, the far-away warning |
-| `RecordUITests` | record → SAVE → one register, the whole file once, one complete; FLIP, BACK, ending early; RECORD AGAIN; the recommend switch; the two-keys warning both ways; change and delete inside ten minutes; not-on-my-list; double taps |
+| `RecordUITests` | record → SAVE → one register, the whole file once, one complete; FLIP, BACK, ending early; RECORD AGAIN; the recommend switch; the two-keys warning both ways; change and delete inside ten minutes; not-on-my-list (SENT TO OFFICE, no promise of an email, deletable for ten minutes and not after); double taps; and that the audit events (record, retake, override) really reach the server for the right customer |
 | `KillUITests` | the app killed mid-recording, on review, mid-upload, before "complete" is answered, and right after SAVE: after it is started again there is exactly one video on the server |
-| `NetworkUITests` | 500s, no server, an expired upload address, "not uploaded", signed out by the server, update required, a stop locked by the server, starting with no signal; and a long day: twelve videos saved with no server, all arriving once and in order when it is back |
+| `NetworkUITests` | 500s, no server, an expired upload address, "not uploaded", signed out by the server, update required, a stop locked by the server, starting with no signal; "Do not delete this app" while a video waits, gone once it is sent; and a long day: twelve videos saved with no server, all arriving once and in order when it is back |
+| `StorageUITests` | under 200 MB free the camera is never reached: from THIS IS IT, from RECORD for a stop not on the list, and from both RECORD AGAIN buttons, with the clip already made still there to save; under 500 MB one warning, and RECORD ANYWAY reaches the camera |
+| `DraftUITests` | with a clip unsaved, tapping another stop opens the question for the clip's own customer; a clip left since yesterday is asked about on the next open (SAVE or DELETE VIDEO, the day it was filmed, no RECORD AGAIN), saved for that day, and does not count for today's stop; a week-old one deleted; only one older than 14 days is dropped by itself, and logged |
+| `WithoutLocationUITests` | location refused: the stops show in route order, a video is recorded and arrives once with the GPS key "unknown" and no location, and nothing crashes |
 | `TeamUITests` | one video per tech per property. The lead is not shown another tech's video, his own is taken with no 409, and RECORD AGAIN replaces only his own. The helper sees DONE BY TEAM, gets no RECORD AGAIN, DELETE or CALL OFFICE on the lead's video, records his own beside it, and deleting his own leaves the lead's alone |
 | `BackgroundUploadUITests` | informational: what the simulator does with the real background upload session. Skipped, with the recorded error, if the upload never arrives |
-| `ScreensUITests` | every screen, opened with made-up data: its main actions are on the screen, tappable and not overlapping, nothing runs off the side, and Apple's accessibility audit (contrast, 44-point tap targets, clipped text, descriptions, Dynamic Type) finds nothing unexplained. Also the route of awkward names, where nothing may be cut off. Run by the `sizes` jobs on several simulators and text sizes |
+| `ScreensUITests` | every screen (19), opened with made-up data: its main actions are on the screen, tappable and not overlapping, nothing runs off the side; the gloves rule (every main button at least 76 points tall and as wide as the screen less its gutters, the record button and ring at least 120 across, and after sign-in nothing to type, pick, slide or swipe); and Apple's accessibility audit (contrast, 44-point tap targets, clipped text, descriptions, Dynamic Type) finds nothing unexplained, with the YES / NO switch looked at in both states. Also the route of awkward names, where nothing may be cut off. Run by the `sizes` jobs on several simulators and text sizes |
 | `PerformanceUITests` | informational: launch time, time to My Route, memory on each screen and over ten videos, what is left on disk. Run by the `performance` job |
 
 Timing a tap to the tenth of a second is not something a UI test does well,
@@ -219,9 +261,19 @@ The UI tests have their own scheme, so the ordinary build and unit tests
 **When a test fails** it prints one block: the test's name, the assertion,
 what was on the screen, every request the server got during that test, and
 what the app said about its uploads. It also saves a picture of the screen.
+Only a test that failed prints a FAILED block; something the system merely
+noted during a test that passed (on an iPad, Apple's note about Info.plist
+keys) is printed once, as a `NOTE`.
 In CI the block is in the step "What failed, and what the server saw", and
-the pictures, the logs and the result summary are in the `ui-tests-a` /
-`ui-tests-b` artifacts (a few MB: no screen recordings, no result bundle).
+the pictures, the logs and the result summary are in the `ui-tests-a`,
+`ui-tests-b` and `ui-tests-d` artifacts (a few MB: no screen recordings, no
+result bundle).
+
+The tests can also tell the app two things a simulator cannot be made to
+do: how much free space the phone "has" (`ZEST_TEST_FREE_MB`), and that the
+unsaved clip found at launch is some days old (`ZEST_TEST_DRAFT_AGE_DAYS`).
+Both exist only in a simulator build, and what the app then does is its
+real code.
 
 CI job `c` is informational. It builds the app ad-hoc signed and runs only
 `BackgroundUploadUITests`, to show whether the simulator's background
@@ -252,7 +304,7 @@ Those need a real phone.
 | `core` | Linux | `swift test` for ZestCore |
 | `app` | macOS | generates the project, builds for an iPhone simulator, runs the unit tests |
 | `screens` | macOS | takes a picture of every screen in the simulator; download the `screens` artifact |
-| `ui-tests` | macOS, jobs `a` and `b` side by side (plus `c`, informational) | starts the fake server, runs the UI tests in the simulator; on a failure, the log names the test, the assertion and what the server saw |
+| `ui-tests` | macOS, jobs `a`, `b` and `d` side by side (plus `c`, informational) | starts the fake server, runs the UI tests in the simulator; on a failure, the log names the test, the assertion and what the server saw |
 | `sizes` | macOS, three jobs side by side | pictures of every screen on the smallest iPhone (plus the awkward names), a 6.1-inch iPhone, an iPad, and at the largest text sizes; then `ScreensUITests` on each. Artifacts `screens-small`, `screens-odd-names`, `screens-mid`, `screens-ipad`, `screens-large-text` |
 | `performance` | macOS, informational | `PerformanceUITests`, plus the size of a Release build for a phone; prints a table and uploads it as `performance.txt` |
 | `testflight` | macOS, manual | archives and uploads to App Store Connect |
@@ -271,7 +323,9 @@ xcrun simctl launch --terminate-running-process booted com.zestlawnpest.video -Z
 Names: `login`, `code`, `today`, `today2` (the same list scrolled to the end),
 `confirm`, `far`, `record`, `recording`, `review`, `warning`, `saved`,
 `stopvideo`, `locked`, `queue`, `update`, `team` (a stop a teammate already
-recorded). (`recording` is held still on the first thing to say, "Hi Jane".)
+recorded), `lowspace` and `full` (the phone almost full, and full),
+`olddraft` (a clip left unsaved since yesterday). That is 19.
+(`recording` is held still on the first thing to say, "Hi Jane".)
 
 All of it sits behind `#if targetEnvironment(simulator)`
 (`App/ScreenshotMode.swift`, `UI/StandInPicture.swift`, and a few small hooks),

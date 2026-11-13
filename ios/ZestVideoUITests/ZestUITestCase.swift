@@ -40,7 +40,17 @@ class ZestUITestCase: XCTestCase {
     private var transcript: String?
     private var backgroundUploads = false
     private var metrics = false
-    private var reported = false
+
+    /// The free space the phone is to "have", in MB, from the next launch or
+    /// relaunch on. `nil` is the simulator's real free space (plenty).
+    var freeMB: Int?
+    /// Make the unsaved clip found at the next launch this many days old,
+    /// as if the phone had been put away with it. Reset to `nil` after one
+    /// launch, so a later relaunch does not age it again.
+    var ageDraftDays: Int?
+    /// Answer "Don't Allow" to the phone's questions instead of "Allow".
+    /// (One test refuses location; it puts this back in its tear-down.)
+    static var refusing = false
 
     /// False for tests that open the app's screens with made-up data and
     /// talk to no server at all (`ScreensUITests`).
@@ -80,6 +90,8 @@ class ZestUITestCase: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        // Before the app goes: say what failed, if anything did.
+        reportIssues()
         app.terminate()
         try super.tearDownWithError()
     }
@@ -92,38 +104,76 @@ class ZestUITestCase: XCTestCase {
         XCTAssertNotNil(issuedToken, "The fake server did not hand over a token when it was reset.")
     }
 
-    /// Every failure: say which test, why, what was showing and what the
-    /// server saw; keep a picture.
+    /// What was recorded when XCTest handed over an issue: its words, what
+    /// was on the screen, what the server had seen, and a picture.
+    private struct Sighting {
+        let words: String
+        let screen: String
+        let serverLog: String
+        let picture: XCUIScreenshot
+    }
+
+    private var sightings: [Sighting] = []
+    /// System notes already printed in this run, so each is said once.
+    private static var notesPrinted = Set<String>()
+
+    /// XCTest hands over every issue here, and not all of them are failures:
+    /// on an iPad it also passes on Apple's notes about the app's Info.plist,
+    /// in tests that go on to pass. Whether the test failed is only known
+    /// when it is over, so this keeps what was on the screen at that moment
+    /// and `reportIssues` (from the tear-down) says FAILED only if it did.
     override func record(_ issue: XCTIssue) {
-        if !reported {
-            reported = true
+        if sightings.count < 5 {
             let log = Self.needsServer ? server.logText() : "(this test opens the app's screens with made-up data and uses no server)"
-            let note = """
-            ######## FAILED \(shortName)
-            ######## \(issue.compactDescription)
-            ######## On screen: \(screenSummary())
-            ######## What the server saw:
-            \(log)
-            ########
-            """
-            print("\n" + note + "\n")
-
-            let screenshot = XCUIScreen.main.screenshot()
-            let picture = XCTAttachment(screenshot: screenshot)
-            picture.name = "\(shortName) at the failure"
-            picture.lifetime = .keepAlways
-            add(picture)
-            let text = XCTAttachment(string: note)
-            text.name = "What the server saw"
-            text.lifetime = .keepAlways
-            add(text)
-
-            let folder = URL(fileURLWithPath: Self.failureFolder, isDirectory: true)
-            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try? screenshot.pngRepresentation.write(to: folder.appendingPathComponent(shortName + ".png"))
-            try? Data(note.utf8).write(to: folder.appendingPathComponent(shortName + ".txt"))
+            sightings.append(Sighting(
+                words: issue.compactDescription, screen: screenSummary(), serverLog: log,
+                picture: XCUIScreen.main.screenshot()
+            ))
         }
         super.record(issue)
+    }
+
+    /// Every failure: say which test, why, what was showing and what the
+    /// server saw; keep a picture. A test that passed prints no FAILED
+    /// block: what the system noted along the way is printed once, as a note.
+    private func reportIssues() {
+        guard !sightings.isEmpty else { return }
+        defer { sightings = [] }
+        let failed = (testRun?.totalFailureCount ?? 0) > 0
+        guard failed else {
+            for sighting in sightings where Self.notesPrinted.insert(sighting.words).inserted {
+                print("NOTE (not a failure; \(shortName) passed) the system said: \(sighting.words)")
+            }
+            return
+        }
+        // The test stops at its first failure, so the last thing recorded is
+        // the failure; anything before it was only a note.
+        guard let last = sightings.last else { return }
+        let earlier = sightings.dropLast().map { "######## Noted earlier: \($0.words)" }
+        let note = ([
+            "######## FAILED \(shortName)",
+            "######## \(last.words)",
+            "######## On screen: \(last.screen)",
+        ] + earlier + [
+            "######## What the server saw:",
+            last.serverLog,
+            "########",
+        ]).joined(separator: "\n")
+        print("\n" + note + "\n")
+
+        let picture = XCTAttachment(screenshot: last.picture)
+        picture.name = "\(shortName) at the failure"
+        picture.lifetime = .keepAlways
+        add(picture)
+        let text = XCTAttachment(string: note)
+        text.name = "What the server saw"
+        text.lifetime = .keepAlways
+        add(text)
+
+        let folder = URL(fileURLWithPath: Self.failureFolder, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? last.picture.pngRepresentation.write(to: folder.appendingPathComponent(shortName + ".png"))
+        try? Data(note.utf8).write(to: folder.appendingPathComponent(shortName + ".txt"))
     }
 
     /// Keeps a few words with the run's results, whether or not anything failed.
@@ -182,6 +232,13 @@ class ZestUITestCase: XCTestCase {
         if self.metrics {
             environment["ZEST_TEST_METRICS"] = "1"
         }
+        if let freeMB {
+            environment["ZEST_TEST_FREE_MB"] = String(freeMB)
+        }
+        if let days = ageDraftDays {
+            environment["ZEST_TEST_DRAFT_AGE_DAYS"] = String(days)
+            ageDraftDays = nil
+        }
         // The token is only ever handed over together with a reset: a
         // restart must show what the app itself kept.
         if reset, signedIn, let token = issuedToken {
@@ -221,6 +278,14 @@ class ZestUITestCase: XCTestCase {
     // MARK: System questions
 
     private static func answer(_ alert: XCUIElement) -> Bool {
+        if refusing {
+            // "Don’t Allow": iOS writes it with a curly apostrophe.
+            let no = alert.buttons.matching(NSPredicate(format: "label BEGINSWITH[c] %@", "Don")).firstMatch
+            if no.exists {
+                no.tap()
+                return true
+            }
+        }
         for title in ["Allow While Using App", "Allow", "OK", "Allow Once", "Continue"] {
             let button = alert.buttons[title]
             if button.exists {
@@ -519,10 +584,25 @@ class ZestUITestCase: XCTestCase {
         waitFor(stop(firstStop), "the stops on My Route", timeout: 40, file: file, line: line)
     }
 
-    /// Signing in is when the phone asks about location. Say yes.
+    /// Signing in is when the phone asks about location. Say yes (or no,
+    /// in the one test that refuses).
     func answerLocationQuestion() {
         allowSystemQuestions(wait: Self.answeredLocation ? 0 : 2.5)
         Self.answeredLocation = true
+    }
+
+    /// Makes the phone forget its answer about location, so the next launch
+    /// asks again. The next test to sign in waits for the question.
+    func forgetLocationAnswer() {
+        app.resetAuthorizationStatus(for: .location)
+        Self.answeredLocation = false
+    }
+
+    /// The types of every audit event the server holds for one customer.
+    func eventTypes(for customerId: Int) -> [String] {
+        server.state().events.compactMap { event in
+            (event["customerId"] as? Int) == customerId ? event["type"] as? String : nil
+        }
     }
 
     /// From My Route: tap a stop, say THIS IS IT, land on the record screen.

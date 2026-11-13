@@ -68,11 +68,7 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
             return URLSession(configuration: plain, delegate: self, delegateQueue: nil)
         }
         #endif
-        let configuration = URLSessionConfiguration.background(withIdentifier: UploadManager.sessionIdentifier)
-        // Start now, not when iOS finds it convenient.
-        configuration.isDiscretionary = false
-        // Wake the app when an upload finishes so the server can be told.
-        configuration.sessionSendsLaunchEvents = true
+        let configuration = UploadManager.backgroundConfiguration(identifier: UploadManager.sessionIdentifier)
         #if targetEnvironment(simulator)
         // A UI test starts the app with launch arguments. Started by iOS
         // itself for a finished upload, it would come up WITHOUT them: the
@@ -82,15 +78,29 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
             configuration.sessionSendsLaunchEvents = false
         }
         #endif
+        return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+    }()
+
+    /// How videos leave a real phone: a background session that iOS carries
+    /// on with while the app is closed. Every line here is a promise from
+    /// the brief (the videos go by themselves, on cellular, without waiting
+    /// for Wi-Fi), and `UploadSessionTests` holds each one in place.
+    static func backgroundConfiguration(identifier: String) -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
+        // Start now, not when iOS finds it convenient.
+        configuration.isDiscretionary = false
+        // Wake the app when an upload finishes so the server can be told.
+        configuration.sessionSendsLaunchEvents = true
         // Cellular is allowed, Low Data Mode included: do not wait for Wi-Fi.
         configuration.allowsCellularAccess = true
         configuration.allowsExpensiveNetworkAccess = true
         configuration.allowsConstrainedNetworkAccess = true
+        // No signal is not a failure: wait for it, for up to a day.
         configuration.waitsForConnectivity = true
         configuration.timeoutIntervalForResource = 24 * 60 * 60
         configuration.httpMaximumConnectionsPerHost = 2
-        return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
-    }()
+        return configuration
+    }
 
     init(api: APIClient, store: QueueStore) {
         self.api = api
@@ -343,12 +353,12 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
                 store.apply(.completed(state: answer.state, emailAt: answer.emailAt), to: item.id)
                 onChange?()
             } catch let error as APIError {
-                if error.code == "not_uploaded" {
-                    store.apply(.notUploaded, to: item.id)
+                // "Not uploaded", or a video the server does not know (404,
+                // whatever word comes with it): start again from the top.
+                // The file stays on the phone until that has worked.
+                if let event = ServerSays.afterFailedComplete(status: error.status, code: error.code ?? "") {
+                    store.apply(event, to: item.id)
                     pump()
-                } else if error.status == 404 {
-                    // The server has no record of it: start again from the top.
-                    store.apply(.notUploaded, to: item.id)
                 } else {
                     failed(item.id, error)
                 }
@@ -370,15 +380,16 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
                 _ = try await api.deleteVideo(id: item.id)
                 store.apply(.deleteConfirmed, to: item.id)
             } catch let error as APIError {
-                if error.code == "too_late" {
+                switch ServerSays.afterFailedDelete(status: error.status, code: error.code ?? "") {
+                case .tooLate:
                     // It reached the customer before the delete reached the server.
                     store.apply(.deleteConfirmed, to: item.id)
                     onNotice?(error.message.isEmpty ? UploadManager.lockedMessage : error.message)
                     onChange?()
-                } else if let status = error.status, (400..<500).contains(status), status != 429, status != 408 {
+                case .finished:
                     // The server never had it, or it is already gone.
                     store.apply(.deleteConfirmed, to: item.id)
-                } else {
+                case .tryAgain:
                     failed(item.id, error)
                 }
             } catch {
@@ -387,7 +398,7 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
         }
     }
 
-    static let lockedMessage = "This video already went to the customer. Call the office to change it."
+    static let lockedMessage = VideoWords.locked(toOffice: false)
 
     private func failed(_ id: String, _ error: APIError) {
         switch error {
