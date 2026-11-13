@@ -253,3 +253,14 @@ final class CameraService: NSObject, ObservableObject, AVCaptureFileOutputRecord
         }
     }
 }
+
+#if targetEnvironment(simulator)
+extension CameraService {
+    /// Screenshot mode only: the simulator has no camera, so the record
+    /// screens are shown by setting the state they would have on a phone.
+    func setScreenshotState(status: Status, recordingStartedAt: Date?) {
+        self.status = status
+        self.recordingStartedAt = recordingStartedAt
+    }
+}
+#endif

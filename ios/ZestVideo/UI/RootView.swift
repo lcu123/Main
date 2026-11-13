@@ -24,15 +24,15 @@ struct RootView: View {
     private var screen: some View {
         switch app.route {
         case .login:
-            LoginView()
+            LoginView(step: app.seeds.loginStep, contact: app.seeds.loginContact, code: app.seeds.loginCode)
         case .today:
             TodayView()
         case .confirm:
-            ConfirmStopView()
+            ConfirmStopView(stage: app.seeds.confirmStage)
         case .record:
             RecordView()
         case .review:
-            ReviewView()
+            ReviewView(stage: app.seeds.reviewStage, recommend: app.seeds.recommend)
         case .pickStop:
             PickStopView()
         case .stopVideo:

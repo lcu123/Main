@@ -10,7 +10,7 @@ struct TodayView: View {
 
     var body: some View {
         let ranked = app.ranked
-        Screen(title: greeting) {
+        Screen(title: greeting, startAtBottom: app.seeds.scrollToEnd) {
             banners
 
             if ranked.all.isEmpty {

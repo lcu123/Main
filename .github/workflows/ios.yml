@@ -3,6 +3,7 @@ name: iOS
 # Builds and tests the Zest Video iPhone app (ios/).
 #   core        pure-logic package on Linux (fast)
 #   app         real Xcode build + unit tests on an iPhone simulator
+#   screens     pictures of every screen, taken in the simulator (artifact "screens")
 #   testflight  manual only: archive and upload to App Store Connect
 
 on:
@@ -142,6 +143,169 @@ jobs:
           path: |
             ios/build.log
             ios/test.log
+          if-no-files-found: ignore
+
+  screens:
+    # Real pictures of the real app. The app has a simulator-only screenshot
+    # mode: launched with "-ZestScreen <name>" it opens straight on that screen
+    # with made-up data (no sign-in, no network, no camera, no prompts). That
+    # mode is compiled out of any build for a real phone.
+    name: Screenshots
+    if: github.event_name != 'pull_request'
+    runs-on: macos-26
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Stand-in app icon if the real one is not committed yet
+        run: |
+          ICON="ZestVideo/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+          if [ ! -f "$ICON" ]; then
+            echo "::warning::icon-1024.png is missing; building with a plain purple stand-in."
+            python3 - "$ICON" <<'PY'
+          import struct, sys, zlib
+          size = 1024
+          row = b"\x00" + bytes((0x6E, 0x20, 0xB9)) * size
+          raw = row * size
+          def chunk(kind, data):
+              body = kind + data
+              return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+          png += chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+          open(sys.argv[1], "wb").write(png)
+          PY
+          fi
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Pick the largest iPhone simulator
+        run: |
+          # A Pro Max (6.9 inch) gives the size the App Store listing asks for.
+          UDID=$(xcrun simctl list devices available --json | python3 -c '
+          import json, re, sys
+          def size_rank(name):
+              if "Pro Max" in name:
+                  return 3
+              if "Plus" in name or "Air" in name:
+                  return 2
+              if "Pro" in name:
+                  return 1
+              return 0
+          best = None
+          for runtime, devices in json.load(sys.stdin)["devices"].items():
+              match = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              if not match:
+                  continue
+              version = (int(match.group(1)), int(match.group(2)))
+              for device in devices:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      key = (version, size_rank(device["name"]), device["name"])
+                      if best is None or key > best[0]:
+                          best = (key, device["udid"], device["name"], runtime)
+          if best is None:
+              sys.exit("No iPhone simulator is installed on this runner.")
+          sys.stderr.write("Using %s (%s)\n" % (best[2], best[3]))
+          print(best[1])
+          ')
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Build the app for the simulator
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project ZestVideo.xcodeproj \
+            -scheme ZestVideo \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet 2>&1 | tee screens-build.log
+
+      - name: Boot the simulator and install the app
+        run: |
+          APP="build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app"
+          ls -d "$APP"
+          xcrun simctl boot "$SIM_UDID" || true
+          xcrun simctl bootstatus "$SIM_UDID" -b
+          # A clean status bar: 9:41, full battery, full signal. Nice to have only.
+          xcrun simctl status_bar "$SIM_UDID" override --time "9:41" --batteryState charged \
+            --batteryLevel 100 --cellularBars 4 --wifiBars 3 || echo "status bar override not available"
+          xcrun simctl ui "$SIM_UDID" appearance light || true
+          # The build is unsigned; an ad-hoc signature costs nothing and avoids
+          # a simulator that refuses to launch it.
+          codesign --force --sign - --timestamp=none "$APP" || echo "ad-hoc signing skipped"
+          xcrun simctl install "$SIM_UDID" "$APP"
+
+      - name: Take the pictures
+        run: |
+          mkdir -p screens
+          failed=""
+          number=0
+          for name in login code today today2 confirm far record recording review warning saved stopvideo locked queue update; do
+            number=$((number + 1))
+            file=$(printf "screens/%02d-%s.png" "$number" "$name")
+            ok=1
+            xcrun simctl launch --terminate-running-process "$SIM_UDID" com.zestlawnpest.video -ZestScreen "$name" || ok=0
+            # The first launch after install is the slow one.
+            if [ "$number" -eq 1 ]; then sleep 8; else sleep 3; fi
+            if [ "$ok" -eq 1 ]; then
+              xcrun simctl io "$SIM_UDID" screenshot "$file" || ok=0
+            fi
+            if [ "$ok" -eq 1 ] && [ -s "$file" ]; then
+              echo "ok      $name"
+            else
+              echo "FAILED  $name"
+              failed="$failed $name"
+            fi
+          done
+          xcrun simctl terminate "$SIM_UDID" com.zestlawnpest.video || true
+          echo
+          ls -l screens
+          if [ -n "$failed" ]; then
+            echo "::warning::These screens could not be captured:$failed"
+          fi
+          # One missing picture is not a failure. No pictures at all is.
+          count=$(find screens -name '*.png' | wc -l | tr -d ' ')
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No screenshots were captured."
+            exit 1
+          fi
+
+      - name: Contact sheet (every screen in one picture)
+        continue-on-error: true
+        run: |
+          mkdir -p thumbs
+          for file in screens/*.png; do
+            sips -Z 720 "$file" --out "thumbs/$(basename "$file")" >/dev/null
+          done
+          # Standard-library Python only: no Pillow needed on the runner.
+          python3 Scripts/contact_sheet.py thumbs contact-sheet.png 5
+          mv contact-sheet.png screens/00-contact-sheet.png
+
+      - name: Upload the pictures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screens
+          path: ios/screens
+          if-no-files-found: warn
+
+      - name: Keep the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screens-build-log
+          path: ios/screens-build.log
           if-no-files-found: ignore
 
   testflight:

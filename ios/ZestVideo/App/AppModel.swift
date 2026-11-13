@@ -51,6 +51,26 @@ struct CheckResult: Equatable {
     var transcript: String?
 }
 
+/// Starting values for the screens' own state.
+///
+/// In a real build these are always the defaults below: nothing can change
+/// them. Only the simulator-only screenshot mode (`ScreenshotMode.swift`)
+/// sets them, to open a screen part-way through for a picture.
+struct ScreenSeeds: Equatable {
+    var loginStep: LoginView.Step = .contact
+    var loginContact = ""
+    var loginCode = ""
+    var confirmStage: ConfirmStopView.Stage = .confirm
+    var reviewStage: ReviewView.Stage = .ask
+    var recommend = false
+    /// Today opens scrolled to the end of the list.
+    var scrollToEnd = false
+    /// The recording ring and prompts hold still at this many seconds in.
+    var frozenElapsed: TimeInterval?
+    /// Draw a stand-in picture where the camera or the clip would be.
+    var standInPicture = false
+}
+
 /// One line under a stop on the Today list.
 struct RowStatus: Equatable {
     enum Kind: Equatable {
@@ -104,6 +124,8 @@ final class AppModel: ObservableObject {
     @Published var notice: String?
     /// Shown on the record screen when a clip did not save.
     @Published var recordProblem: String?
+    /// Always the defaults outside screenshot mode. See `ScreenSeeds`.
+    private(set) var seeds = ScreenSeeds()
 
     let api: APIClient
     let queue: QueueStore
@@ -245,6 +267,7 @@ final class AppModel: ObservableObject {
     }
 
     func wentToBackground() {
+        guard started else { return }
         syncNudges()
     }
 
@@ -936,6 +959,28 @@ final class AppModel: ObservableObject {
         }
     }
 }
+
+#if targetEnvironment(simulator)
+extension AppModel {
+    /// Screenshot mode only (see `ScreenshotMode.swift`). Puts fixture state
+    /// straight into the model. `start()` is never called in that mode, so
+    /// there is no Keychain, no network, no permission prompt and no timer.
+    func loadScreenshot(_ shot: ScreenshotMode.Shot) {
+        tech = shot.tech
+        today = shot.today
+        target = shot.target
+        draft = shot.draft
+        check = shot.check
+        focus = shot.focus
+        recordPhase = shot.recordPhase
+        seeds = shot.seeds
+        offline = false
+        notice = nil
+        recordProblem = nil
+        route = shot.route
+    }
+}
+#endif
 
 private extension APIError {
     var httpBody: APIErrorBody? {

@@ -22,6 +22,7 @@ ios/
     UI/                  Theme, big controls, the screens, the countdown ring.
     Resources/           Assets (icon, colors), privacy manifest, entitlements.
   ZestVideoTests/        Unit tests that run on the simulator.
+  Scripts/               contact_sheet.py, used by CI to tile the screenshots.
 ```
 
 No third-party code. Apple frameworks only, system font, one bundled image
@@ -86,7 +87,32 @@ Xcode (⌘U) or in CI.
 | --- | --- | --- |
 | `core` | Linux | `swift test` for ZestCore |
 | `app` | macOS | generates the project, builds for an iPhone simulator, runs the unit tests |
+| `screens` | macOS | takes a picture of every screen in the simulator; download the `screens` artifact |
 | `testflight` | macOS, manual | archives and uploads to App Store Connect |
+
+## Pictures of every screen
+
+The simulator build has a screenshot mode. Launch it with `-ZestScreen <name>`
+and the app opens straight on that screen with made-up data: no sign-in, no
+network, no Keychain, no permission prompts. Where the camera or the clip
+would be, it draws a simple house on a lawn (the simulator has no camera).
+
+```bash
+xcrun simctl launch --terminate-running-process booted com.zestlawnpest.video -ZestScreen recording
+```
+
+Names: `login`, `code`, `today`, `today2` (the same list scrolled to the end),
+`confirm`, `far`, `record`, `recording`, `review`, `warning`, `saved`,
+`stopvideo`, `locked`, `queue`, `update`.
+
+All of it sits behind `#if targetEnvironment(simulator)`
+(`App/ScreenshotMode.swift`, `UI/StandInPicture.swift`, and a few small hooks),
+so none of it exists in a build for a real phone. The screens themselves are
+the real ones: the mode only hands them their starting state.
+
+The `screens` CI job runs every name on the largest iPhone simulator and
+uploads the pictures, plus `00-contact-sheet.png` with all of them on one
+page (`Scripts/contact_sheet.py`, standard-library Python).
 
 ## Ship to TestFlight
 

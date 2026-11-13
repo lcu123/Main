@@ -14,13 +14,15 @@ struct CountdownRing: View {
     let maxSeconds: Double
     var diameter: CGFloat = 230
     var lineWidth: CGFloat = 18
+    /// Hold the ring still at this many seconds in. Only set in screenshot mode.
+    var frozenElapsed: TimeInterval?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         // Thirty redraws a second reads as smooth; Reduce Motion gets a calmer four.
         TimelineView(.periodic(from: startedAt, by: reduceMotion ? 0.25 : 1.0 / 30.0)) { context in
-            let elapsed = max(0, context.date.timeIntervalSince(startedAt))
+            let elapsed = max(0, frozenElapsed ?? context.date.timeIntervalSince(startedAt))
             RingFace(
                 fractionLeft: Countdown.fractionLeft(elapsed: elapsed, maxSeconds: maxSeconds),
                 secondsLeft: Countdown.secondsLeft(elapsed: elapsed, maxSeconds: maxSeconds),

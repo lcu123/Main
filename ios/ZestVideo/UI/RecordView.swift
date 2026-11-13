@@ -59,11 +59,7 @@ struct RecordView: View {
 
     private var live: some View {
         ZStack {
-            CameraPreview(session: camera.session) {
-                capturePressed()
-            }
-            .ignoresSafeArea()
-            .accessibilityHidden(true)
+            picture
 
             if let startedAt = camera.recordingStartedAt {
                 recordingOverlay(startedAt: startedAt)
@@ -73,6 +69,31 @@ struct RecordView: View {
                 readyOverlay
             }
         }
+    }
+
+    /// What the camera sees. (In the simulator's screenshot mode, where there
+    /// is no camera, a stand-in picture.)
+    @ViewBuilder
+    private var picture: some View {
+        #if targetEnvironment(simulator)
+        if app.seeds.standInPicture {
+            StandInPicture()
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+        } else {
+            cameraPreview
+        }
+        #else
+        cameraPreview
+        #endif
+    }
+
+    private var cameraPreview: some View {
+        CameraPreview(session: camera.session) {
+            capturePressed()
+        }
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
     }
 
     /// The screen tap, a volume button, or the ring: one action for all.
@@ -192,8 +213,11 @@ struct RecordView: View {
                 .accessibilityHidden(true)
 
             VStack(spacing: 12) {
-                RecordingPill(steady: reduceMotion)
-                PromptCard(startedAt: startedAt, maxSeconds: maxSeconds, prompts: app.config.prompts)
+                RecordingPill(steady: reduceMotion || app.seeds.frozenElapsed != nil)
+                PromptCard(
+                    startedAt: startedAt, maxSeconds: maxSeconds, prompts: app.config.prompts,
+                    frozenElapsed: app.seeds.frozenElapsed
+                )
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, Theme.gutter + 6)
@@ -202,7 +226,7 @@ struct RecordView: View {
             // The ring sits where the record button was. Tapping it ends the
             // clip early (after the first three seconds).
             Button(action: capturePressed) {
-                CountdownRing(startedAt: startedAt, maxSeconds: maxSeconds)
+                CountdownRing(startedAt: startedAt, maxSeconds: maxSeconds, frozenElapsed: app.seeds.frozenElapsed)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -286,10 +310,11 @@ private struct PromptCard: View {
     let startedAt: Date
     let maxSeconds: Double
     let prompts: [String]
+    var frozenElapsed: TimeInterval?
 
     var body: some View {
         TimelineView(.periodic(from: startedAt, by: 0.25)) { context in
-            let elapsed = context.date.timeIntervalSince(startedAt)
+            let elapsed = frozenElapsed ?? context.date.timeIntervalSince(startedAt)
             let index = Countdown.promptIndex(elapsed: elapsed, maxSeconds: maxSeconds, count: prompts.count)
             VStack(spacing: 4) {
                 Text("\(index + 1) of \(prompts.count)")

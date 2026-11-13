@@ -8,16 +8,21 @@ struct ConfirmStopView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var location: LocationService
 
-    private enum Stage {
+    enum Stage: Equatable {
         case confirm
         case far
         case storageWarn
         case storageBlocked
     }
 
-    @State private var stage: Stage = .confirm
+    @State private var stage: Stage
     @State private var acceptedFar = false
     @State private var acceptedStorage = false
+
+    /// The default is the real flow. Other values only come from `ScreenSeeds`.
+    init(stage: Stage = .confirm) {
+        _stage = State(initialValue: stage)
+    }
 
     var body: some View {
         if let target = app.target {

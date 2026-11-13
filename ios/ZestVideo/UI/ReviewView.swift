@@ -11,19 +11,25 @@ import ZestCore
 struct ReviewView: View {
     @EnvironmentObject private var app: AppModel
 
-    private enum Stage {
+    enum Stage: Equatable {
         case ask
         case checking
         case warning
         case saved
     }
 
-    @State private var stage: Stage = .ask
+    @State private var stage: Stage
     @State private var player: AVPlayer?
     @State private var ended = false
-    @State private var recommend = false
+    @State private var recommend: Bool
 
     private let finished = NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)
+
+    /// The defaults are the real flow. Other values only come from `ScreenSeeds`.
+    init(stage: Stage = .ask, recommend: Bool = false) {
+        _stage = State(initialValue: stage)
+        _recommend = State(initialValue: recommend)
+    }
 
     var body: some View {
         Group {
@@ -77,9 +83,17 @@ struct ReviewView: View {
         Button(action: playAgain) {
             ZStack {
                 Color.black
+                #if targetEnvironment(simulator)
+                if app.seeds.standInPicture {
+                    StandInPicture()
+                } else if let player {
+                    ClipPlayerView(player: player)
+                }
+                #else
                 if let player {
                     ClipPlayerView(player: player)
                 }
+                #endif
                 if ended {
                     Text("TAP TO PLAY AGAIN")
                         .font(Theme.bodyBold)
@@ -206,7 +220,7 @@ struct ReviewView: View {
     }
 
     private func startPlayer() {
-        guard player == nil, let draft = app.draft else { return }
+        guard player == nil, !app.seeds.standInPicture, let draft = app.draft else { return }
         Sounds.preparePlayback()
         let item = AVPlayerItem(url: Files.video(draft.fileName))
         let newPlayer = AVPlayer(playerItem: item)

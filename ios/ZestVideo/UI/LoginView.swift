@@ -5,18 +5,25 @@ import SwiftUI
 struct LoginView: View {
     @EnvironmentObject private var app: AppModel
 
-    private enum Step {
+    enum Step: Equatable {
         case contact
         case code
     }
 
-    @State private var step: Step = .contact
-    @State private var contact = ""
-    @State private var code = ""
+    @State private var step: Step
+    @State private var contact: String
+    @State private var code: String
     @State private var busy = false
     @State private var problem: String?
     @FocusState private var contactFocused: Bool
     @FocusState private var codeFocused: Bool
+
+    /// The defaults are the real flow. Other values only come from `ScreenSeeds`.
+    init(step: Step = .contact, contact: String = "", code: String = "") {
+        _step = State(initialValue: step)
+        _contact = State(initialValue: contact)
+        _code = State(initialValue: code)
+    }
 
     var body: some View {
         switch step {

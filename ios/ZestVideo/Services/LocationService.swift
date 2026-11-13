@@ -134,3 +134,13 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         }
     }
 }
+
+#if targetEnvironment(simulator)
+extension LocationService {
+    /// Screenshot mode only: pretend the phone is here. No permission is asked.
+    func setScreenshotFix(_ fix: VideoLocation) {
+        self.fix = fix
+        fixTime = Date()
+    }
+}
+#endif

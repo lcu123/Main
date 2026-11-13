@@ -212,3 +212,12 @@ final class QueueStore: ObservableObject {
         Files.write(items, to: url)
     }
 }
+
+#if targetEnvironment(simulator)
+extension QueueStore {
+    /// Screenshot mode only: show these rows. Nothing is written to disk.
+    func loadScreenshotItems(_ fixture: [QueueItem]) {
+        items = fixture
+    }
+}
+#endif

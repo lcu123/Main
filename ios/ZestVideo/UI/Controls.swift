@@ -94,6 +94,8 @@ struct BigButtonStyle: ButtonStyle {
 /// up, and the buttons pinned at the bottom where a thumb reaches them.
 struct Screen<Content: View, Footer: View>: View {
     var title: String?
+    /// Open scrolled to the end. Only ever true in screenshot mode.
+    var startAtBottom = false
     @ViewBuilder var content: () -> Content
     @ViewBuilder var footer: () -> Footer
 
@@ -115,6 +117,7 @@ struct Screen<Content: View, Footer: View>: View {
                 .padding(.top, 20)
                 .padding(.bottom, 16)
             }
+            .defaultScrollAnchor(startAtBottom ? .bottom : nil)
             VStack(spacing: 14) {
                 footer()
             }

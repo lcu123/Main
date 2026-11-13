@@ -9,6 +9,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        #if targetEnvironment(simulator)
+        // `-ZestScreen <name>`: open one screen with made-up data for a
+        // picture. This branch does not exist in a build for a real phone.
+        if let screen = ScreenshotMode.requested {
+            ScreenshotMode.show(screen, in: AppModel.shared)
+            return true
+        }
+        #endif
         // Also runs when iOS starts the app in the background (a finished
         // upload, a left stop), so the queue and the route are ready.
         AppModel.shared.start()
