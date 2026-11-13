@@ -44,6 +44,18 @@ def to_int(value: Any) -> int | None:
         return None
 
 
+INT32_MAX = 2_147_483_647
+
+
+def to_id(value: Any) -> int | None:
+    """An ID from outside: a whole number that fits the database's integer column, or None.
+    (Postgres refuses anything larger outright, which would otherwise surface as a crash.)"""
+    number = to_int(value)
+    if number is None or isinstance(value, bool) or not -INT32_MAX <= number <= INT32_MAX:
+        return None
+    return number
+
+
 def to_float(value: Any) -> float | None:
     try:
         f = float(value)
@@ -53,7 +65,8 @@ def to_float(value: Any) -> float | None:
 
 
 def clean(value: Any) -> str:
-    return " ".join(str(value).split()) if value is not None else ""
+    """Collapse whitespace and drop NUL characters (Postgres refuses them in text)."""
+    return " ".join(str(value).replace("\x00", "").split()) if value is not None else ""
 
 
 def id_list(value: Any) -> list[int]:

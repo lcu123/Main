@@ -207,6 +207,36 @@ async def test_office_pages_and_actions_are_closed_without_a_session(env: Env) -
     assert (await env.http.get("/office")).status_code == 303
 
 
+async def test_office_forms_survive_null_characters_and_impossible_numbers(env: Env) -> None:
+    headers = await login(env)
+    await env.http.get("/v1/today", headers=headers)
+    video_id = await film(env, headers, 501)
+    await film(env, headers, 502, override=True)
+    (flag,) = await env.flags("wrong_house")
+    csrf = await office_login(env)
+    nul = "a\x00b"
+    posts = [
+        (f"/office/video/{video_id}/move", {"customer_id": "9" * 30}),
+        (f"/office/video/{video_id}/move", {"customer_id_other": "121604549758"}),
+        (f"/office/video/{video_id}/pull", {"reason": nul * 50}),
+        ("/office/video/not-a-video/pull", {"reason": "x"}),
+        ("/office/video/%00/move", {"customer_id": "502"}),
+        (f"/office/flag/{flag.id}/clear", {"note": nul}),
+        ("/office/flag/99999999999999999999/clear", {"note": "x"}),
+        ("/office/techs/99999999999999999999/code", {}),
+        ("/office/users", {"email": f"new{nul}@zest.test", "role": "staff"}),
+        ("/office/settings", {"email_subject": nul + "Video from {tech}", "prompts": f"one{nul}\ntwo"}),
+        ("/office/login", {"email": nul + "@x.y"}),
+        ("/office/verify", {"email": nul, "code": nul}),
+    ]
+    for path, data in posts:
+        r = await env.http.post(path, data={"csrf": csrf, **data})
+        assert r.status_code < 500, f"{path} answered {r.status_code}"
+    for path in ("/office/video/%00", "/office/audit?video=a%00b&action=a%00b", "/office?day=%00", "/office/stats?days=9e99"):
+        assert (await env.http.get(path)).status_code < 500, path
+    assert (await env.video(video_id)).state == "pulled", "the one honest pull in that list went through"
+
+
 async def test_links_in_emails_come_from_the_servers_own_address_never_the_request(env: Env) -> None:
     headers = await login(env)
     await env.http.get("/v1/today", headers={**headers, "Host": "evil.example", "X-Forwarded-Host": "evil.example"})

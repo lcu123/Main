@@ -12,6 +12,7 @@ from starlette.routing import Route
 
 from . import auth, db, videos
 from .core import ApiError, Ctx, audit, get_settings
+from .fr import to_id
 from .route import today_payload
 
 MAX_BODY = 64 * 1024
@@ -51,7 +52,19 @@ async def read_json(request: Request) -> dict[str, Any]:
         raise ApiError(400, "bad_request", "That request could not be read.") from exc
     if not isinstance(body, dict):
         raise ApiError(400, "bad_request", "That request could not be read.")
-    return body
+    return _scrub(body)
+
+
+def _scrub(value: Any) -> Any:
+    """Remove NUL characters from every string in a JSON body. Postgres refuses them in
+    text, and no honest client sends one."""
+    if isinstance(value, str):
+        return value.replace("\x00", "") if "\x00" in value else value
+    if isinstance(value, list):
+        return [_scrub(v) for v in value]
+    if isinstance(value, dict):
+        return {(_scrub(k) if isinstance(k, str) else k): _scrub(v) for k, v in value.items()}
+    return value
 
 
 def _build(request: Request) -> int:
@@ -153,7 +166,7 @@ def routes(ctx: Ctx) -> list[Route]:
             await audit(
                 ctx, "tech", device.tech_id, f"app_{item['type']}",
                 video_id=video_id if videos.UUID_RE.match(video_id) else None,
-                customer_id=item.get("customerId") if isinstance(item.get("customerId"), int) else None,
+                customer_id=to_id(item.get("customerId")),
                 detail=detail,
                 at=videos._parse_time(item.get("at")),
             )

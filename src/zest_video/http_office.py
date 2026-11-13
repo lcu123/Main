@@ -19,7 +19,7 @@ from starlette.routing import Route
 
 from . import __version__, auth, db, security, videos
 from .core import DEFAULT_SETTINGS, FLAG_WORDS, ApiError, Ctx, audit, clear_flags, get_settings, set_setting
-from .fr import FieldRoutesError
+from .fr import FieldRoutesError, to_id
 from .http_api import client_ip
 from .jobs import techs_with_the_app
 from .render import render
@@ -312,7 +312,7 @@ def routes(ctx: Ctx) -> list[Route]:
         if request.method == "GET":
             return html("office_login.html", step="email")
         form = await request.form()
-        email = str(form.get("email") or "").strip().lower()
+        email = str(form.get("email") or "").replace("\x00", "").strip().lower()[:254]
         try:
             await auth.request_office_code(ctx, email, client_ip(request))
         except ApiError as exc:
@@ -321,7 +321,7 @@ def routes(ctx: Ctx) -> list[Route]:
 
     async def verify(request: Request) -> Response:
         form = await request.form()
-        email = str(form.get("email") or "").strip().lower()
+        email = str(form.get("email") or "").replace("\x00", "").strip().lower()[:254]
         try:
             token = await auth.verify_office_code(ctx, email, str(form.get("code") or ""), client_ip(request))
         except ApiError as exc:
@@ -358,7 +358,8 @@ def routes(ctx: Ctx) -> list[Route]:
         )
 
     async def open_video(request: Request, user: auth.OfficeUser) -> Response:
-        video = await videos.get_video(ctx, request.path_params["video_id"])
+        video_id = request.path_params["video_id"].lower()
+        video = await videos.get_video(ctx, video_id) if videos.UUID_RE.match(video_id) else None
         if video is None or video.object_deleted or video.state == "awaiting_upload":
             raise ApiError(404, "bad_request", "That video's file is not here.")
         await audit(ctx, "office", user.email, "video_opened", video_id=video.id, customer_id=video.customer_id)
@@ -366,22 +367,24 @@ def routes(ctx: Ctx) -> list[Route]:
 
     async def pull_video(request: Request, user: auth.OfficeUser) -> Response:
         form = await request.form()
-        await videos.pull(ctx, request.path_params["video_id"], user.email, str(form.get("reason") or "").strip())
+        reason = str(form.get("reason") or "").replace("\x00", "").strip()
+        await videos.pull(ctx, request.path_params["video_id"].lower(), user.email, reason)
         return back(request, str(form.get("back") or "/office"), msg="Video pulled. Its link is dead.")
 
     async def move_video(request: Request, user: auth.OfficeUser) -> Response:
         form = await request.form()
         raw = str(form.get("customer_id") or form.get("customer_id_other") or "").strip()
-        if not raw.isdigit():
+        customer_id = to_id(raw) if raw.isdigit() else None
+        if customer_id is None or customer_id <= 0:
             raise ApiError(400, "bad_request", "Pick a customer, or type the FieldRoutes customer number.")
-        await videos.move(ctx, request.path_params["video_id"], int(raw), user.email)
+        await videos.move(ctx, request.path_params["video_id"].lower(), customer_id, user.email)
         return back(request, str(form.get("back") or "/office"), msg="Video moved. The right customer gets the email in a minute.")
 
     async def clear_flag(request: Request, user: auth.OfficeUser) -> Response:
         form = await request.form()
-        flag_id = int(request.path_params["flag_id"])
-        note = str(form.get("note") or "").strip()
-        cleared = await clear_flags(ctx, db.flags.c.id == flag_id, user.email, note)
+        flag_id = to_id(request.path_params["flag_id"])
+        note = str(form.get("note") or "").replace("\x00", "").strip()
+        cleared = await clear_flags(ctx, db.flags.c.id == flag_id, user.email, note) if flag_id else 0
         if cleared:
             await audit(ctx, "office", user.email, "flag_cleared", detail={"flag": flag_id, "note": note[:300]})
         return back(request, str(form.get("back") or "/office"), msg="Flag cleared.")
@@ -414,7 +417,9 @@ def routes(ctx: Ctx) -> list[Route]:
         return back(request, "/office/techs", msg=f"Found {count} active techs in FieldRoutes.")
 
     async def issue_code(request: Request, user: auth.OfficeUser) -> Response:
-        tech_id = int(request.path_params["tech_id"])
+        tech_id = to_id(request.path_params["tech_id"])
+        if tech_id is None:
+            raise ApiError(400, "bad_request", "That tech is not active in FieldRoutes.")
         code = await auth.issue_code_by_hand(ctx, tech_id, user.email)
         names = await tech_names(ctx)
         return RedirectResponse(f"/office/techs?code={code}&for={quote(names.get(tech_id, ''))}", status_code=303)
@@ -471,7 +476,9 @@ def routes(ctx: Ctx) -> list[Route]:
     async def audit_page(request: Request, user: auth.OfficeUser) -> Response:
         query = sa.select(db.events).order_by(db.events.c.id.desc()).limit(500)
         video_id = request.query_params.get("video", "").strip().lower()
-        action = request.query_params.get("action", "").strip()
+        action = request.query_params.get("action", "").replace("\x00", "").strip()[:80]
+        if video_id and not videos.UUID_RE.match(video_id):
+            video_id = ""  # not a video ID: show everything rather than ask the database about junk
         if video_id:
             query = query.where(db.events.c.video_id == video_id)
         if action:

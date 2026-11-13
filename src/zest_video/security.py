@@ -62,7 +62,7 @@ def normalize_phone(raw: str) -> str:
 
 def normalize_contact(raw: str) -> tuple[str, str]:
     """Return ('email', addr) or ('phone', digits) or ('', '')."""
-    raw = (raw or "").strip()
+    raw = (raw or "").replace("\x00", "").strip()[:254]
     if "@" in raw:
         return "email", raw.lower()
     phone = normalize_phone(raw)

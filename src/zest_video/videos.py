@@ -26,7 +26,7 @@ import sqlalchemy as sa
 from . import db, security
 from .auth import Device
 from .core import ApiError, Ctx, audit, clear_flags, get_settings, raise_flag
-from .fr import FieldRoutesError, clean, to_int
+from .fr import FieldRoutesError, clean, to_id, to_int
 from .notify import DeliveryError, Email
 from .render import render
 from .route import LIVE_STATES, demo_stops, iso, public_state, sync_day, time_check
@@ -131,13 +131,13 @@ async def register(ctx: Ctx, device: Device, body: dict[str, Any]) -> dict[str, 
     }
     location = body.get("location") if isinstance(body.get("location"), dict) else {}
     not_on_list = bool(body.get("notOnMyList"))
-    customer_id = None if not_on_list else to_int(body.get("customerId"))
+    customer_id = None if not_on_list else to_id(body.get("customerId"))
     if not not_on_list and customer_id is None:
         raise ApiError(400, "bad_request", "Pick a stop for this video.")
 
     snapshot = {"customer_name": "", "address": "", "city_line": ""}
     raw_ids = body.get("appointmentIds")
-    appointment_ids = [i for i in (to_int(x) for x in (raw_ids if isinstance(raw_ids, list) else [])) if i and i > 0]
+    appointment_ids = [i for i in (to_id(x) for x in (raw_ids if isinstance(raw_ids, list) else [])[:50]) if i and i > 0]
     stop = None
     if customer_id is not None:
         if device.demo:
@@ -287,7 +287,7 @@ def email_due(recorded_at: datetime, uploaded_at: datetime, hold_minutes: int) -
 
 
 async def complete(ctx: Ctx, device: Device, video_id: str, body: dict[str, Any]) -> dict[str, Any]:
-    video = await get_video(ctx, video_id)
+    video = await get_video(ctx, video_id) if UUID_RE.match(video_id) else None
     if video is None or video.tech_id != device.tech_id:
         raise ApiError(404, "bad_request", "We do not know this video.")
     if video.state != "awaiting_upload":
@@ -326,7 +326,7 @@ async def complete(ctx: Ctx, device: Device, video_id: str, body: dict[str, Any]
 
 
 async def delete_by_tech(ctx: Ctx, device: Device, video_id: str) -> dict[str, Any]:
-    video = await get_video(ctx, video_id)
+    video = await get_video(ctx, video_id) if UUID_RE.match(video_id) else None
     if video is None or video.tech_id != device.tech_id:
         raise ApiError(404, "bad_request", "We do not know this video.")
     if video.state in ("deleted", "replaced"):
@@ -618,7 +618,7 @@ async def get_score(ctx: Ctx, video_id: str) -> Any | None:
 async def save_score(ctx: Ctx, video: Any, stars: int, comment: str) -> None:
     if not 1 <= stars <= 5:
         raise ApiError(400, "bad_request", "Pick 1 to 5 stars.")
-    comment = comment.strip()[:1000]
+    comment = comment.replace("\x00", "").strip()[:1000]
     now = db.now()
     first = False
     async with ctx.engine.begin() as conn:
@@ -669,7 +669,7 @@ async def opt_out(ctx: Ctx, video: Any) -> None:
 
 
 async def pull(ctx: Ctx, video_id: str, by: str, reason: str) -> None:
-    video = await get_video(ctx, video_id)
+    video = await get_video(ctx, video_id) if UUID_RE.match(video_id) else None
     if video is None:
         raise ApiError(404, "bad_request", "No such video.")
     if not await _end(ctx, video, "pulled", by, reason or "pulled by the office", drop_file=False):
@@ -681,7 +681,7 @@ async def pull(ctx: Ctx, video_id: str, by: str, reason: str) -> None:
 async def move(ctx: Ctx, video_id: str, customer_id: int, by: str) -> None:
     """Give a video to the right customer. The old link dies (new token) and the new
     customer gets the email on the next pass, with no second undo window."""
-    video = await get_video(ctx, video_id)
+    video = await get_video(ctx, video_id) if UUID_RE.match(video_id) else None
     if video is None:
         raise ApiError(404, "bad_request", "No such video.")
     if video.state not in (*LIVE_STATES, "pulled") or video.state == "awaiting_upload":

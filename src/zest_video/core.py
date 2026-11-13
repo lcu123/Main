@@ -132,11 +132,11 @@ def coerce_setting(key: str, raw: Any) -> Any:
             raise ValueError("service IDs must be numbers") from exc
     if key == "prompts":
         lines = raw if isinstance(raw, list) else str(raw).splitlines()
-        prompts = [str(p).strip()[:40] for p in lines if str(p).strip()]
+        prompts = [str(p).replace("\x00", "").strip()[:40] for p in lines if str(p).replace("\x00", "").strip()]
         if not 1 <= len(prompts) <= 6:
             raise ValueError("give between 1 and 6 prompts, one per line")
         return prompts
-    text = str(raw).strip()
+    text = str(raw).replace("\x00", "").strip()
     if not text:
         raise ValueError(f"{key} cannot be empty")
     return text[:500]

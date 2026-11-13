@@ -175,8 +175,11 @@ def routes(ctx: Ctx) -> list[Any]:
             event = json.loads(body)
         except ValueError:
             return JSONResponse({"error": "bad_request"}, status_code=400)
+        if not isinstance(event, dict):
+            return JSONResponse({"error": "bad_request"}, status_code=400)
         kind = event.get("type")
-        email_id = str((event.get("data") or {}).get("email_id") or "")
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        email_id = str(data.get("email_id") or "").replace("\x00", "")[:200]
         if kind in ("email.bounced", "email.complained") and email_id:
             async with ctx.engine.connect() as conn:
                 video = (await conn.execute(sa.select(db.videos).where(db.videos.c.email_id == email_id))).first()

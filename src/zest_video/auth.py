@@ -356,7 +356,7 @@ async def ensure_owners(ctx: Ctx) -> None:
 
 
 async def request_office_code(ctx: Ctx, email: str, ip: str) -> None:
-    email = (email or "").strip().lower()
+    email = (email or "").replace("\x00", "").strip().lower()[:254]
     for key, limit in ((f"ocode-ip:{ip}", 10), (f"ocode-to:{email}", 5)):
         wait = ctx.limiter.retry_after(key, limit, 900)
         if wait:
@@ -386,7 +386,7 @@ async def request_office_code(ctx: Ctx, email: str, ip: str) -> None:
 
 
 async def verify_office_code(ctx: Ctx, email: str, code: str, ip: str) -> str:
-    email = (email or "").strip().lower()
+    email = (email or "").replace("\x00", "").strip().lower()[:254]
     code = "".join(ch for ch in str(code) if ch.isdigit())
     wait = ctx.limiter.retry_after(f"overify-ip:{ip}", 30, 900)
     if wait:
@@ -430,7 +430,7 @@ async def office_logout(ctx: Ctx, session_token: str) -> None:
 
 
 async def set_office_user(ctx: Ctx, email: str, role: str, active: bool, by: str) -> None:
-    email = (email or "").strip().lower()
+    email = (email or "").replace("\x00", "").strip().lower()[:254]
     if "@" not in email or role not in ("owner", "staff"):
         raise ApiError(400, "bad_request", "Give a real email and a role.")
     if email in ctx.cfg.owner_emails and (role != "owner" or not active):
