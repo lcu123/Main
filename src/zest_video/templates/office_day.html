@@ -36,6 +36,19 @@
   {% endif %}
 {% endmacro %}
 
+{% macro note(row, back) %}
+  {% if row.note %}<div class="rownote"><b>Note:</b> {{ row.note.text }} <small>· {{ row.note.by }}, {{ row.note.at | time(tz) }}</small></div>{% endif %}
+  <details class="act">
+    <summary>{{ "Add to note" if row.note else "Note" }}</summary>
+    <form class="inline" method="post" action="/office/note">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}">
+      <input type="hidden" name="day" value="{{ day }}"><input type="hidden" name="key" value="{{ row.note_key }}">
+      <input name="note" placeholder="Note for the office" maxlength="300" required>
+      <button type="submit">Save note</button>
+    </form>
+  </details>
+{% endmacro %}
+
 {% block body %}
 {% set back = "/office?day=" ~ day %}
 <div class="daynav">
@@ -84,7 +97,7 @@
     <td data-l="What">{% if row.video.customer_name %}{{ row.video.customer_name }}<br><small>{{ row.video.address }}</small>{% else %}Not on the list{% endif %}
       {% if row.video.spoken_text %}<br><small>He said: “{{ row.video.spoken_text[:200] }}”</small>{% endif %}</td>
     <td data-l="Status"><span class="pill {{ row.tone }}">{{ row.label }}</span></td>
-    <td data-l="Actions">{{ actions(row.video, back) }}</td>
+    <td data-l="Actions">{{ actions(row.video, back) }}{{ note(row, back) }}</td>
   </tr>
   {% endfor %}
 </table></div>
@@ -107,7 +120,7 @@
         {% if row.video.view_count %} · played {{ row.video.view_count }}×{% endif %}</small>
       {% endif %}</td>
     <td data-l="Score">{% if row.score %}{{ row.score.stars }}★{% if row.score.comment %}<br><small>“{{ row.score.comment[:160] }}”</small>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
-    <td data-l="Actions">{% if row.video %}{{ actions(row.video, back) }}{% endif %}</td>
+    <td data-l="Actions">{% if row.video %}{{ actions(row.video, back) }}{% endif %}{{ note(row, back) }}</td>
   </tr>
   {% endfor %}
 </table></div>

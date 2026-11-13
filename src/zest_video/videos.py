@@ -339,6 +339,13 @@ async def delete_by_tech(ctx: Ctx, device: Device, video_id: str) -> dict[str, A
         return {"id": video_id, "state": video.state}
     if video.state not in ("awaiting_upload", "held", "unmatched"):
         raise ApiError(409, "too_late", "This video already went to the customer. Call the office to change it.")
+    if video.state == "unmatched":
+        # Not on the list: no email is waiting to close the window, so the same ten
+        # minutes are counted here. After that it is the office's to match or pull.
+        settings = await get_settings(ctx)
+        closes = email_due(video.recorded_at, video.uploaded_at or video.created_at, settings["hold_minutes"])
+        if db.now() > closes:
+            raise ApiError(409, "too_late", "The time to delete this video has passed. Call the office to change it.")
     if not await _end(ctx, video, "deleted", f"tech:{device.tech_id}", "deleted by the tech", drop_file=True):
         raise ApiError(409, "too_late", "This video already went to the customer. Call the office to change it.")
     await audit(ctx, "tech", device.tech_id, "video_deleted", video_id=video_id, customer_id=video.customer_id)
@@ -347,6 +354,38 @@ async def delete_by_tech(ctx: Ctx, device: Device, video_id: str) -> dict[str, A
 
 
 # -- the email ----------------------------------------------------------------
+
+
+async def file_unchanged(ctx: Ctx, video: Any) -> bool:
+    """Is the bucket still holding the file this video was confirmed with?
+
+    The phone's upload link stays valid for a day so that a slow upload can finish,
+    which means the same link could put different bytes over a video after the server
+    confirmed it. Nothing a customer is sent or shown may be anything but the confirmed
+    file, so before an email goes and before the player is handed a link, the object is
+    compared with what `complete` recorded. A changed or missing file pulls the video
+    and tells the office. A bucket that cannot be reached proves nothing: that case
+    lets the video through."""
+    if not video.etag:
+        return True
+    try:
+        stored = await ctx.storage.head(video.object_key)
+    except Exception:  # noqa: BLE001 - any storage failure means "cannot tell"
+        return True
+    if stored is not None and stored.etag == video.etag and stored.size == video.size_bytes:
+        return True
+    what = "is missing from storage" if stored is None else "was changed after it was uploaded"
+    if await _end(ctx, video, "pulled", "system", f"the file {what}", drop_file=False):
+        await audit(ctx, "system", "storage", "video_pulled", video_id=video.id, customer_id=video.customer_id,
+                    detail={"reason": f"the file {what}"})
+        if not video.demo:
+            name = video.customer_name or "a stop not on the list"
+            await raise_flag(
+                ctx, "file_changed", f"file:{video.id}", day=video.day, tech_id=video.tech_id,
+                customer_id=video.customer_id, video_id=video.id,
+                detail=f"{video.tech_first_name}'s video for {name}: the file {what}. It was pulled and its link is dead.",
+            )
+    return False
 
 
 async def send_due(ctx: Ctx) -> int:
@@ -444,6 +483,9 @@ async def _deliver(ctx: Ctx, video: Any, known: dict[int, dict[str, Any]] | None
                 await audit(ctx, "system", "email", "video_replaced", video_id=video.id,
                             customer_id=video.customer_id, detail={"by": rival.id, "reason": "duplicate for the visit"})
             return False
+
+    if not await file_unchanged(ctx, video):
+        return False
 
     # Server's own time check, now that FieldRoutes has had time to record the check-in.
     try:

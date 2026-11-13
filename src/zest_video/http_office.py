@@ -8,6 +8,8 @@ the allow-list; every POST carries a CSRF token tied to the session.
 
 from __future__ import annotations
 
+import re
+
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, quote, urlsplit
@@ -128,6 +130,7 @@ async def board(ctx: Ctx, day: str) -> dict[str, Any]:
             )
         ).all()
     scores = {s.video_id: s for s in score_rows}
+    notes = await row_notes(ctx, day)
 
     # One video per tech per property. Prefer a tech's live video; fall back to his
     # pulled one so the row says so.
@@ -176,11 +179,13 @@ async def board(ctx: Ctx, day: str) -> dict[str, Any]:
             counts["missing"] += 1 if has_app and view.done and not filmed else 0
             groups.setdefault(tech_id, []).append(
                 {"stop": stop, "view": view, "video": video, "label": label, "tone": tone,
-                 "score": scores.get(video.id) if video else None}
+                 "score": scores.get(video.id) if video else None,
+                 "note_key": f"{stop.customer_id}:{tech_id}", "note": notes.get(f"{stop.customer_id}:{tech_id}")}
             )
 
     others = [
-        {"video": v, "label": video_status(ctx, v)[0], "tone": video_status(ctx, v)[1], "score": scores.get(v.id)}
+        {"video": v, "label": video_status(ctx, v)[0], "tone": video_status(ctx, v)[1], "score": scores.get(v.id),
+         "note_key": f"v:{v.id}", "note": notes.get(f"v:{v.id}")}
         for v in vids
         if v.id not in seen_videos
     ]
@@ -195,6 +200,26 @@ async def board(ctx: Ctx, day: str) -> dict[str, Any]:
         ],
         "counts": counts,
     }
+
+
+NOTE_KEY = re.compile(r"^(?:-?\d{1,10}:\d{1,10}|v:[0-9a-f-]{36})$")
+
+
+async def row_notes(ctx: Ctx, day: str) -> dict[str, Any]:
+    """The newest office note on each row of a day. Notes live in the audit trail (who
+    wrote what, when), so a note can never be edited away, only added to."""
+    async with ctx.engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                sa.select(db.events).where(db.events.c.action == "office_note").order_by(db.events.c.id.desc()).limit(2000)
+            )
+        ).all()
+    out: dict[str, Any] = {}
+    for e in rows:
+        detail = e.detail if isinstance(e.detail, dict) else {}
+        if detail.get("day") == day and detail.get("key") not in out:
+            out[detail.get("key")] = {"text": detail.get("note", ""), "by": e.actor, "at": e.at}
+    return out
 
 
 async def stats(ctx: Ctx, days: int) -> list[dict[str, Any]]:
@@ -398,6 +423,20 @@ def routes(ctx: Ctx) -> list[Route]:
         await videos.move(ctx, request.path_params["video_id"].lower(), customer_id, user.email)
         return back(request, str(form.get("back") or "/office"), msg="Video moved. The right customer gets the email in a minute.")
 
+    async def add_note(request: Request, user: auth.OfficeUser) -> Response:
+        form = await request.form()
+        day = _valid_day(str(form.get("day") or ""), ctx.today())
+        key = str(form.get("key") or "")
+        note = " ".join(str(form.get("note") or "").replace("\x00", "").split())[:300]
+        target = str(form.get("back") or "/office")
+        if not NOTE_KEY.match(key) or not note:
+            return back(request, target, err="Type a note first.")
+        video_id = key[2:] if key.startswith("v:") else None
+        customer_id = None if video_id else to_id(key.split(":")[0])
+        await audit(ctx, "office", user.email, "office_note", video_id=video_id, customer_id=customer_id,
+                    detail={"day": day, "key": key, "note": note})
+        return back(request, target, msg="Note saved.")
+
     async def clear_flag(request: Request, user: auth.OfficeUser) -> Response:
         form = await request.form()
         flag_id = to_id(request.path_params["flag_id"])
@@ -515,6 +554,7 @@ def routes(ctx: Ctx) -> list[Route]:
         Route("/office/video/{video_id}/pull", page(pull_video), methods=["POST"]),
         Route("/office/video/{video_id}/move", page(move_video), methods=["POST"]),
         Route("/office/flag/{flag_id:int}/clear", page(clear_flag), methods=["POST"]),
+        Route("/office/note", page(add_note), methods=["POST"]),
         Route("/office/techs", page(techs_page)),
         Route("/office/techs/refresh", page(refresh_techs), methods=["POST"]),
         Route("/office/techs/{tech_id:int}/code", page(issue_code), methods=["POST"]),

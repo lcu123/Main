@@ -218,7 +218,7 @@ async def test_two_videos_for_one_visit_that_slipped_in_together_still_mean_one_
 
     await videos.send_due(env.ctx)
     await videos.send_due(env.ctx)
-    assert len(env.mailer.sent) == 1, "one email per customer per day, whatever happened"
+    assert len(env.mailer.sent) == 1, "one email for one tech's visit, whatever happened"
     older, newer = await env.video(first), await env.video(twin["id"])
     assert (older.state, newer.state) == ("replaced", "sent"), "the newest recording is the one that goes"
     assert row.object_key not in env.storage.objects

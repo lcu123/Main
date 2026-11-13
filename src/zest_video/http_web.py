@@ -126,7 +126,7 @@ def routes(ctx: Ctx) -> list[Any]:
         """The player's source. Redirects to a fresh signed bucket URL on every request,
         so the bucket stays private and a page left open for an hour still plays."""
         video = await find(request, limit=600)
-        if not videos.is_watchable(video):
+        if not videos.is_watchable(video) or not await videos.file_unchanged(ctx, video):
             return PlainTextResponse("This video is no longer available.", status_code=410, headers=PAGE_HEADERS)
         url = ctx.storage.get_url(video.object_key, ctx.cfg.watch_url_seconds)
         return RedirectResponse(url, status_code=302, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})

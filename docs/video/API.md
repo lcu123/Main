@@ -215,7 +215,9 @@ means the bucket does not have the whole file: upload again.
 
 The tech's undo. `200 {"id", "state": "deleted"}`. Allowed until the email
 goes out, which is `config.holdMinutes` (10) after the recording; then
-`409 too_late` and only the office can pull it.
+`409 too_late` and only the office can pull it. A video filmed as Not On My
+List has no email waiting, so the same window is counted for it. A video that
+never finished uploading can be deleted at any time.
 
 The app shows Delete and Record again for `holdMinutes` after `recordedAt`
 and hides them after that. `emailAt` is the server's word on when the window
@@ -229,7 +231,7 @@ whose window has already passed.
 | `awaiting_upload` | Registered, file not confirmed | Waiting / Sending n% (from the phone's own task) |
 | `held` | Server has it; email goes at `emailAt` | Sent |
 | `sent` | Customer emailed | Sent |
-| `watched` | Customer opened it | Sent |
+| `watched` | Customer pressed play | Sent |
 | `no_email` | No usable customer email; office flagged | Sent |
 | `unmatched` | Not-on-my-list, waiting for the office | Sent |
 | `pulled`, `deleted`, `replaced` | Gone | Removed |

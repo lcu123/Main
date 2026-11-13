@@ -37,6 +37,8 @@ server:  awaiting_upload → held (tech's 10-minute undo) → sent → watched
 - The customer link is a random 128-bit token. No login, marked noindex, rate limited.
 - Recording again inside the 10 minutes replaces that tech's old video by itself. After
   the email has gone out the stop is locked for him; the office can pull or move it.
+- The office can leave a note on any row of the day page (a stop with no video, or a
+  video). Notes are kept in the audit trail with who and when; the row shows the newest.
 - One video per tech, per property, per day. Two techs with appointments at the same
   property each send their own video, tied to their own appointments; the customer gets
   one email per video, naming the tech and the service. A missing video is flagged for
@@ -118,6 +120,29 @@ log instead of sending them.
 
 The iPhone app: see [`ios/README.md`](../../ios/README.md). CI builds it on
 macOS for every push that touches `ios/`.
+
+## Where the build differs from the brief, on purpose
+
+Each of these was the owner's later call or a choice made while building. An
+independent read of the brief against the code (Nov 13) listed them; they are
+kept here so nobody "fixes" one by accident.
+
+| Brief | Built | Why |
+| --- | --- | --- |
+| Keep, Retake, Send | One question, "Save this video?", then it uploads by itself | Owner: one prompt only |
+| A second video asks "replace?" | Recording again replaces the tech's own video with no question; delete for 10 minutes only | Owner |
+| Prompts: name or street, did, saw, recommend | "Hi {name}", "Here's what I did", "Here's what I recommend", "I closed the backyard gate" | Owner: say the name only |
+| Code by text and email | Text first (Quo), email as a fallback | Owner: techs do not read email |
+| Zest colours in the tech app | The look of the field app the techs already use; customer pages and emails stay Zest | Owner |
+| Location: While Using, then Always | While Using only; the leave-a-stop reminder is built but off | App Review questions "Always" |
+| The email goes a set time after upload | The 10 minutes run from the recording; a late upload goes about a minute after it lands | So the tech's undo time is the same whatever the signal |
+| "Not my home": one tap | Two taps (open, then confirm) | One stray tap would kill a customer's own video |
+| No stop button | A tap on the ring ends the clip early, but not in the first 3 seconds | A tech who is done at 9 seconds should not film his boots for 6 more |
+| Two keys must agree | On a stop with no map pin and no check-in, the spoken name alone is enough | Nothing else can be read there; warning on every such stop would teach techs to ignore warnings |
+| Search by name or street | None; with no location the whole route is listed in order | "No typing after setup" |
+| Add a tech | Techs come only from FieldRoutes; the office page has "Refresh the list" | FieldRoutes is the source of truth |
+| Short-lived upload link | The link lasts a day so a slow upload can finish; the server checks the file is still the confirmed one before any email and before every play, and pulls it if not | A weak-signal upload must not die at the 15-minute mark |
+| Sales task category 11 | The office's own Task Category ID | The live API refuses the brief's IDs |
 
 ## What is proven and what is not
 
