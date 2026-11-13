@@ -29,7 +29,9 @@ from .core import ApiError, Ctx, audit, clear_flags, get_settings, raise_flag
 from .fr import FieldRoutesError, clean, to_id, to_int
 from .notify import DeliveryError, Email
 from .render import render
-from .route import LIVE_STATES, demo_stops, iso, public_state, sync_day, time_check
+from .route import (
+    LIVE_STATES, demo_stops, iso, lead_techs, missing_key, public_state, sync_day, tech_view, time_check,
+)
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 SIGNAL_VALUES = ("match", "mismatch", "unknown")
@@ -155,16 +157,20 @@ async def register(ctx: Ctx, device: Device, body: dict[str, Any]) -> dict[str, 
             if stop is None:
                 raise ApiError(400, "bad_request", "That stop is not on the list for that day. Use Not On My List.")
             snapshot = {"customer_name": stop.name, "address": stop.address, "city_line": stop.city_line}
-            appointment_ids = [a["id"] for a in stop.appointments if a.get("id")] or appointment_ids
+            # Tied to this tech's own appointments at the stop, not the other tech's.
+            appointment_ids = tech_view(stop, device.tech_id).appointment_ids or appointment_ids
 
-        # One video per customer per day. Recording again inside the undo window swaps
-        # the old one out with no question; once it has gone to the customer it is locked.
+        # One video per tech per customer per day. Recording again inside the undo window
+        # swaps this tech's old one out with no question; once it has gone to the customer
+        # it is locked. Another tech's video for the same property is its own and is
+        # never touched: the customer gets both.
         async with ctx.engine.connect() as conn:
             earlier = (
                 await conn.execute(
                     sa.select(db.videos).where(
                         db.videos.c.day == day,
                         db.videos.c.customer_id == customer_id,
+                        db.videos.c.tech_id == device.tech_id,
                         db.videos.c.state.in_(LIVE_STATES),
                         # Never this same video: an overlapping retry of this very
                         # registration must not retire its own twin.
@@ -219,7 +225,7 @@ async def register(ctx: Ctx, device: Device, body: dict[str, Any]) -> dict[str, 
                 override=bool(body.get("override")),
                 recommend=bool(body.get("recommend")),
                 spoken_text=clean(body.get("spokenText"))[:1000],
-                time_check=time_check(stop, recorded_at),
+                time_check=time_check(tech_view(stop, device.tech_id) if stop is not None else None, recorded_at),
                 created_at=now,
                 email_to="",
                 email_id="",
@@ -244,7 +250,7 @@ async def register(ctx: Ctx, device: Device, body: dict[str, Any]) -> dict[str, 
     )
     if customer_id is not None and not device.demo:
         # The stop has a video on the way, so "finished with no video" no longer holds.
-        await clear_flags(ctx, db.flags.c.dedupe == f"no_video:{day}:{customer_id}", "system", "a video arrived")
+        await _clear_missing(ctx, day, customer_id, device.tech_id, stop, "a video arrived")
         if body.get("override"):
             wrong = [k for k, v in signals.items() if v == "mismatch"] or [k for k, v in signals.items() if v != "match"]
             await raise_flag(
@@ -413,15 +419,17 @@ async def _deliver(ctx: Ctx, video: Any, known: dict[int, dict[str, Any]] | None
     if video.customer_id is None:
         return False
 
-    # One video per customer per day is enforced at register, but two registrations
-    # arriving in the same instant could both get in. Settle it here, before any email:
-    # a video that already went out wins; otherwise the newest recording wins.
+    # One video per tech per customer per day is enforced at register, but two
+    # registrations from the same tech arriving in the same instant could both get in.
+    # Settle it here, before any email: a video that already went out wins; otherwise
+    # the newest recording wins. Another tech's video is no rival: both go out.
     async with ctx.engine.connect() as conn:
         rivals = (
             await conn.execute(
                 sa.select(db.videos).where(
                     db.videos.c.day == video.day,
                     db.videos.c.customer_id == video.customer_id,
+                    db.videos.c.tech_id == video.tech_id,
                     db.videos.c.state.in_(LIVE_STATES),
                     db.videos.c.id != video.id,
                 )
@@ -448,7 +456,9 @@ async def _deliver(ctx: Ctx, video: Any, known: dict[int, dict[str, Any]] | None
                 sa.select(db.stops).where(db.stops.c.day == video.day, db.stops.c.customer_id == video.customer_id)
             )
         ).first()
-    checked = time_check(stop, video.recorded_at)
+    view = tech_view(stop, video.tech_id) if stop is not None else None
+    services = _join_words(view.services) if view is not None else ""
+    checked = time_check(view, video.recorded_at)
     if checked != video.time_check:
         async with ctx.engine.begin() as conn:
             await conn.execute(sa.update(db.videos).where(db.videos.c.id == video.id).values(time_check=checked))
@@ -492,10 +502,15 @@ async def _deliver(ctx: Ctx, video: Any, known: dict[int, dict[str, Any]] | None
         )
 
     to = address
-    subject = settings["email_subject"].replace("{tech}", video.tech_first_name)
-    intro = (
-        settings["email_intro"].replace("{tech}", video.tech_first_name).replace("{address}", video.address)
-    )
+    def fill(text: str) -> str:
+        return (
+            text.replace("{tech}", video.tech_first_name)
+            .replace("{address}", video.address)
+            .replace("{service}", services or "service")
+        )
+
+    subject = fill(settings["email_subject"])
+    intro = fill(settings["email_intro"])
     test_note = ""
     if cfg.email_mode == "test":
         if not cfg.email_test_to:
@@ -508,6 +523,7 @@ async def _deliver(ctx: Ctx, video: Any, known: dict[int, dict[str, Any]] | None
     context = dict(
         brand=cfg.brand_name, base_url=cfg.base_url, link=link, intro=intro, tech=video.tech_first_name,
         address=video.address, test_note=test_note, unsubscribe=unsubscribe, office_phone=cfg.office_phone,
+        services=services,
     )
     email = Email(
         to=to,
@@ -516,7 +532,9 @@ async def _deliver(ctx: Ctx, video: Any, known: dict[int, dict[str, Any]] | None
         text=(
             f"{test_note}\n\n" if test_note else ""
         )
-        + f"{intro}\n\nWatch your video:\n{link}\n\n{cfg.brand_name}\n\nStop these video emails: {unsubscribe}\n",
+        + f"{intro}\n\n"
+        + (f"Service: {services}\nTechnician: {video.tech_first_name}\n\n" if services else "")
+        + f"Watch your video:\n{link}\n\n{cfg.brand_name}\n\nStop these video emails: {unsubscribe}\n",
         reply_to=cfg.mail_reply_to,
         headers={"List-Unsubscribe": f"<{unsubscribe}>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"},
         idempotency_key=f"video-{video.id}-{video.token[:8]}",
@@ -546,6 +564,22 @@ async def _deliver(ctx: Ctx, video: Any, known: dict[int, dict[str, Any]] | None
                 detail={"to": security.mask_email(to), "mode": cfg.email_mode})
     await _after_send(ctx, video, link, show_customer=False)
     return True
+
+
+def _join_words(items: list[str]) -> str:
+    """["Lawn Care", "Pest Control"] -> "Lawn Care and Pest Control"."""
+    items = [i for i in items if i]
+    if len(items) <= 2:
+        return " and ".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+async def _clear_missing(ctx: Ctx, day: str, customer_id: int, tech_id: int, stop: Any, note: str) -> None:
+    """A video is on the way, so 'finished with no video' no longer holds for this tech at
+    this stop. A helper's video stands in for whoever leads the stop."""
+    await clear_flags(ctx, db.flags.c.dedupe == missing_key(day, customer_id, tech_id), "system", note)
+    if stop is not None and tech_id not in lead_techs(stop):
+        await clear_flags(ctx, db.flags.c.dedupe.like(f"no_video:{day}:{customer_id}:%"), "system", note)
 
 
 async def _after_send(ctx: Ctx, video: Any, link: str, *, show_customer: bool) -> None:
@@ -702,17 +736,20 @@ async def move(ctx: Ctx, video_id: str, customer_id: int, by: str) -> None:
                 sa.select(db.videos.c.id).where(
                     db.videos.c.day == video.day,
                     db.videos.c.customer_id == customer_id,
+                    db.videos.c.tech_id == video.tech_id,
                     db.videos.c.state.in_(LIVE_STATES),
                     db.videos.c.id != video_id,
                 )
             )
         ).first()
     if clash:
-        raise ApiError(409, "bad_request", "That customer already has a video for that day. Pull it first.")
+        raise ApiError(
+            409, "bad_request", f"That customer already has a video from {video.tech_first_name} for that day. Pull it first."
+        )
 
     if stop is not None:
         snapshot = dict(customer_name=stop.name, address=stop.address, city_line=stop.city_line,
-                        appointment_ids=[a["id"] for a in stop.appointments if a.get("id")])
+                        appointment_ids=tech_view(stop, video.tech_id).appointment_ids)
     else:
         try:
             customer = (await ctx.fr.customers([customer_id])).get(customer_id)
@@ -740,7 +777,7 @@ async def move(ctx: Ctx, video_id: str, customer_id: int, by: str) -> None:
     await audit(ctx, "office", by, "video_moved", video_id=video_id, customer_id=customer_id,
                 detail={"from": video.customer_id, "to": customer_id})
     await clear_flags(ctx, db.flags.c.video_id == video_id, by, f"moved to customer {customer_id}")
-    await clear_flags(ctx, db.flags.c.dedupe == f"no_video:{video.day}:{customer_id}", "system", "a video was moved here")
+    await _clear_missing(ctx, video.day, customer_id, video.tech_id, stop, "a video was moved here")
 
 
 # -- FieldRoutes outbox --------------------------------------------------------

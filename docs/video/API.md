@@ -110,13 +110,21 @@ today.
 ```
 
 - A **stop** is one customer on one day. All of that customer's appointments
-  for the day are folded into it: one video per property per visit.
+  for the day are folded into it. The rule is **one video per tech, per
+  property, per day**: a tech with two or three appointments there sends one
+  video; when two techs each have appointments there, each sends his own and
+  the customer gets both.
+- A tech sees his own share of a shared stop: `appointmentIds`, `services`,
+  `checkIn`, `checkOut` and `done` cover the appointments he leads. A helper
+  (listed on the stop with no appointment of his own) sees the whole stop.
 - `lat`/`lng` may be `null` (no map pin). `lastName` may be empty (a business).
 - `checkIn` is the earliest check-in across the stop's appointments, `checkOut`
   the latest check-out, `null` until it happens. `done` is true when every
   appointment is completed.
-- `stop.video` is `{"id", "state", "byYou"}` when any tech has a live video for
-  the stop, else `null`.
+- `stop.video` is `{"id", "state", "byYou"}` when this tech has a live video for
+  the stop, else `null`. Another tech's video for the same property is not
+  his and is not shown, with one exception: a helper also sees the lead's video
+  (`byYou: false`) so the stop reads as covered. He may still record his own.
 - `videos` lists this tech's own videos for the day. For the App Review account
   only (`tech.demo`), each uploaded video also carries `watchUrl`, the page a
   customer would see. A real tech's phone is never sent a customer link.
@@ -172,13 +180,15 @@ call. Every call below is safe to repeat with the same ID.
 A repeat for a video the server already holds returns its current `state`
 with `"upload": null`: do not upload again, treat it as done.
 
-**Recording again replaces the old one by itself.** If that customer already
-has a video for the day that has not been emailed yet, registering a new ID
-retires the old video (`replaced`) with no question asked.
+**Recording again replaces the tech's own old one by itself.** If this tech
+already has a video for that customer and day that has not been emailed yet,
+registering a new ID retires his old video (`replaced`) with no question
+asked. Another tech's video for the same property is never touched.
 
 `409 {"error": "visit_has_video", "message": "...", "existing": {"id": "...", "state": "sent", "byYou": true, "techFirstName": "Pedro"}}`
-only when the earlier video has already gone to the customer. The stop is
-locked; show `message` (it tells the tech to call the office).
+only when this tech's own earlier video has already gone to the customer
+(`byYou` is always true). The stop is locked for him; show `message` (it tells
+the tech to call the office).
 
 ### Upload
 

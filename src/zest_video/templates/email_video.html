@@ -20,6 +20,11 @@
       <tr><td style="padding:16px 28px 4px;font:400 19px/1.5 Arial,Helvetica,sans-serif;color:#14091F;">
         {{ intro }}
       </td></tr>
+      {% if services %}
+      <tr><td style="padding:12px 28px 0;font:400 17px/1.5 Arial,Helvetica,sans-serif;color:#14091F;">
+        <strong>Service:</strong> {{ services }}<br><strong>Technician:</strong> {{ tech }}
+      </td></tr>
+      {% endif %}
       <tr><td align="center" style="padding:22px 28px 8px;">
         <a href="{{ link }}" style="display:block;background:#6E20B9;color:#ffffff;text-decoration:none;border-radius:14px;padding:18px 20px;font:700 22px/1.2 Arial,Helvetica,sans-serif;">&#9654;&nbsp; Watch your video</a>
       </td></tr>

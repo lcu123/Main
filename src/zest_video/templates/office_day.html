@@ -97,8 +97,8 @@
   {% for row in rows %}
   <tr>
     <td>{{ row.stop.name }}<br><small>{{ row.stop.address }}, {{ row.stop.city_line }} · #{{ row.stop.customer_id }}</small></td>
-    <td><small>{{ row.stop.services | join(", ") }}</small></td>
-    <td><small>{% if row.stop.check_in %}{{ row.stop.check_in | time(tz) }}{% if row.stop.check_out %} – {{ row.stop.check_out | time(tz) }}{% endif %}{% else %}—{% endif %}</small></td>
+    <td><small>{{ row.view.services | join(", ") }}</small></td>
+    <td><small>{% if row.view.check_in %}{{ row.view.check_in | time(tz) }}{% if row.view.check_out %} – {{ row.view.check_out | time(tz) }}{% endif %}{% else %}—{% endif %}</small></td>
     <td><span class="pill {{ row.tone }}">{{ row.label }}</span>
       {% if row.video %}
         <br><small>{{ row.video.tech_first_name }} · {{ row.video.recorded_at | time(tz) }}

@@ -52,7 +52,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "respect_fr_email_reminders": True,
     "email_subject": "Your service video from {tech}",
     "email_intro": "{tech} just finished at {address} and recorded a short video for you: "
-    "what was done, what was seen, and what is recommended.",
+    "what was done and what is recommended.",
     "prompts": ["Hi {name}", "Here's what I did", "Here's what I recommend", "I closed the backyard gate"],
 }
 

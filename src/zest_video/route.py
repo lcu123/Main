@@ -1,8 +1,11 @@
 """The day's stops: pulled from FieldRoutes, cached, and served to the phone.
 
 A stop is one customer on one day. Every appointment that customer has that
-day is folded into it, because the rule is one video per property per visit
-(on a real day 8 of 33 customers had 2 or 3 appointments in one visit).
+day is folded into it (on a real day 8 of 33 customers had 2 or 3 appointments
+in one visit). The rule is one video per tech, per property, per day: a tech
+with three appointments there sends one video, and when two techs each have
+appointments at the same property each sends his own. `tech_view` is one
+tech's share of a stop.
 
 The cache is what keeps the app working when FieldRoutes is down and what
 keeps this server inside the shared API quota: a refresh is one
@@ -13,6 +16,7 @@ today.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -24,6 +28,84 @@ from .core import Ctx, get_settings
 from .fr import FieldRoutesError, clean, id_list, local_time, to_float, to_int
 
 LIVE_STATES = ("awaiting_upload", "held", "sent", "no_email", "unmatched")
+
+
+@dataclass(frozen=True)
+class StopView:
+    """One tech's share of a stop: the appointments he leads there, and what follows
+    from them. A tech who leads none (a helper riding along, listed only as an
+    additional tech) shares the whole stop."""
+
+    tech_id: int
+    lead: bool
+    appointment_ids: list[int] = field(default_factory=list)
+    types: set[Any] = field(default_factory=set)
+    services: list[str] = field(default_factory=list)
+    check_in: datetime | None = None
+    check_out: datetime | None = None
+    done: bool = False
+    done_seen_at: datetime | None = None
+
+
+def _when(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def lead_techs(stop: Any) -> list[int]:
+    """Techs with an appointment of their own at this stop, in appointment order."""
+    out: list[int] = []
+    for a in stop.appointments or []:
+        tech = (to_int(a.get("tech")) or 0) if isinstance(a, dict) else 0
+        if tech > 0 and tech not in out:
+            out.append(tech)
+    return out
+
+
+def helper_techs(stop: Any) -> list[int]:
+    leads = lead_techs(stop)
+    return [t for t in (stop.tech_ids or []) if t not in leads]
+
+
+def tech_view(stop: Any, tech_id: int | None) -> StopView:
+    appts = [a for a in (stop.appointments or []) if isinstance(a, dict)]
+    own = [a for a in appts if tech_id and (to_int(a.get("tech")) or 0) == tech_id]
+    lead = bool(own)
+    if not own:
+        own = appts
+    services: list[str] = []
+    for a in own:
+        name = a.get("service")
+        if name and name not in services:
+            services.append(name)
+    if not services and (not lead or len(lead_techs(stop)) <= 1):
+        services = list(stop.services or [])  # rows saved before services were kept per appointment
+    ins = [t for t in (_when(a.get("checkIn")) for a in own) if t]
+    open_check_in = any(a.get("checkIn") and not a.get("checkOut") for a in own)
+    outs = [t for t in (_when(a.get("checkOut")) for a in own if a.get("checkIn")) if t]
+    done = bool(own) and all((to_int(a.get("status")) or 0) == 1 for a in own)
+    seen = [_when(a.get("doneSeenAt")) for a in own]
+    done_seen = None
+    if done:
+        done_seen = max(seen) if all(seen) else stop.done_seen_at  # type: ignore[type-var]
+    return StopView(
+        tech_id=tech_id or 0,
+        lead=lead,
+        appointment_ids=[a["id"] for a in own if a.get("id")],
+        types={a.get("type") for a in own},
+        services=services,
+        check_in=min(ins) if ins else None,
+        check_out=max(outs) if outs and not open_check_in else None,
+        done=done,
+        done_seen_at=done_seen,
+    )
+
+
+def missing_key(day: str, customer_id: int, tech_id: int) -> str:
+    """Dedupe key of the 'finished with no video' flag: one per tech per stop."""
+    return f"no_video:{day}:{customer_id}:{tech_id}"
 
 
 def public_state(state: str, first_viewed_at: datetime | None) -> str:
@@ -101,6 +183,8 @@ async def _sync_day(ctx: Ctx, day: str) -> None:
     now = db.now()
     async with ctx.engine.begin() as conn:
         for position, (customer_id, rows) in enumerate(sorted(groups.items(), key=order_key), start=1):
+            before = existing.get(customer_id)
+            earlier = {a.get("id"): a for a in (before.appointments or []) if isinstance(a, dict)} if before else {}
             tech_ids: list[int] = []
             folded: list[dict[str, Any]] = []
             services: list[str] = []
@@ -127,14 +211,26 @@ async def _sync_day(ctx: Ctx, day: str) -> None:
                         check_outs.append(check_out)
                     else:
                         open_check_in = True
+                appointment_id = to_int(a.get("appointmentID"))
+                status = to_int(a.get("status")) or 0
+                # When we first saw this appointment finished: it starts the clock on the
+                # "finished with no video" flag for the tech who leads it.
+                done_seen_at = None
+                if status == 1:
+                    was = earlier.get(appointment_id)
+                    done_seen_at = (was or {}).get("doneSeenAt") or (
+                        before.done_seen_at.isoformat() if was and before is not None and before.done_seen_at else None
+                    ) or now.isoformat()
                 folded.append(
                     {
-                        "id": to_int(a.get("appointmentID")),
+                        "id": appointment_id,
                         "tech": tech,
                         "type": type_id,
-                        "status": to_int(a.get("status")) or 0,
+                        "service": name,
+                        "status": status,
                         "checkIn": check_in.isoformat() if check_in else None,
                         "checkOut": check_out.isoformat() if check_out else None,
+                        "doneSeenAt": done_seen_at,
                     }
                 )
             done = all(f["status"] == 1 for f in folded)
@@ -149,7 +245,6 @@ async def _sync_day(ctx: Ctx, day: str) -> None:
                 gone=False,
                 synced_at=now,
             )
-            before = existing.get(customer_id)
             customer = customers.get(customer_id)
             if customer is not None:
                 name, last_name = _customer_name(customer)
@@ -246,10 +341,15 @@ async def today_payload(ctx: Ctx, device: Device) -> dict[str, Any]:
             pass  # FieldRoutes is down: serve the saved route, the phone keeps working
 
     videos = await live_videos_for_day(ctx, day)
-    by_customer = {v.customer_id: v for v in videos if v.customer_id is not None}
+    mine = {v.customer_id: v for v in videos if v.customer_id is not None and v.tech_id == device.tech_id}
+    theirs = {v.customer_id: v for v in videos if v.customer_id is not None and v.tech_id != device.tech_id}
 
-    def video_ref(customer_id: int) -> dict[str, Any] | None:
-        v = by_customer.get(customer_id)
+    def video_ref(customer_id: int, lead: bool = True) -> dict[str, Any] | None:
+        # One video per tech per property: a tech with his own appointments here sees
+        # only his own video. A helper also sees the lead's, so the stop reads as covered.
+        v = mine.get(customer_id)
+        if v is None and not lead:
+            v = theirs.get(customer_id)
         if v is None:
             return None
         return {"id": v.id, "state": public_state(v.state, v.first_viewed_at), "byYou": v.tech_id == device.tech_id}
@@ -263,6 +363,7 @@ async def today_payload(ctx: Ctx, device: Device) -> dict[str, Any]:
         for row in await stops_for_day(ctx, day):
             if device.tech_id not in (row.tech_ids or []):
                 continue
+            view = tech_view(row, device.tech_id)
             stops.append(
                 {
                     "customerId": row.customer_id,
@@ -272,13 +373,13 @@ async def today_payload(ctx: Ctx, device: Device) -> dict[str, Any]:
                     "cityLine": row.city_line,
                     "lat": row.lat,
                     "lng": row.lng,
-                    "appointmentIds": [a["id"] for a in row.appointments if a.get("id")],
-                    "services": row.services or [],
+                    "appointmentIds": view.appointment_ids,
+                    "services": view.services,
                     "order": row.position,
-                    "checkIn": iso(row.check_in),
-                    "checkOut": iso(row.check_out),
-                    "done": bool(row.done),
-                    "video": video_ref(row.customer_id),
+                    "checkIn": iso(view.check_in),
+                    "checkOut": iso(view.check_out),
+                    "done": view.done,
+                    "video": video_ref(row.customer_id, view.lead),
                 }
             )
 

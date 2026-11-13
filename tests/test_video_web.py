@@ -235,7 +235,7 @@ async def test_the_day_page_shows_every_stop_by_tech_with_its_video_status(env: 
     await env.http.post(f"/w/{(await env.video(sent_id)).token}/played")
     await env.http.post("/v1/videos", json=video_body(502), headers=pat)  # registered, never uploaded
     await film(env, pat, None)  # not on my list
-    await env.run(sa.update(db.stops).where(db.stops.c.customer_id == 503).values(done=True))
+    await env.finished(503)
 
     await office_login(env)
     text = (await env.http.get("/office")).text
@@ -411,7 +411,7 @@ async def test_stats_count_videos_missed_stops_watch_rate_and_score_per_tech(env
     video, pat = await sent_video(env, 501)
     await env.http.post(f"/w/{video.token}/played")
     await env.http.post(f"/w/{video.token}/score", data={"stars": "4"})
-    await env.run(sa.update(db.stops).where(db.stops.c.customer_id.in_([502, 503])).values(done=True))
+    await env.finished(502, 503)
     second = await film(env, pat, 502)
     await env.window_closed(second)
     await videos.send_due(env.ctx)

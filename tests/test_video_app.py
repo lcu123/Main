@@ -686,7 +686,7 @@ async def test_a_finished_stop_with_no_video_is_flagged_and_clears_when_the_vide
     await env.http.get("/v1/today", headers=headers)
     assert await jobs.flag_missing(env.ctx) == 0, "Jane only just finished; give the tech time"
 
-    await env.run(sa.update(db.stops).values(done_seen_at=db.now() - timedelta(minutes=61)))
+    await env.finished(ago=timedelta(minutes=61), force=False)
     assert await jobs.flag_missing(env.ctx) == 1
     (flag,) = await env.flags("no_video")
     assert flag.customer_id == 501 and flag.tech_id == 20 and "Jane Smith" in flag.detail
@@ -701,7 +701,7 @@ async def test_a_finished_stop_with_no_video_is_flagged_and_clears_when_the_vide
 async def test_a_pilot_with_one_tech_does_not_chase_the_techs_without_the_app(env: Env) -> None:
     pat = await login(env)  # only Pat has the app; Sam does not
     await env.http.get("/v1/today", headers=pat)
-    await env.run(sa.update(db.stops).values(done=True, done_seen_at=db.now() - timedelta(hours=2)))
+    await env.finished(ago=timedelta(hours=2))
     assert await jobs.flag_missing(env.ctx) == 3, "Pat's three finished stops"
     assert {f.customer_id for f in await env.flags("no_video")} == {501, 502, 503}, "Sam's stop is left alone"
 
@@ -725,7 +725,7 @@ async def test_services_switched_off_for_video_are_not_chased(env: Env) -> None:
 
     headers = await login(env)
     await env.http.get("/v1/today", headers=headers)
-    await env.run(sa.update(db.stops).values(done_seen_at=db.now() - timedelta(hours=2)))
+    await env.finished(ago=timedelta(hours=2), force=False)
     await set_setting(env.ctx, "skip_service_ids", "89, 95", "owner@zest.test")
     assert await jobs.flag_missing(env.ctx) == 0
     await set_setting(env.ctx, "skip_service_ids", "89", "owner@zest.test")

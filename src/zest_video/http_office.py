@@ -23,7 +23,7 @@ from .fr import FieldRoutesError, to_id
 from .http_api import client_ip
 from .jobs import techs_with_the_app
 from .render import render
-from .route import LIVE_STATES, sync_day
+from .route import LIVE_STATES, helper_techs, lead_techs, sync_day, tech_view
 
 COOKIE = "zv_office"
 OFFICE_HEADERS = {
@@ -62,8 +62,8 @@ SETTING_HELP = {
     "retention_months": "Months videos are kept before they are deleted.",
     "skip_service_ids": "FieldRoutes service type IDs that do not need a video (space or comma between).",
     "respect_fr_email_reminders": "Do not email customers whose email reminders are off in FieldRoutes.",
-    "email_subject": "Email subject. {tech} becomes the tech's first name.",
-    "email_intro": "First lines of the email. {tech} and {address} are filled in.",
+    "email_subject": "Email subject. {tech} becomes the tech's first name, {service} the service.",
+    "email_intro": "First lines of the email. {tech}, {address} and {service} are filled in.",
     "prompts": "What the tech reads while recording, one per line. {name} becomes the customer's first name.",
 }
 
@@ -129,47 +129,62 @@ async def board(ctx: Ctx, day: str) -> dict[str, Any]:
         ).all()
     scores = {s.video_id: s for s in score_rows}
 
-    # Prefer the live video for a customer; fall back to a pulled one so the row says so.
-    by_customer: dict[int, Any] = {}
+    # One video per tech per property. Prefer a tech's live video; fall back to his
+    # pulled one so the row says so.
+    by_key: dict[tuple[int, int], Any] = {}
     for v in vids:
         if v.customer_id is None:
             continue
-        current = by_customer.get(v.customer_id)
+        key = (v.customer_id, v.tech_id)
+        current = by_key.get(key)
         if current is None or (current.state == "pulled" and v.state != "pulled"):
-            by_customer[v.customer_id] = v
+            by_key[key] = v
+
+    def best(videos: list[Any]) -> Any | None:
+        live = [v for v in videos if v.state != "pulled"]
+        return (live or videos or [None])[0]
 
     equipped = await techs_with_the_app(ctx)
     groups: dict[int, list[dict[str, Any]]] = {}
     seen_videos: set[str] = set()
+    open_ids: set[int] = set()
     counts = {"stops": 0, "done": 0, "with_video": 0, "missing": 0}
     for stop in stops:
-        tech_id = (stop.tech_ids or [0])[0]
-        video = by_customer.get(stop.customer_id)
-        has_app = bool(equipped.intersection(stop.tech_ids or []))
-        if video is not None:
-            seen_videos.add(video.id)
-            label, tone = video_status(ctx, video)
-        elif not has_app:
-            label, tone = "Tech has no app yet", "off"
-        elif stop.done:
-            label, tone = "No video", "bad"
-        else:
-            label, tone = "Not done yet", "off"
-        missing = has_app and stop.done and (video is None or video.state == "pulled")
-        counts["stops"] += 1
-        counts["done"] += 1 if stop.done else 0
-        counts["with_video"] += 1 if video is not None and video.state != "pulled" else 0
-        counts["missing"] += 1 if missing else 0
-        groups.setdefault(tech_id, []).append(
-            {"stop": stop, "video": video, "label": label, "tone": tone, "score": scores.get(video.id) if video else None}
-        )
+        helpers = helper_techs(stop)
+        helper_video = best([v for h in helpers if (v := by_key.get((stop.customer_id, h))) is not None])
+        # One row per tech with appointments of his own here: each owes his own video.
+        for tech_id in lead_techs(stop) or [(stop.tech_ids or [0])[0]]:
+            view = tech_view(stop, tech_id)
+            # A helper's video stands in for the lead's.
+            video = best([v for v in (by_key.get((stop.customer_id, tech_id)), helper_video) if v is not None])
+            has_app = bool(equipped.intersection([tech_id, *helpers]))
+            if video is not None:
+                seen_videos.add(video.id)
+                label, tone = video_status(ctx, video)
+            elif not has_app:
+                label, tone = "Tech has no app yet", "off"
+            elif view.done:
+                label, tone = "No video", "bad"
+            else:
+                label, tone = "Not done yet", "off"
+            filmed = video is not None and video.state != "pulled"
+            if not filmed:
+                open_ids.add(stop.customer_id)
+            counts["stops"] += 1
+            counts["done"] += 1 if view.done else 0
+            counts["with_video"] += 1 if filmed else 0
+            counts["missing"] += 1 if has_app and view.done and not filmed else 0
+            groups.setdefault(tech_id, []).append(
+                {"stop": stop, "view": view, "video": video, "label": label, "tone": tone,
+                 "score": scores.get(video.id) if video else None}
+            )
 
     others = [
         {"video": v, "label": video_status(ctx, v)[0], "tone": video_status(ctx, v)[1], "score": scores.get(v.id)}
         for v in vids
         if v.id not in seen_videos
     ]
-    open_stops = [s for s in stops if s.customer_id not in by_customer or by_customer[s.customer_id].state == "pulled"]
+    open_stops = [s for s in stops if s.customer_id in open_ids]
     return {
         "day": day,
         "groups": sorted(((names.get(t, f"Tech {t}" if t else "No tech"), rows) for t, rows in groups.items()), key=lambda g: g[0]),
@@ -192,7 +207,7 @@ async def stats(ctx: Ctx, days: int) -> list[dict[str, Any]]:
     async with ctx.engine.connect() as conn:
         stops = (
             await conn.execute(
-                sa.select(db.stops).where(db.stops.c.day.between(start, end), db.stops.c.gone.is_(False), db.stops.c.done.is_(True))
+                sa.select(db.stops).where(db.stops.c.day.between(start, end), db.stops.c.gone.is_(False))
             )
         ).all()
         vids = (
@@ -205,7 +220,7 @@ async def stats(ctx: Ctx, days: int) -> list[dict[str, Any]]:
         score_rows = (
             await conn.execute(sa.select(db.scores).where(db.scores.c.video_id.in_([v.id for v in vids] or [""])))
         ).all()
-    filmed = {(v.day, v.customer_id) for v in vids if v.customer_id is not None}
+    filmed = {(v.day, v.customer_id, v.tech_id) for v in vids if v.customer_id is not None}
     stars = {s.video_id: s.stars for s in score_rows}
     equipped = await techs_with_the_app(ctx)
 
@@ -219,15 +234,18 @@ async def stats(ctx: Ctx, days: int) -> list[dict[str, Any]]:
         )
 
     for stop in stops:
-        types = {a.get("type") for a in stop.appointments}
-        if types and types <= skip:
-            continue
-        if not equipped.intersection(stop.tech_ids or []):
-            continue  # a tech without the app cannot miss a video
-        r = row((stop.tech_ids or [0])[0])
-        r["stops"] += 1
-        if (stop.day, stop.customer_id) not in filmed:
-            r["missed"] += 1
+        helpers = helper_techs(stop)
+        helped = any((stop.day, stop.customer_id, h) in filmed for h in helpers)
+        for tech_id in lead_techs(stop) or [(stop.tech_ids or [0])[0]]:
+            view = tech_view(stop, tech_id)
+            if not view.done or (view.types and view.types <= skip):
+                continue
+            if not equipped.intersection([tech_id, *helpers]):
+                continue  # a tech without the app cannot miss a video
+            r = row(tech_id)
+            r["stops"] += 1
+            if (stop.day, stop.customer_id, tech_id) not in filmed and not helped:
+                r["missed"] += 1
     for v in vids:
         r = row(v.tech_id)
         r["videos"] += 1

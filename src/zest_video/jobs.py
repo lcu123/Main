@@ -24,7 +24,7 @@ from .auth import sync_techs
 from .core import Ctx, clear_flags, get_settings, raise_flag
 from .fr import FieldRoutesError
 from .notify import DeliveryError
-from .route import LIVE_STATES, in_work_hours, stops_for_day, sync_day
+from .route import LIVE_STATES, helper_techs, in_work_hours, lead_techs, missing_key, stops_for_day, sync_day, tech_view
 
 NUDGE_AFTER = timedelta(minutes=30)
 
@@ -52,10 +52,12 @@ async def refresh_day(ctx: Ctx) -> None:
 
 
 async def flag_missing(ctx: Ctx) -> int:
-    """A stop that finished a while ago and still has no video: tell the office.
+    """A tech's work at a stop finished a while ago and he still has no video: tell the office.
 
-    A video that is filmed but stuck on a phone with no signal looks the same from
-    here until it registers; the flag clears itself the moment that video arrives.
+    One video per tech per property: when two techs each have appointments at a stop,
+    each owes his own. A helper's video stands in for the lead's. A video that is filmed
+    but stuck on a phone with no signal looks the same from here until it registers; the
+    flag clears itself the moment that video arrives.
     """
     settings = await get_settings(ctx)
     if not settings["require_video"]:
@@ -63,25 +65,28 @@ async def flag_missing(ctx: Ctx) -> int:
     day = ctx.today()
     cutoff = db.now() - timedelta(minutes=settings["missing_alert_minutes"])
     skip = set(settings["skip_service_ids"] or [])
-    have = {v.customer_id for v in await _videos_any_state(ctx, day)}
+    have = {(v.customer_id, v.tech_id) for v in await _videos_any_state(ctx, day)}
     equipped = await techs_with_the_app(ctx)
     raised = 0
     for stop in await stops_for_day(ctx, day):
-        if not stop.done or stop.done_seen_at is None or stop.done_seen_at > cutoff:
-            continue
-        if stop.customer_id in have:
-            continue
-        if not equipped.intersection(stop.tech_ids or []):
-            continue  # no tech on this stop has the app yet
-        types = {a.get("type") for a in stop.appointments}
-        if types and types <= skip:
-            continue  # every service at this stop is switched off for videos
-        tech_id = (stop.tech_ids or [None])[0]
-        if await raise_flag(
-            ctx, "no_video", f"no_video:{day}:{stop.customer_id}", day=day, tech_id=tech_id,
-            customer_id=stop.customer_id, detail=f"{stop.name}, {stop.address}: finished with no video.",
-        ):
-            raised += 1
+        helpers = helper_techs(stop)
+        if any((stop.customer_id, h) in have for h in helpers):
+            continue  # a helper filmed it
+        for tech_id in lead_techs(stop) or list((stop.tech_ids or [])[:1]):
+            view = tech_view(stop, tech_id)
+            if not view.done or view.done_seen_at is None or view.done_seen_at > cutoff:
+                continue
+            if (stop.customer_id, tech_id) in have:
+                continue
+            if not equipped.intersection([tech_id, *helpers]):
+                continue  # nobody who could film this has the app yet
+            if view.types and view.types <= skip:
+                continue  # every service he did here is switched off for videos
+            if await raise_flag(
+                ctx, "no_video", missing_key(day, stop.customer_id, tech_id), day=day, tech_id=tech_id,
+                customer_id=stop.customer_id, detail=f"{stop.name}, {stop.address}: finished with no video.",
+            ):
+                raised += 1
     return raised
 
 
@@ -92,7 +97,7 @@ async def _videos_any_state(ctx: Ctx, day: str) -> list[Any]:
         return list(
             (
                 await conn.execute(
-                    sa.select(db.videos.c.customer_id).where(
+                    sa.select(db.videos.c.customer_id, db.videos.c.tech_id).where(
                         db.videos.c.day == day, db.videos.c.state.in_((*LIVE_STATES, "pulled"))
                     )
                 )

@@ -161,6 +161,31 @@ class Env:
     async def video(self, video_id: str) -> Any:
         return await self.one(sa.select(db.videos).where(db.videos.c.id == video_id))
 
+    async def finished(self, *customer_ids: int, ago: timedelta | None = None, force: bool = True) -> None:
+        """Mark stops finished the way a sync would have seen it, `ago` in the past:
+        every appointment completed (when `force`), each with the time we first saw it
+        done. No customer IDs means every stop."""
+        now = db.now()
+        seen = now - (ago or timedelta())
+        query = sa.select(db.stops)
+        if customer_ids:
+            query = query.where(db.stops.c.customer_id.in_(customer_ids))
+        for row in await self.all(query):
+            appointments = []
+            for a in row.appointments:
+                a = dict(a)
+                if force:
+                    a["status"] = 1
+                if a["status"] == 1:
+                    a["doneSeenAt"] = seen.isoformat()
+                appointments.append(a)
+            done = all(a["status"] == 1 for a in appointments)
+            await self.run(
+                sa.update(db.stops)
+                .where(db.stops.c.day == row.day, db.stops.c.customer_id == row.customer_id)
+                .values(appointments=appointments, done=done, done_seen_at=seen if done else None)
+            )
+
     async def flags(self, kind: str | None = None, *, open_only: bool = True) -> list[Any]:
         query = sa.select(db.flags)
         if kind:

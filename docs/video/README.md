@@ -1,6 +1,7 @@
 # Zest Visit Video
 
-A tech records one short video per property visit. The customer gets an email
+A tech records one short video per property visit (one per tech: when two techs
+each have work at a property the same day, each sends his own). The customer gets an email
 with a link to watch it. Built from the Visit Video build brief (Nov 12, 2026).
 
 | Piece | Where | What it does |
@@ -34,8 +35,12 @@ server:  awaiting_upload → held (tech's 10-minute undo) → sent → watched
   private bucket with a signed URL; the watch page plays through
   `/w/<token>/video`, which redirects to a fresh short-lived signed URL.
 - The customer link is a random 128-bit token. No login, marked noindex, rate limited.
-- Recording again inside the 10 minutes replaces the old video by itself. After
-  the email has gone out the stop is locked for the tech; the office can pull or move it.
+- Recording again inside the 10 minutes replaces that tech's old video by itself. After
+  the email has gone out the stop is locked for him; the office can pull or move it.
+- One video per tech, per property, per day. Two techs with appointments at the same
+  property each send their own video, tied to their own appointments; the customer gets
+  one email per video, naming the tech and the service. A missing video is flagged for
+  the tech who owes it. A helper's video covers the stop for the lead.
 
 ## What the server checks by itself
 
