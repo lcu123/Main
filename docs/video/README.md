@@ -39,13 +39,19 @@ server:  awaiting_upload → held (tech's 10-minute undo) → sent → watched
 
 | Check | When | Result |
 | --- | --- | --- |
-| Stop finished, no video | 60 min after FieldRoutes shows it done | Office flag. Clears itself if the video arrives late. |
+| Stop finished, no video | 60 min after FieldRoutes shows it done, and only for techs signed in on a phone | Office flag. Clears itself if the video arrives late. |
 | Video stuck on a phone | 30 min, then 3 hours | Push nudge to the tech, then an office flag. |
 | Recorded outside the check-in time | When the email is sent | Office flag. Never blocks. |
 | Tech sent past a two-keys warning | At register | Office flag and an audit entry. Never blocks. |
 | Customer has no usable email | When the email would go | Link saved as a FieldRoutes note, office flag. |
 | FieldRoutes write failed | After 8 tries over a day | Office flag. Writes wait in an outbox meanwhile. |
 | Tech no longer active in FieldRoutes | Daily, and at login | App locks. |
+
+## Rolling it out to one tech first
+
+Nothing has to be switched for a pilot. A tech counts only once he has signed
+in on a phone: until then his stops are not flagged, not counted as missed, and
+show "Tech has no app yet" on the office page.
 
 ## Safety switches
 
@@ -69,8 +75,9 @@ under Settings.
 Reads, sized for the shared 3,000-a-day quota:
 
 - The day's stops: one `appointment/search` per refresh (every 5 minutes in
-  work hours, and when an app asks with a cache older than 3 minutes), plus one
-  `customer/get` only for customers not seen yet that day.
+  work hours once any tech has the app, and when an app or the office page asks
+  with a cache older than 3 minutes), plus one `customer/get` only for
+  customers not seen yet that day.
 - `route/search` only on a day where an appointment has no `assignedTech`.
 - `employee/search` once a day and when an unknown contact asks for a code.
 - One `customer/get` per email sent, to read the address fresh. The server
