@@ -33,9 +33,14 @@ struct FakeServer {
     // MARK: Controls
 
     /// Forgets everything and names the test that is about to run.
+    /// - Returns: a device token the server has already signed in, so a test
+    ///   can start the app signed in without typing a number and a code.
+    ///   `nil` when the server did not answer.
     @discardableResult
-    func reset(test: String, config: [String: Any] = [:]) -> Bool {
-        request("POST", "/__test/reset", json: ["test": test, "config": config])?.status == 200
+    func reset(test: String, config: [String: Any] = [:]) -> String? {
+        guard let reply = request("POST", "/__test/reset", json: ["test": test, "config": config]),
+              reply.status == 200 else { return nil }
+        return reply.json["token"] as? String
     }
 
     /// Flips switches (see the list at the top of fake_server.py).
@@ -148,6 +153,11 @@ struct ServerState {
     var logouts: Int { (raw["logouts"] as? Int) ?? 0 }
     var codesRequested: [String] { (raw["codes"] as? [String]) ?? [] }
     var events: [[String: Any]] { (raw["events"] as? [[String: Any]]) ?? [] }
+
+    /// What the app said about its uploads: each task's start and end.
+    var notes: [String] {
+        ((raw["notes"] as? [[String: Any]]) ?? []).compactMap { $0["note"] as? String }
+    }
 
     /// How many requests of this kind the app made.
     func count(_ method: String, _ pathPart: String, status: Int? = nil) -> Int {

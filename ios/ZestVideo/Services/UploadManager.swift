@@ -1,4 +1,5 @@
 import Foundation
+import os
 import UIKit
 import ZestCore
 
@@ -24,17 +25,46 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
     var onNotice: ((String) -> Void)?
     /// A video reached the server (or left the queue): refresh nudges and lists.
     var onChange: (() -> Void)?
+    /// An upload ended badly. The detail says why (the HTTP status, or the
+    /// system's error domain, code and words), for the audit trail.
+    var onUploadProblem: ((_ videoID: String, _ detail: [String: String]) -> Void)?
 
     /// Videos with a register/complete/delete call in the air.
     private var busy = Set<String>()
     /// Videos this launch has already given an upload task, and which task.
     private var started: [String: Int] = [:]
+    /// Videos whose task this launch started but the system no longer lists,
+    /// and since when. See `advance`.
+    private var missingSince: [String: Date] = [:]
+    private var checkScheduled = false
+    private static let log = Logger(subsystem: "com.zestlawnpest.video", category: "uploads")
     /// Last progress pushed to the screen, to avoid a redraw per packet.
     private var shownProgress: [String: Double] = [:]
     private var backgroundCompletion: (() -> Void)?
     private var retryScheduled = false
 
+    /// "background" on a phone. "plain" only in a UI test (see `UITestMode`).
+    private var sessionKind: String {
+        #if targetEnvironment(simulator)
+        if UITestMode.isOn && !UITestMode.backgroundUploads { return "plain" }
+        #endif
+        return "background"
+    }
+
     private lazy var session: URLSession = {
+        #if targetEnvironment(simulator)
+        if UITestMode.isOn && !UITestMode.backgroundUploads {
+            // UI tests: an ordinary session, so the queue, the retries and
+            // the recovery after a kill are tested whatever the simulator's
+            // background transfer service does. Every other line of this
+            // class is the same either way.
+            let plain = URLSessionConfiguration.ephemeral
+            plain.timeoutIntervalForRequest = 60
+            plain.timeoutIntervalForResource = 10 * 60
+            plain.httpMaximumConnectionsPerHost = 2
+            return URLSession(configuration: plain, delegate: self, delegateQueue: nil)
+        }
+        #endif
         let configuration = URLSessionConfiguration.background(withIdentifier: UploadManager.sessionIdentifier)
         // Start now, not when iOS finds it convenient.
         configuration.isDiscretionary = false
@@ -102,7 +132,30 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
             case .queued:
                 register(item)
             case .uploading:
-                if live.contains(item.id) || started[item.id] != nil { continue }
+                if live.contains(item.id) {
+                    missingSince[item.id] = nil
+                    continue
+                }
+                if let taskIdentifier = started[item.id] {
+                    // This launch started a task for it, and the system no
+                    // longer lists that task. Normally its result is on the
+                    // way. If nothing has come a good while later, the task
+                    // is lost: start again rather than wait for ever.
+                    guard let since = missingSince[item.id] else {
+                        missingSince[item.id] = now
+                        scheduleCheck(after: UploadManager.lostTaskSeconds + 1)
+                        continue
+                    }
+                    if now.timeIntervalSince(since) < UploadManager.lostTaskSeconds {
+                        scheduleCheck(after: UploadManager.lostTaskSeconds + 1)
+                        continue
+                    }
+                    started[item.id] = nil
+                    missingSince[item.id] = nil
+                    shownProgress[item.id] = nil
+                    trace("upload task \(taskIdentifier) for \(item.id) vanished with no result; starting again")
+                    onUploadProblem?(item.id, ["reason": "task vanished with no result", "session": sessionKind])
+                }
                 if item.needsFreshURL(now: now) {
                     register(item)
                 } else {
@@ -139,6 +192,30 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
         }
     }
 
+    /// How long a started task may be missing from the system's list, with
+    /// no result delivered, before it is counted as lost.
+    static let lostTaskSeconds: TimeInterval = 20
+
+    /// Looks at the queue again in a while (only while the app is running).
+    private func scheduleCheck(after seconds: TimeInterval) {
+        guard !checkScheduled else { return }
+        checkScheduled = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            self?.checkScheduled = false
+            self?.pump()
+        }
+    }
+
+    /// One line about an upload, for whoever has to find out why a video did
+    /// not go: the phone's own log, and in a UI test the test server.
+    private func trace(_ text: String) {
+        UploadManager.log.info("\(text, privacy: .public)")
+        #if targetEnvironment(simulator)
+        UITestMode.note(text)
+        #endif
+    }
+
     // MARK: Steps
 
     private func register(_ item: QueueItem) {
@@ -162,6 +239,9 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
                 if let ticket = answer.upload {
                     if let updated = store.apply(.registered(ticket), to: item.id), updated.phase == .uploading {
                         startUpload(updated)
+                    } else {
+                        // Deleted by the tech while the call was in the air.
+                        trace("register answered for \(item.id), but it is no longer waiting to upload")
                     }
                 } else {
                     store.apply(.serverAlreadyHas(state: answer.state, emailAt: answer.emailAt), to: item.id)
@@ -183,9 +263,13 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
     }
 
     private func startUpload(_ item: QueueItem) {
-        guard let url = item.uploadURL else { return }
+        guard let url = item.uploadURL else {
+            trace("no upload started for \(item.id): it has no upload address")
+            return
+        }
         let fileURL = store.fileURL(for: item)
         guard Files.exists(fileURL) else {
+            trace("no upload started for \(item.id): its file is not on the phone")
             store.apply(.fileLost, to: item.id)
             onChange?()
             return
@@ -201,8 +285,44 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
         let task = session.uploadTask(with: request, fromFile: fileURL)
         task.taskDescription = item.id
         started[item.id] = task.taskIdentifier
+        missingSince[item.id] = nil
         task.resume()
+        // The address itself is a secret (it is signed), so only where it points.
+        trace(
+            "upload task \(task.taskIdentifier) made and started for \(item.id): PUT \(url.scheme ?? "?")://\(url.host ?? "?")\(url.path), "
+                + "\(Files.size(of: fileURL)) bytes on disk, \(sessionKind) session"
+        )
+        #if targetEnvironment(simulator)
+        if UITestMode.isOn {
+            reportLater(id: item.id, taskIdentifier: task.taskIdentifier)
+        }
+        #endif
     }
+
+    #if targetEnvironment(simulator)
+    /// UI tests only: if a task has still not ended after a while, say what
+    /// the system thinks it is doing, so a stalled upload explains itself.
+    private func reportLater(id: String, taskIdentifier: Int) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 20 * 1_000_000_000)
+            guard let self, self.started[id] == taskIdentifier else { return }
+            self.session.getAllTasks { [weak self] tasks in
+                let text: String
+                if let task = tasks.first(where: { $0.taskIdentifier == taskIdentifier }) {
+                    let failure = task.error as NSError?
+                    text = "upload task \(taskIdentifier) for \(id) has not ended after 20 s: state \(task.state.rawValue) "
+                        + "(0 running, 1 suspended, 2 cancelling, 3 completed), sent \(task.countOfBytesSent) of "
+                        + "\(task.countOfBytesExpectedToSend) bytes, error \(failure?.domain ?? "none") \(failure?.code ?? 0)"
+                } else {
+                    text = "upload task \(taskIdentifier) for \(id) has not ended after 20 s, and the system no longer lists it"
+                }
+                Task { @MainActor in
+                    self?.trace(text)
+                }
+            }
+        }
+    }
+    #endif
 
     private func complete(_ item: QueueItem) {
         busy.insert(item.id)
@@ -289,6 +409,7 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
     func drop(_ id: String) {
         cancelTasks { $0 == id }
         started[id] = nil
+        missingSince[id] = nil
         shownProgress[id] = nil
         store.apply(.deletedByTech, to: id)
         onChange?()
@@ -327,6 +448,7 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
     /// UI-test reset only: cancel transfers left over from an earlier test.
     func cancelEverything() {
         started.removeAll()
+        missingSince.removeAll()
         shownProgress.removeAll()
         cancelTasks { _ in true }
     }
@@ -360,13 +482,35 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
         store.apply(.progress(fraction), to: id)
     }
 
-    private func uploadEnded(id: String, taskIdentifier: Int, status: Int?, cancelled: Bool, errorText: String?) {
+    private func uploadEnded(
+        id: String, taskIdentifier: Int, status: Int?, cancelled: Bool,
+        errorText: String?, errorDomain: String?, errorCode: Int?
+    ) {
         // An old task reporting late (one that iOS cancelled when the app was
         // killed, say) must not be taken for the task that is running now.
-        if let current = started[id], current != taskIdentifier { return }
+        if let current = started[id], current != taskIdentifier {
+            trace("upload task \(taskIdentifier) for \(id) reported late and was ignored (task \(current) is the live one)")
+            return
+        }
         started[id] = nil
+        missingSince[id] = nil
         shownProgress[id] = nil
+
+        // Say how it ended, every time; and when it ended badly, keep why.
+        let good = status.map { (200..<300).contains($0) } ?? false
+        var detail: [String: String] = ["session": sessionKind]
+        if let status { detail["status"] = String(status) }
+        if let errorDomain { detail["domain"] = errorDomain }
+        if let errorCode { detail["code"] = String(errorCode) }
+        if let errorText { detail["text"] = String(errorText.prefix(200)) }
+        let how = detail.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+        trace("upload task \(taskIdentifier) for \(id) ended: \(good ? "ok" : "NOT ok") \(how)")
+
         guard let item = store.item(id) else { return }
+        // (A cancel that follows the tech's own delete is not a problem.)
+        if !good && !(cancelled && item.phase != .uploading) {
+            onUploadProblem?(id, detail)
+        }
         if cancelled {
             // Not the tech's doing (his own delete removes or parks the row
             // first): iOS dropped the transfer. Start it again; never leave
@@ -401,11 +545,26 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
         guard let id = task.taskDescription else { return }
         // An HTTP status only counts when the transfer itself did not fail.
         let status = error == nil ? (task.response as? HTTPURLResponse)?.statusCode : nil
-        let cancelled = (error as NSError?)?.code == NSURLErrorCancelled
+        let failure = error as NSError?
+        let cancelled = failure?.code == NSURLErrorCancelled
         let errorText = error?.localizedDescription
+        let errorDomain = failure?.domain
+        let errorCode = failure?.code
         let taskIdentifier = task.taskIdentifier
         Task { @MainActor in
-            self.uploadEnded(id: id, taskIdentifier: taskIdentifier, status: status, cancelled: cancelled, errorText: errorText)
+            self.uploadEnded(
+                id: id, taskIdentifier: taskIdentifier, status: status, cancelled: cancelled,
+                errorText: errorText, errorDomain: errorDomain, errorCode: errorCode
+            )
+        }
+    }
+
+    /// The whole session stopped working (it should never, for this app).
+    nonisolated func urlSession(_ session: URLSession, didBecomeInvalidWithError error: Error?) {
+        let failure = error as NSError?
+        let text = "the upload session became invalid: \(failure?.domain ?? "no error") \(failure?.code ?? 0) \(error?.localizedDescription ?? "")"
+        Task { @MainActor in
+            self.trace(text)
         }
     }
 

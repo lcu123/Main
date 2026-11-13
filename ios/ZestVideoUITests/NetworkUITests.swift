@@ -34,7 +34,7 @@ final class NetworkUITests: ZestUITestCase {
     /// phone; when the server is well and the app comes back to the front,
     /// it sends, once.
     func testServerErrorsThenRecoverySendsWithoutLoss() {
-        launchAndSignIn()
+        launchSignedIn()
         server.set(["failNext": 100_000])
         recordAndSave(for: Self.smith)
         waitUntil("the app tried to register and was refused") { server.state().registerCalls(status: 500) >= 1 }
@@ -54,7 +54,7 @@ final class NetworkUITests: ZestUITestCase {
     /// The server cannot be reached at all at SAVE (the same as no signal).
     /// The screen says so, the video waits, and it sends when it is back.
     func testUnreachableServerThenBackSends() {
-        launchAndSignIn()
+        launchSignedIn()
         server.set(["down": true])
         recordAndSave(for: Self.smith)
         waitForText("No signal", timeout: 30)
@@ -76,7 +76,7 @@ final class NetworkUITests: ZestUITestCase {
     /// The upload address had run out (403). The app asks for a new one and
     /// sends the file again by itself.
     func testExpiredUploadURLRegistersAgain() {
-        launchAndSignIn()
+        launchSignedIn()
         server.set(["expireNextPut": 1])
         recordAndSave(for: Self.smith)
         expectSent()
@@ -90,7 +90,7 @@ final class NetworkUITests: ZestUITestCase {
     /// The server says it did not get the whole file ("not_uploaded"), once.
     /// The app uploads it again, and only then says SENT.
     func testNotUploadedOnceUploadsAgain() {
-        launchAndSignIn()
+        launchSignedIn()
         server.set(["notUploadedNext": 1])
         recordAndSave(for: Self.smith)
         waitUntil("the server said not_uploaded") { server.state().videos.first?.completes.first == 409 }
@@ -106,7 +106,7 @@ final class NetworkUITests: ZestUITestCase {
     /// The server signs the phone out (401) while a video is waiting. The
     /// app goes to sign-in, keeps the video, and sends it after signing in.
     func testSignedOutByServerKeepsTheQueue() {
-        launchAndSignIn()
+        launchSignedIn()
         openRecorder(for: Self.smith)
         recordClip()
         server.set(["unauthorized": true])
@@ -123,7 +123,7 @@ final class NetworkUITests: ZestUITestCase {
 
         let seen = server.state()
         let video = theOnlyVideo()
-        XCTAssertEqual(seen.logins, 2)
+        XCTAssertEqual(seen.logins, 1, "Signed in again once, through the screen.")
         XCTAssertEqual(video.customerId, Self.smith, "The video kept its stop through the sign-out.")
         XCTAssertEqual(video.puts, ["200"], "Uploaded once: \(video.summary)")
         XCTAssertEqual(video.completes, [200], "Confirmed once: \(video.summary)")
@@ -133,7 +133,7 @@ final class NetworkUITests: ZestUITestCase {
     /// The server says the app is too old (426). The update screen shows,
     /// and it is still there after a restart.
     func testUpdateRequiredShowsUpdateScreen() {
-        launchAndSignIn()
+        launchSignedIn()
         server.set(["updateRequired": 999])
         leaveAndComeBack()
 
@@ -150,7 +150,7 @@ final class NetworkUITests: ZestUITestCase {
     /// (409 visit_has_video). The video is not sent, the screen says why in
     /// the server's words, and OK clears it.
     func testLockedByServerShowsWhyAndClears() {
-        launchAndSignIn()
+        launchSignedIn()
         server.set(["visitHasVideo": true])
         recordAndSave(for: Self.smith)
 
@@ -174,7 +174,7 @@ final class NetworkUITests: ZestUITestCase {
     /// today's saved list are used, a video can be recorded and saved, and
     /// it sends when the server is back.
     func testOfflineStartShowsSavedRouteAndRecords() {
-        launchAndSignIn()
+        launchSignedIn()
         kill()
         server.set(["down": true])
         relaunch()

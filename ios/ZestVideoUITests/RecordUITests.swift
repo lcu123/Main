@@ -7,7 +7,7 @@ final class RecordUITests: ZestUITestCase {
     /// register, the whole file once, and exactly one "complete". The phone
     /// then says SENT and holds no file.
     func testHappyPathRecordSaveSend() {
-        launchAndSignIn()
+        launchSignedIn()
         openRecorder(for: Self.smith)
         XCTAssertTrue(hasText("Smith, Jane"), "The record screen names the stop.")
         XCTAssertTrue(app.buttons["record-button"].isEnabled, "The camera is ready at once.")
@@ -53,7 +53,7 @@ final class RecordUITests: ZestUITestCase {
     /// early still saves and sends.
     func testRecordScreenBackFlipAndEarlyStop() {
         server.set(["maxSeconds": 15])
-        launchAndSignIn()
+        launchSignedIn()
         openRecorder(for: Self.smith)
 
         let flip = app.buttons["flip-button"]
@@ -115,7 +115,7 @@ final class RecordUITests: ZestUITestCase {
     /// the second one ever reaches the server. The "I recommended something"
     /// switch is sent with it.
     func testRecordAgainDiscardsFirstClipAndRecommendIsSent() {
-        launchAndSignIn()
+        launchSignedIn()
         openRecorder(for: Self.smith)
         recordClip()
 
@@ -146,7 +146,7 @@ final class RecordUITests: ZestUITestCase {
     /// The words name a different customer: one warning. SAVE ANYWAY sends
     /// the video as it is, marked as an override.
     func testTwoKeysWarningSaveAnywaySendsOverride() {
-        launchAndSignIn(transcript: "This is the Smith home")
+        launchSignedIn(transcript: "This is the Smith home")
         openRecorder(for: Self.johnson)
         recordClip()
 
@@ -172,7 +172,7 @@ final class RecordUITests: ZestUITestCase {
     /// The same warning, but the tech picks the stop the words fit: the same
     /// clip goes to that customer, with no override.
     func testTwoKeysWarningPickTheRightStopRetargets() {
-        launchAndSignIn(transcript: "This is the Smith home")
+        launchSignedIn(transcript: "This is the Smith home")
         openRecorder(for: Self.johnson)
         recordClip()
 
@@ -209,7 +209,7 @@ final class RecordUITests: ZestUITestCase {
     /// Inside its ten minutes a stop offers CHANGE VIDEO. RECORD AGAIN there
     /// replaces the old video with the new one, with no question asked.
     func testChangeVideoRecordAgainReplacesTheOldOne() {
-        launchAndSignIn()
+        launchSignedIn()
         recordAndSave(for: Self.smith)
         waitForHeld()
         waitForLabel(stop(Self.smith), "the stop's card", contains: "Change Video")
@@ -247,7 +247,7 @@ final class RecordUITests: ZestUITestCase {
     /// DELETE VIDEO asks first. NO, KEEP IT keeps it; YES, DELETE (even
     /// tapped twice) deletes it once, and the stop is free to record again.
     func testDeleteVideoWithConfirmFreesTheStop() {
-        launchAndSignIn()
+        launchSignedIn()
         recordAndSave(for: Self.smith)
         waitForHeld()
 
@@ -281,7 +281,7 @@ final class RecordUITests: ZestUITestCase {
 
     /// Two quick taps on SAVE save one video.
     func testSaveCannotBeDoubleTapped() {
-        launchAndSignIn()
+        launchSignedIn()
         openRecorder(for: Self.smith)
         recordClip()
 
@@ -305,7 +305,7 @@ final class RecordUITests: ZestUITestCase {
 
     /// STOP NOT ON MY LIST records with no customer; the office matches it.
     func testNotOnMyListRecordsWithoutCustomer() {
-        launchAndSignIn()
+        launchSignedIn()
         tap(app.buttons["not-on-my-list"], "STOP NOT ON MY LIST")
         waitForTitle("Not on my list")
         tap(button("RECORD"), "RECORD")
@@ -330,7 +330,7 @@ final class RecordUITests: ZestUITestCase {
     /// screen the first one brought up: not the confirm question, not the
     /// record button, not "Delete this video?".
     func testADoubleTapNeverAnswersTheNextScreen() {
-        launchAndSignIn()
+        launchSignedIn()
 
         // On the stop's card: the confirm question must still be asked.
         doubleTap(stop(Self.smith), "the first stop")
@@ -368,7 +368,7 @@ final class RecordUITests: ZestUITestCase {
     /// video, and NOT NOW goes on to My Route. The video still sends.
     func testRemindersOfferShowsAfterTheFirstSave() {
         server.set(["leaveReminders": true])
-        launchAndSignIn()
+        launchSignedIn()
         openRecorder(for: Self.smith)
         recordClip()
 

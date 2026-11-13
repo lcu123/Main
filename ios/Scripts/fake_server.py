@@ -14,8 +14,12 @@ Two kinds of path:
 
 Test controls (all JSON):
 
-  POST /__test/reset   {"test": "name", "config": {...}}   forget everything
+  POST /__test/reset   {"test": "name", "config": {...}}   forget everything; the answer
+                                                            carries a device token that is
+                                                            already signed in ("token")
   POST /__test/set     {"switch": value, ...}              change behaviour
+  POST /__test/note    {"note": "text"}                    the APP says what it is doing
+                                                            (each upload's start and end)
   GET  /__test/state                                        everything it saw
   GET  /__test/log                                          the request log, as text
 
@@ -115,7 +119,11 @@ class State:
             self.requests = []        # everything the app sent, in order
             self.videos = {}          # id -> record
             self.order = []           # video ids in the order they were first registered
-            self.tokens = set()
+            # One device token is issued ahead of time, so a test can start
+            # the app already signed in instead of typing a number and a code.
+            self.issued_token = "issued-" + uuid.uuid4().hex
+            self.tokens = {self.issued_token}
+            self.notes = []           # what the app said about its uploads
             self.codes = []           # contacts that asked for a code
             self.logins = 0
             self.logouts = 0
@@ -211,6 +219,7 @@ class State:
                 "logouts": self.logouts,
                 "events": self.events,
                 "pushTokens": self.push_tokens,
+                "notes": self.notes,
             }
 
     def log_text(self):
@@ -227,6 +236,12 @@ class State:
                 lines.append("video %s customer=%s state=%s registers=%d puts=%s bytes=%d completes=%s deletes=%d" % (
                     v["id"], v["customerId"], v["state"], v["registers"],
                     [p["status"] for p in v["puts"]], v["bytes"], v["completes"], v["deletes"]))
+            if self.notes:
+                lines.append("what the app said about its uploads:")
+                for note in self.notes:
+                    lines.append("  after request %d: %s" % (note["after"], note["note"]))
+            else:
+                lines.append("the app said nothing about its uploads (no upload task was made)")
             return "\n".join(lines) + "\n"
 
 
@@ -590,6 +605,12 @@ class Handler(BaseHTTPRequestHandler):
             body = body or {}
             STATE.reset(body.get("test"), body.get("config"))
             print("\n===== %s =====" % (STATE.test or "reset"), flush=True)
+            return self.reply(200, {"ok": True, "token": STATE.issued_token}, record=False)
+        if path == "/__test/note" and self.command == "POST":
+            text = str((body or {}).get("note", ""))[:600]
+            with STATE.lock:
+                STATE.notes.append({"after": len(STATE.requests), "note": text})
+            print("      app: %s" % text, flush=True)
             return self.reply(200, {"ok": True}, record=False)
         if path == "/__test/set" and self.command == "POST":
             with STATE.lock:
@@ -682,7 +703,15 @@ def self_test():
         return call("POST", "/v1/videos", payload, token)
 
     # Sign in.
+    status, body = call("POST", "/__test/reset", {"test": "self-test", "config": {"maxSeconds": 3}})
+    check(status == 200 and body["token"].startswith("issued-"), "reset issues a token")
+    check(call("GET", "/v1/today", token=body["token"])[0] == 200, "the issued token is signed in")
+    check(call("POST", "/__test/note", {"note": "upload task 1 made"})[0] == 200, "note")
+    state = call("GET", "/__test/state")[1]
+    check(state["notes"] == [{"after": 1, "note": "upload task 1 made"}] and state["logins"] == 0, "notes are kept")
+    check("upload task 1 made" in call("GET", "/__test/log")[1].decode(), "notes are in the log")
     check(call("POST", "/__test/reset", {"test": "self-test", "config": {"maxSeconds": 3}})[0] == 200, "reset")
+    check("the app said nothing about its uploads" in call("GET", "/__test/log")[1].decode(), "no notes after reset")
     check(call("POST", "/v1/auth/request-code", {"contact": "9165550100"})[0] == 200, "request-code")
     status, body = call("POST", "/v1/auth/verify", {"contact": "9165550100", "code": "000000"})
     check(status == 401 and body["error"] == "bad_code" and body["triesLeft"] == 4, "wrong code")

@@ -2,11 +2,17 @@ import XCTest
 
 /// Auto-save. The app is killed with no warning at each point where a video
 /// could be lost, then started again WITHOUT wiping anything. Every time the
-/// video must still be there, go to the right customer, and reach the server
-/// exactly once.
+/// video must still be there, go to the right customer, and end as exactly
+/// one video on the server.
+///
+/// What this does NOT show: an upload carrying on while the app is closed.
+/// The tests upload through an ordinary URLSession (see `UITestMode.swift`),
+/// which stops when the app is killed; the app picks the upload up again when
+/// it is next started. On a phone the background session is meant to carry
+/// on by itself, and only a real phone can show that.
 ///
 /// (`terminate()` is how a test kills the app. It is the closest a simulator
-/// gets to a crash or a dead battery; see the README for what it cannot show.)
+/// gets to a crash or a dead battery.)
 final class KillUITests: ZestUITestCase {
     /// The screen and the server agree that one video for the stop is sent.
     private func expectOneSentVideo(customer: Int = ZestUITestCase.smith, file: StaticString = #filePath, line: UInt = #line) {
@@ -32,7 +38,7 @@ final class KillUITests: ZestUITestCase {
     /// the clip and asks "Save this video?" for the right customer.
     func testKillMidRecordingRecoversTheClip() {
         server.set(["maxSeconds": 15])
-        launchAndSignIn()
+        launchSignedIn()
         openRecorder(for: Self.smith)
         tap(app.buttons["record-button"], "the red record button")
         waitFor(element("recording-pill"), "the red RECORDING sign", timeout: 10)
@@ -48,13 +54,13 @@ final class KillUITests: ZestUITestCase {
 
         saveClip()
         expectOneSentVideo()
-        XCTAssertEqual(server.state().logins, 1, "A restart does not ask the tech to sign in again.")
+        XCTAssertEqual(server.state().logins, 0, "A restart does not ask the tech to sign in again.")
     }
 
     /// (b) Killed on the review screen, before SAVE. On the next start My
     /// Route says one video is not saved yet, and finishing it sends it.
     func testKillOnReviewKeepsTheDraft() {
-        launchAndSignIn()
+        launchSignedIn()
         openRecorder(for: Self.smith)
         recordClip()
 
@@ -75,13 +81,13 @@ final class KillUITests: ZestUITestCase {
         expectOneSentVideo()
     }
 
-    /// (c) Killed while the file is half-way to the server. The upload is
-    /// finished (by the system, or started again), and the server ends with
-    /// one whole video and one confirmation.
+    /// (c) Killed while the file is half-way to the server. After the
+    /// restart the app sends it again by itself, and the server ends with one
+    /// whole video and one confirmation.
     func testKillMidUploadFinishesOnce() {
         // About 15 seconds for the file, so the kill lands in the middle.
         server.set(["uploadBytesPerSecond": 1000])
-        launchAndSignIn()
+        launchSignedIn()
         recordAndSave(for: Self.smith)
         waitUntil("the upload has begun", timeout: 40) { (server.state().videos.first?.putsStarted ?? 0) >= 1 }
         XCTAssertEqual(server.state().videos.first?.goodUploads, 0, "The kill has to land before the upload is done.")
@@ -102,7 +108,7 @@ final class KillUITests: ZestUITestCase {
     /// air. The file is not uploaded a second time and the video ends sent.
     func testKillBeforeCompleteIsAnsweredFinishesOnce() {
         server.set(["completeDelay": 8])
-        launchAndSignIn()
+        launchSignedIn()
         recordAndSave(for: Self.smith)
         waitUntil("the whole file reached the server", timeout: 40) { (server.state().videos.first?.goodUploads ?? 0) >= 1 }
         // The app is now waiting for the server's answer to "complete".
@@ -124,7 +130,7 @@ final class KillUITests: ZestUITestCase {
     /// and the server never has two.
     func testKillRightAfterSaveStillSendsOnce() {
         server.set(["registerDelay": 6])
-        launchAndSignIn()
+        launchSignedIn()
         openRecorder(for: Self.smith)
         recordClip()
         tap(button("SAVE"), "SAVE")
@@ -146,7 +152,7 @@ final class KillUITests: ZestUITestCase {
     /// is there at once, and a sent video is still shown as sent, with
     /// nothing sent twice.
     func testRestartKeepsSignInRouteAndSentVideos() {
-        launchAndSignIn()
+        launchSignedIn()
         recordAndSave(for: Self.smith)
         waitForHeld()
         waitForLabel(element("route-header"), "the header", contains: "Sent 2 of 5")
@@ -163,7 +169,8 @@ final class KillUITests: ZestUITestCase {
         pause(2)
 
         let after = server.state()
-        XCTAssertEqual(after.logins, 1, "No second sign-in.")
+        XCTAssertEqual(after.logins, 0, "A restart does not sign in again: the phone kept its token.")
+        XCTAssertFalse(app.textFields["contact-field"].exists, "The sign-in screen is not shown after a restart.")
         XCTAssertEqual(after.registerCalls(), before.registerCalls(), "Nothing is registered again after a restart.")
         XCTAssertEqual(theOnlyVideo().puts, ["200"], "Nothing is uploaded again after a restart.")
         XCTAssertEqual(theOnlyVideo().completes, [200])

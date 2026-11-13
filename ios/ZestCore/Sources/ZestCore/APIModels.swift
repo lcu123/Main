@@ -533,6 +533,9 @@ public enum AuditEventType: String, Codable, Equatable, Sendable {
     case storageBlock = "storage_block"
     case stopSwitched = "stop_switched"
     case permission
+    /// An upload ended with an error or was refused: the detail says why.
+    /// Not in the server's list yet (it skips types it does not know).
+    case uploadFailed = "upload_failed"
 }
 
 public struct AuditEvent: Codable, Equatable, Sendable {

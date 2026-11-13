@@ -6,8 +6,8 @@ import UserNotifications
 /// build that can run on a real phone, so it cannot be reached there.
 ///
 /// Launched with `-ZestUITest 1`, the app is the real app (real sign-in, real
-/// stores on disk, real upload manager with its real background URLSession,
-/// real navigation) with four differences, and only these four:
+/// stores on disk, the real upload manager and queue, real navigation) with
+/// these differences, and only these:
 ///
 /// 1. It talks to a test server on this Mac (`ZEST_TEST_SERVER` in the launch
 ///    environment) instead of the live one.
@@ -17,19 +17,33 @@ import UserNotifications
 /// 3. Speech-to-text does not run (the simulator's is unreliable and asks a
 ///    permission question). A test can supply the words it would have heard
 ///    with `ZEST_TEST_TRANSCRIPT`; without it the spoken key is "unknown".
-/// 4. iOS is not asked to start the app by itself when a background upload
-///    finishes. Started that way it would have no launch arguments, so it
-///    would be the ordinary app talking to the real server. A test starts
-///    the app again itself; the upload carries on in the system meanwhile.
+/// 4. Uploads go through an ordinary URLSession, not a background one. The
+///    upload manager's code is the same line for line; only the session's
+///    configuration differs. So the queue, the retries and the recovery
+///    after a kill are really tested. What is NOT tested this way is iOS
+///    carrying an upload on while the app is closed: that needs the
+///    background session (`ZEST_TEST_BACKGROUND_UPLOADS=1` turns it on for
+///    the one test that looks at it) and, to be believed, a real phone.
+/// 5. With the background session on, iOS is not asked to start the app by
+///    itself when an upload finishes. Started that way it would have no
+///    launch arguments, so it would be the ordinary app talking to the real
+///    server in the middle of a test.
+/// 6. Every upload task's start and end (with the error, if any) is posted
+///    to the test server, so a failed test's report says why.
 ///
 /// `-ZestUITestReset 1` wipes everything the app has stored first, so a test
-/// starts from a clean install. A relaunch WITHOUT it keeps everything, which
-/// is how the tests prove nothing is lost when the app is killed.
+/// starts from a clean install. With `ZEST_TEST_TOKEN` in the environment
+/// that clean install starts already signed in with that device token (the
+/// test server issued it), so only the sign-in tests have to type a number
+/// and a code. A relaunch WITHOUT the reset keeps everything, which is how
+/// the tests prove nothing is lost when the app is killed.
 enum UITestMode {
     static let argument = "-ZestUITest"
     static let resetArgument = "-ZestUITestReset"
     static let serverVariable = "ZEST_TEST_SERVER"
     static let transcriptVariable = "ZEST_TEST_TRANSCRIPT"
+    static let tokenVariable = "ZEST_TEST_TOKEN"
+    static let backgroundUploadsVariable = "ZEST_TEST_BACKGROUND_UPLOADS"
 
     static var isOn: Bool { flag(argument) }
 
@@ -47,6 +61,23 @@ enum UITestMode {
         guard isOn else { return nil }
         let raw = ProcessInfo.processInfo.environment[transcriptVariable] ?? ""
         return raw.isEmpty ? nil : raw
+    }
+
+    /// Use the real background URLSession for uploads (one test asks for it).
+    static var backgroundUploads: Bool {
+        isOn && ProcessInfo.processInfo.environment[backgroundUploadsVariable] == "1"
+    }
+
+    /// Tells the test server something worth reading in a failure report:
+    /// an upload task was made, started, or ended, and with what error.
+    static func note(_ text: String) {
+        guard isOn, let base = serverURL, let url = URL(string: "/__test/note", relativeTo: base) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["note": text])
+        request.timeoutInterval = 10
+        URLSession.shared.dataTask(with: request).resume()
     }
 
     private static func flag(_ name: String) -> Bool {
@@ -75,6 +106,12 @@ enum UITestMode {
         let center = UNUserNotificationCenter.current()
         center.removeAllPendingNotificationRequests()
         center.removeAllDeliveredNotifications()
+
+        // Start signed in, if the test handed over a token from its server.
+        let token = ProcessInfo.processInfo.environment[tokenVariable] ?? ""
+        if !token.isEmpty {
+            Keychain.set(token, for: Keychain.deviceTokenKey)
+        }
     }
 }
 #endif

@@ -242,4 +242,5 @@ Audit trail from the phone, sent in batches when there is signal.
 
 `type` is one of `record_start`, `record_stop`, `retake`, `draft_discarded`,
 `far_warning`, `override`, `two_keys_warning`, `storage_warn`,
-`storage_block`, `stop_switched`, `permission`.
+`storage_block`, `stop_switched`, `permission`, `upload_failed` (an upload
+ended with an error or a refusal; `detail` carries the status and the error).

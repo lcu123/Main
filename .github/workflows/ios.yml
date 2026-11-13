@@ -5,7 +5,8 @@ name: iOS
 #   app         real Xcode build + unit tests on an iPhone simulator
 #   screens     pictures of every screen, taken in the simulator (artifact "screens")
 #   ui-tests    end-to-end tests: the real app in the simulator against a fake
-#               server on the runner (artifacts "ui-tests-a" and "ui-tests-b")
+#               server on the runner (artifacts "ui-tests-a", "ui-tests-b";
+#               "ui-tests-c" is informational and cannot fail the run)
 #   testflight  manual only: archive and upload to App Store Connect
 
 on:
@@ -377,10 +378,15 @@ jobs:
     # this runner (ios/Scripts/fake_server.py) that the tests can tell to
     # misbehave. The app's simulator-only UI-test mode swaps in a stand-in
     # for the camera; none of that mode exists in a build for a real phone.
-    # Two jobs side by side keep each one short.
+    #
+    # Jobs "a" and "b" are the tests. Job "c" is informational: it builds the
+    # app ad-hoc signed and runs the one test that uses the real background
+    # upload session, to show what the simulator does with it. It can never
+    # turn the run red.
     name: UI tests (${{ matrix.name }})
     runs-on: macos-26
     timeout-minutes: 45
+    continue-on-error: ${{ matrix.informational }}
     strategy:
       fail-fast: false
       matrix:
@@ -388,9 +394,18 @@ jobs:
           - name: sign-in, route, record
             slug: a
             classes: SignInUITests RouteUITests RecordUITests
+            signed: false
+            informational: false
           - name: kills, bad network
             slug: b
-            classes: KillUITests NetworkUITests
+            classes: KillUITests NetworkUITests BackgroundUploadUITests
+            signed: false
+            informational: false
+          - name: background uploads, signed build, informational
+            slug: c
+            classes: BackgroundUploadUITests
+            signed: true
+            informational: true
     defaults:
       run:
         working-directory: ios
@@ -453,15 +468,37 @@ jobs:
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
           mkdir -p ui-artifacts/failures
 
+      # The fake server is plain HTTP on localhost. iOS only allows that with
+      # one key in the app's Info.plist. The project has no such exception in
+      # any configuration: it is added HERE, to this run's own copy, and
+      # nowhere else, so a build for a phone or the App Store cannot have it.
+      # (Unsigned build: added to the built app. Signed build: added to the
+      # generated Info.plist before building, so the signature covers it.)
+      - name: Let the signed test build talk plain HTTP to this Mac
+        if: ${{ matrix.signed }}
+        run: |
+          PLIST="ZestVideo/Info.plist"
+          ls -l "$PLIST"
+          /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy \
+            -c "Add :NSAppTransportSecurity dict" \
+            -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$PLIST"
+          plutil -lint "$PLIST"
+
       - name: Build the app and the UI tests
         run: |
           set -o pipefail
+          # The ordinary jobs build unsigned, like the "app" job. The
+          # informational job lets Xcode sign for the simulator (ad hoc, no
+          # team needed), which gives the app its entitlements there.
+          SIGNING="CODE_SIGNING_ALLOWED=NO"
+          if [ "${{ matrix.signed }}" = "true" ]; then SIGNING=""; fi
           xcodebuild build-for-testing \
             -project ZestVideo.xcodeproj \
             -scheme ZestVideoUITests \
             -destination "platform=iOS Simulator,id=$SIM_UDID" \
             -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
+            $SIGNING \
             -quiet 2>&1 | tee ui-artifacts/ui-build.log
 
       - name: Compile errors (summary)
@@ -470,13 +507,9 @@ jobs:
           echo "---- errors ----"
           grep -n "error:" ui-artifacts/ui-build.log | sort -u | head -200 || true
 
-      - name: Let this test build talk plain HTTP to this Mac
+      - name: Let the unsigned test build talk plain HTTP to this Mac
+        if: ${{ !matrix.signed }}
         run: |
-          # The fake server is plain HTTP on localhost. iOS only allows that
-          # with one key in the app's Info.plist. It is added HERE, to the
-          # copy of the app built for this test run, and nowhere else: the
-          # project itself has no such exception in any configuration, so a
-          # build for a phone or the App Store cannot have it.
           PLIST="build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app/Info.plist"
           ls -l "$PLIST"
           /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$PLIST" 2>/dev/null || true
@@ -484,12 +517,15 @@ jobs:
             -c "Add :NSAppTransportSecurity dict" \
             -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$PLIST"
           plutil -lint "$PLIST"
-          /usr/libexec/PlistBuddy -c "Print :NSAppTransportSecurity" "$PLIST"
 
       - name: Boot the simulator and set it up
         run: |
           APP="build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app"
           BUNDLE=com.zestlawnpest.video
+          /usr/libexec/PlistBuddy -c "Print :NSAppTransportSecurity" "$APP/Info.plist"
+          # How the app is signed, and what it is entitled to (for the record).
+          codesign -dv "$APP" 2>&1 | grep -E "Signature|Identifier|flags" || echo "the app is not signed"
+          codesign -d --entitlements - "$APP" 2>/dev/null | head -20 || true
           # Typing in the tests needs the on-screen keyboard.
           defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false || true
           xcrun simctl boot "$SIM_UDID" || true
@@ -516,6 +552,7 @@ jobs:
           done
           curl -fsS http://127.0.0.1:8765/__test/ping
           echo
+          sleep 1
           head -5 ui-artifacts/server.log
 
       - name: Run the UI tests
@@ -528,17 +565,19 @@ jobs:
           # Variables that start with TEST_RUNNER_ reach the tests without the
           # prefix: this is where a failing test saves its picture and notes.
           export TEST_RUNNER_ZEST_FAILURE_DIR="$PWD/ui-artifacts/failures"
+          SIGNING="CODE_SIGNING_ALLOWED=NO"
+          if [ "${{ matrix.signed }}" = "true" ]; then SIGNING=""; fi
           xcodebuild test-without-building \
             -project ZestVideo.xcodeproj \
             -scheme ZestVideoUITests \
             -destination "platform=iOS Simulator,id=$SIM_UDID" \
             -derivedDataPath build/DerivedData \
-            -resultBundlePath ui-artifacts/UITests.xcresult \
+            -resultBundlePath "$RUNNER_TEMP/UITests.xcresult" \
             -parallel-testing-enabled NO \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 300 \
             -maximum-test-execution-time-allowance 300 \
-            CODE_SIGNING_ALLOWED=NO \
+            $SIGNING \
             $ONLY 2>&1 | tee ui-artifacts/ui-test.log \
             | grep -E "^Test Case|^Test Suite '(All|Selected)|######## (FAILED|On screen)|^NOTE |error:|Executed [0-9]+ tests|\*\* TEST" || true
           grep -q "\*\* TEST EXECUTE SUCCEEDED \*\*" ui-artifacts/ui-test.log
@@ -547,12 +586,14 @@ jobs:
         if: failure()
         run: |
           # One block per failed test: its name, the assertion, what was on
-          # the screen, and every request the fake server got during it.
+          # the screen, every request the fake server got during it, and what
+          # the app said about its uploads.
           echo "==================== FAILED TESTS ===================="
           grep -E "^Test Case .* failed" ui-artifacts/ui-test.log || echo "(no test reported a failure: see the last lines of the log below)"
           found=0
           for note in ui-artifacts/failures/*.txt; do
             [ -f "$note" ] || continue
+            case "$note" in *.info.txt) continue ;; esac
             found=1
             echo
             echo "------------------------------------------------------------"
@@ -576,17 +617,13 @@ jobs:
             cp ~/Library/Logs/DiagnosticReports/"$report" ui-artifacts/ || true
           done
 
-      - name: Result summary and failure pictures
+      - name: Result summary
         if: always()
         run: |
-          RESULT="ui-artifacts/UITests.xcresult"
+          RESULT="$RUNNER_TEMP/UITests.xcresult"
           if [ -d "$RESULT" ]; then
             xcrun xcresulttool get test-results summary --path "$RESULT" > ui-artifacts/summary.json 2>/dev/null \
               || echo "no summary (this Xcode's xcresulttool does not have that command)"
-            xcrun xcresulttool get test-results tests --path "$RESULT" > ui-artifacts/tests.json 2>/dev/null || true
-            # Pictures and notes the failed tests attached (kept only for failures).
-            xcrun xcresulttool export attachments --path "$RESULT" --output-path ui-artifacts/attachments 2>/dev/null \
-              || echo "no attachments exported"
             python3 - ui-artifacts/summary.json <<'PY' || true
           import json, sys
           try:
@@ -598,13 +635,24 @@ jobs:
           for failure in summary.get("testFailures", []):
               print("FAILED %s: %s" % (failure.get("testName"), failure.get("failureText")))
           PY
-            # The whole bundle is big; keep it only when something failed.
-            if grep -q "\*\* TEST EXECUTE SUCCEEDED \*\*" ui-artifacts/ui-test.log 2>/dev/null; then
-              rm -rf "$RESULT"
-            else
-              ditto -c -k --keepParent "$RESULT" ui-artifacts/UITests.xcresult.zip && rm -rf "$RESULT"
-            fi
           fi
+          # What the one background-session test found (it never fails the run).
+          for note in ui-artifacts/failures/*.info.txt; do
+            [ -f "$note" ] || continue
+            echo
+            echo "==================== $(basename "$note" .info.txt) ===================="
+            cat "$note"
+            echo
+          done
+          grep -E "^NOTE " ui-artifacts/ui-test.log || true
+          # Small artifact: the result bundle itself (with its screen
+          # recordings) is not uploaded, and the failure pictures are shrunk.
+          for picture in ui-artifacts/failures/*.png; do
+            [ -f "$picture" ] || continue
+            sips -Z 1400 -s format jpeg -s formatOptions 55 "$picture" --out "${picture%.png}.jpg" >/dev/null 2>&1 \
+              && rm -f "$picture"
+          done
+          du -sh ui-artifacts 2>/dev/null || true
           ls -l ui-artifacts ui-artifacts/failures 2>/dev/null || true
 
       - name: Upload the logs, the summary and the failure pictures

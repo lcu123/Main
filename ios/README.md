@@ -100,9 +100,9 @@ Xcode (⌘U) or in CI.
 ## UI tests
 
 `ZestVideoUITests/` drives the real app in the simulator with XCUITest: real
-sign-in, real storage on disk, the real upload queue with its real background
-`URLSession`, real screens. Every test starts from a clean app and a clean
-server, and checks **both** what is on the screen and what the server got.
+sign-in, real storage on disk, the real upload queue, real screens. Every
+test starts from a clean app and a clean server, and checks **both** what is
+on the screen and what the server got.
 
 **The server** is `Scripts/fake_server.py` (standard-library Python). It
 speaks `docs/video/API.md`, keeps everything in memory, and can be told to
@@ -116,7 +116,7 @@ python3 ios/Scripts/fake_server.py --self-test
 
 **The app's UI-test mode** (`App/UITestMode.swift`) is simulator-only, like
 screenshot mode: the whole file is behind `#if targetEnvironment(simulator)`.
-Launched with `-ZestUITest 1`, the app is the real app with four differences:
+Launched with `-ZestUITest 1`, the app is the real app with these differences:
 
 1. It talks to the test server (`ZEST_TEST_SERVER` in the launch environment).
 2. The camera is a stand-in recorder (the simulator has none). It writes a
@@ -125,23 +125,32 @@ Launched with `-ZestUITest 1`, the app is the real app with four differences:
    and the upload are all the real code.
 3. Speech-to-text does not run; a test supplies the words it "heard" with
    `ZEST_TEST_TRANSCRIPT`.
-4. iOS is not asked to start the app by itself when a background upload
-   finishes (it would start without the launch arguments, as the ordinary app
-   pointed at the real server). The test starts it again; the upload carries
-   on in the system meanwhile.
+4. Uploads go through an ordinary `URLSession`, not a background one. The
+   upload manager is the same code line for line; only the session's
+   configuration differs. `ZEST_TEST_BACKGROUND_UPLOADS=1` turns the real
+   background session on (one test uses it, see below), and then iOS is not
+   asked to start the app by itself when an upload finishes (it would start
+   without the launch arguments, as the ordinary app pointed at the real
+   server).
+5. Every upload task's start and end, with the system's error if there was
+   one, is posted to the test server, so a failed test's report says why.
 
-`-ZestUITestReset 1` wipes what the app has stored. A test that kills the app
-starts it again *without* that flag: what the app kept is what is being tested.
+`-ZestUITestReset 1` wipes what the app has stored. With `ZEST_TEST_TOKEN` in
+the environment that clean install starts already signed in (the fake server
+issues the token when a test resets it), so only the sign-in tests type a
+number and a code. A test that kills the app starts it again *without* the
+reset: what the app kept is what is being tested.
 
-**What is covered** (38 tests):
+**What is covered** (41 tests):
 
 | Class | What it proves |
 | --- | --- |
-| `SignInUITests` | wrong and right code, email instead and back, a new code, both ways back, Terms and Privacy, sign out with its question |
-| `RouteUITests` | header counts, nearest stop first, both tabs, loading state, locked stop, WRONG STOP, the far-away warning |
+| `SignInUITests` | the number and the code typed one key at a time arrive whole and are sent once; a country code in front; too short and too long; wrong and right code; the loading line right after sign-in; email instead and back; a new code; both ways back; Terms and Privacy; sign out with its question |
+| `RouteUITests` | header counts, nearest stop first, both tabs, locked stop, WRONG STOP, the far-away warning |
 | `RecordUITests` | record → SAVE → one register, the whole file once, one complete; FLIP, BACK, ending early; RECORD AGAIN; the recommend switch; the two-keys warning both ways; change and delete inside ten minutes; not-on-my-list; double taps |
-| `KillUITests` | the app killed mid-recording, on review, mid-upload, before "complete" is answered, and right after SAVE: the video is never lost and never sent twice |
+| `KillUITests` | the app killed mid-recording, on review, mid-upload, before "complete" is answered, and right after SAVE: after it is started again there is exactly one video on the server |
 | `NetworkUITests` | 500s, no server, an expired upload address, "not uploaded", signed out by the server, update required, a stop locked by the server, starting with no signal |
+| `BackgroundUploadUITests` | informational: what the simulator does with the real background upload session. Skipped, with the recorded error, if the upload never arrives |
 
 Timing a tap to the tenth of a second is not something a UI test does well,
 so the "ring only ends the clip after three seconds" rule and "a kill at any
@@ -175,14 +184,23 @@ The UI tests have their own scheme, so the ordinary build and unit tests
 (scheme `ZestVideo`) never need the server.
 
 **When a test fails** it prints one block: the test's name, the assertion,
-what was on the screen, and every request the server got during that test.
-It also saves a picture of the screen. In CI the block is in the step "What
-failed, and what the server saw", and the pictures, the logs and the result
-summary are in the `ui-tests-a` / `ui-tests-b` artifacts.
+what was on the screen, every request the server got during that test, and
+what the app said about its uploads. It also saves a picture of the screen.
+In CI the block is in the step "What failed, and what the server saw", and
+the pictures, the logs and the result summary are in the `ui-tests-a` /
+`ui-tests-b` artifacts (a few MB: no screen recordings, no result bundle).
+
+CI job `c` is informational. It builds the app ad-hoc signed and runs only
+`BackgroundUploadUITests`, to show whether the simulator's background
+transfer service works for a signed build. It cannot turn the run red.
 
 **What a simulator cannot show**, and so is not covered here:
 
 - the real camera and encoder (the clip is a stand-in file);
+- an upload carrying on while the app is closed. The tests upload through
+  an ordinary session, which dies with the app. What they do prove is that
+  a kill at any point ends, once the app is started again, with exactly one
+  video on the server;
 - iOS suspending the app during a background upload;
 - Low Power Mode and Low Data Mode;
 - a real force-quit by the user (swiping the app away), which iOS treats
@@ -201,7 +219,7 @@ Those need a real phone.
 | `core` | Linux | `swift test` for ZestCore |
 | `app` | macOS | generates the project, builds for an iPhone simulator, runs the unit tests |
 | `screens` | macOS | takes a picture of every screen in the simulator; download the `screens` artifact |
-| `ui-tests` | macOS, two jobs side by side | starts the fake server, runs the UI tests in the simulator; on a failure, the log names the test, the assertion and what the server saw |
+| `ui-tests` | macOS, jobs `a` and `b` side by side (plus `c`, informational) | starts the fake server, runs the UI tests in the simulator; on a failure, the log names the test, the assertion and what the server saw |
 | `testflight` | macOS, manual | archives and uploads to App Store Connect |
 
 ## Pictures of every screen

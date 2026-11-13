@@ -125,5 +125,8 @@ schemes:
       config: Debug
     test:
       config: Debug
+      # No automatic screen recordings: they made the results hundreds of MB.
+      # A failing test saves its own picture and notes (ZestUITestCase).
+      captureScreenshotsAutomatically: false
       targets:
         - ZestVideoUITests

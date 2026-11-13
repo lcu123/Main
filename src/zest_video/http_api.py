@@ -17,7 +17,7 @@ from .route import today_payload
 MAX_BODY = 64 * 1024
 EVENT_TYPES = {
     "record_start", "record_stop", "retake", "draft_discarded", "far_warning", "override",
-    "two_keys_warning", "storage_warn", "storage_block", "stop_switched", "permission",
+    "two_keys_warning", "storage_warn", "storage_block", "stop_switched", "permission", "upload_failed",
 }
 
 

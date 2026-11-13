@@ -37,7 +37,10 @@ class ZestUITestCase: XCTestCase {
     static let failureFolder = ProcessInfo.processInfo.environment["ZEST_FAILURE_DIR"] ?? "/tmp/zest-ui-failures"
 
     private var transcript: String?
+    private var backgroundUploads = false
     private var reported = false
+    /// A device token the fake server signed in when it was reset.
+    private var issuedToken: String?
 
     /// The phone asks each system question once per simulator: location at
     /// the first sign-in, notifications after the first saved video. The
@@ -61,7 +64,8 @@ class ZestUITestCase: XCTestCase {
             "The fake server is not answering on \(server.baseURL). Start it first: python3 ios/Scripts/fake_server.py"
         )
         // Three-second clips keep the tests quick.
-        server.reset(test: shortName, config: ["maxSeconds": 3])
+        issuedToken = server.reset(test: shortName, config: ["maxSeconds": 3])
+        XCTAssertNotNil(issuedToken, "The fake server did not hand over a token when it was reset.")
         setLocation(Self.near)
         // A system question ("Allow notifications?") must never hang a test.
         addUIInterruptionMonitor(withDescription: "A system question") { alert in
@@ -108,16 +112,34 @@ class ZestUITestCase: XCTestCase {
         super.record(issue)
     }
 
+    /// Keeps a few words with the run's results, whether or not anything failed.
+    func saveNote(named name: String, _ text: String) {
+        let folder = URL(fileURLWithPath: Self.failureFolder, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? Data(text.utf8).write(to: folder.appendingPathComponent(name + ".txt"))
+    }
+
     // MARK: Launching, killing, backgrounding
 
     /// Launches the app in UI-test mode.
     /// - Parameters:
     ///   - reset: wipe everything the app has stored first (a clean install).
     ///     Without it the app starts with whatever it kept.
+    ///   - signedIn: with `reset`, start already signed in, with the token
+    ///     the fake server issued. Only the sign-in tests type a number and
+    ///     a code; one slow keystroke there cannot fail every other test.
     ///   - transcript: the words the speech check "hears" in every clip.
     ///     `nil` means it hears nothing (the spoken key is "unknown").
-    func launch(reset: Bool = true, transcript: String? = ZestUITestCase.smithWords) {
-        if reset { self.transcript = transcript }
+    ///   - backgroundUploads: use the real background URLSession for uploads
+    ///     instead of the ordinary one the tests use by default.
+    func launch(
+        reset: Bool = true, signedIn: Bool = false, transcript: String? = ZestUITestCase.smithWords,
+        backgroundUploads: Bool = false
+    ) {
+        if reset {
+            self.transcript = transcript
+            self.backgroundUploads = backgroundUploads
+        }
         var arguments = ["-ZestUITest", "1"]
         if reset {
             arguments += ["-ZestUITestReset", "1"]
@@ -126,6 +148,14 @@ class ZestUITestCase: XCTestCase {
         var environment = ["ZEST_TEST_SERVER": server.baseURL]
         if let words = self.transcript {
             environment["ZEST_TEST_TRANSCRIPT"] = words
+        }
+        if self.backgroundUploads {
+            environment["ZEST_TEST_BACKGROUND_UPLOADS"] = "1"
+        }
+        // The token is only ever handed over together with a reset: a
+        // restart must show what the app itself kept.
+        if reset, signedIn, let token = issuedToken {
+            environment["ZEST_TEST_TOKEN"] = token
         }
         app.launchEnvironment = environment
         app.launch()
@@ -378,15 +408,17 @@ class ZestUITestCase: XCTestCase {
 
     // MARK: The steps the tests share
 
-    /// A clean app, signed in, on My Route.
-    func launchAndSignIn(
-        transcript: String? = ZestUITestCase.smithWords, file: StaticString = #filePath, line: UInt = #line
+    /// A clean app, already signed in (no typing), on My Route.
+    func launchSignedIn(
+        transcript: String? = ZestUITestCase.smithWords, backgroundUploads: Bool = false,
+        file: StaticString = #filePath, line: UInt = #line
     ) {
-        launch(transcript: transcript)
-        signIn(file: file, line: line)
+        launch(signedIn: true, transcript: transcript, backgroundUploads: backgroundUploads)
+        waitForRoute(file: file, line: line)
+        XCTAssertEqual(server.state().logins, 0, "Started signed in: nothing was typed.", file: file, line: line)
     }
 
-    /// Signs in with the mobile number and the right code, to My Route.
+    /// Signs in through the screen: the mobile number, then the right code.
     func signIn(file: StaticString = #filePath, line: UInt = #line) {
         typeMobileAndSend(file: file, line: line)
         typeCode(Self.code, file: file, line: line)
@@ -394,16 +426,30 @@ class ZestUITestCase: XCTestCase {
     }
 
     /// Types the mobile number (without sending it).
-    func typeMobile(file: StaticString = #filePath, line: UInt = #line) {
+    /// - Parameters:
+    ///   - text: what to type; the ten digits unless a test says otherwise.
+    ///   - oneKeyAtATime: send each character as its own event, with no
+    ///     pause between them, the way a fast typist's keys arrive.
+    func typeMobile(
+        _ text: String = ZestUITestCase.mobile, oneKeyAtATime: Bool = false,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
         let field = app.textFields["contact-field"]
         waitFor(field, "the mobile number field", timeout: 60, file: file, line: line)
         waitUntilTappable(field)
         field.tap()
-        field.typeText(Self.mobile)
+        if oneKeyAtATime {
+            for character in text {
+                field.typeText(String(character))
+            }
+        } else {
+            field.typeText(text)
+        }
+        // The field holds exactly what was typed: nothing lost, nothing moved.
         let typed = (field.value as? String) ?? ""
         XCTAssertEqual(
-            typed.filter { $0.isNumber }, Self.mobile,
-            "The mobile number field holds \"\(typed)\" after typing \(Self.mobile).", file: file, line: line
+            typed, text,
+            "The mobile number field holds \"\(typed)\" after typing \"\(text)\".", file: file, line: line
         )
     }
 
@@ -413,12 +459,25 @@ class ZestUITestCase: XCTestCase {
         waitForTitle("Type your code", file: file, line: line)
     }
 
-    func typeCode(_ digits: String, file: StaticString = #filePath, line: UInt = #line) {
+    func typeCode(
+        _ digits: String, oneKeyAtATime: Bool = false, file: StaticString = #filePath, line: UInt = #line
+    ) {
         let field = app.textFields["code-field"]
         waitFor(field, "the code boxes", file: file, line: line)
         waitUntilTappable(field)
         field.tap()
-        field.typeText(digits)
+        if oneKeyAtATime {
+            for character in digits {
+                field.typeText(String(character))
+            }
+        } else {
+            field.typeText(digits)
+        }
+    }
+
+    /// How many times the app asked the server to check a code.
+    var verifyCalls: Int {
+        server.state().calls("POST", exactly: "/v1/auth/verify")
     }
 
     /// My Route is showing, with its stops loaded.

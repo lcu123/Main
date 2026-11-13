@@ -4,6 +4,12 @@ import ZestCore
 /// One-time setup. Step one: the tech's mobile number (a texted code is the
 /// way in; email is there for anyone who needs it). Step two: six big boxes
 /// for the code. No password anywhere.
+///
+/// Neither text field is ever rewritten while it is being edited. Rewriting a
+/// field as keys arrive loses keystrokes (fast typing, a paste, the phone's
+/// own number suggestion), and a tech with a digit missing never gets a code.
+/// The fields hold exactly what was put in; the grouped number under the
+/// field and the six boxes are drawn from it, and it is read once, when sent.
 struct LoginView: View {
     @EnvironmentObject private var app: AppModel
 
@@ -20,9 +26,15 @@ struct LoginView: View {
 
     @State private var step: Step
     @State private var mode: Mode = .mobile
-    /// What is in the field: a grouped number "(916) 555-0100", or an email.
+    /// The field, exactly as typed: a mobile number in any form, or an email.
     @State private var contact: String
+    /// Where the code was sent: ten plain digits, or the email. The code is
+    /// checked against this, whatever the field is changed to afterwards.
+    @State private var sentTo: String
+    /// The code field, exactly as typed, pasted or filled in by the phone.
     @State private var code: String
+    /// The six digits last sent to the server, so one code goes once.
+    @State private var lastSubmittedCode: String?
     @State private var busy = false
     @State private var problem: String?
     @FocusState private var contactFocused: Bool
@@ -32,8 +44,10 @@ struct LoginView: View {
     /// The defaults are the real flow. Other values only come from `ScreenSeeds`.
     /// - Parameter contact: ten digits of a mobile number to start with.
     init(step: Step = .contact, contact: String = "", code: String = "", autoFocus: Bool = true) {
+        let digits = PhoneFormat.digits(from: contact)
         _step = State(initialValue: step)
-        _contact = State(initialValue: PhoneFormat.display(PhoneFormat.digits(from: contact)))
+        _contact = State(initialValue: PhoneFormat.display(digits))
+        _sentTo = State(initialValue: digits)
         _code = State(initialValue: code)
         self.autoFocus = autoFocus
     }
@@ -45,12 +59,12 @@ struct LoginView: View {
         }
     }
 
-    /// What goes to the server: ten plain digits, or the email as typed.
-    private var contactValue: String {
-        switch mode {
-        case .mobile: return PhoneFormat.digits(from: contact)
-        case .email: return contact.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+    /// The number grouped for reading back: "(916) 555-0100". Shown under
+    /// the field when it says more than the field itself does.
+    private var numberPreview: String {
+        guard mode == .mobile else { return "" }
+        let grouped = PhoneFormat.preview(contact)
+        return grouped == contact ? "" : grouped
     }
 
     // MARK: Step one
@@ -59,6 +73,16 @@ struct LoginView: View {
         Screen(bar: "Sign In", title: "Zest Video") {
             BodyText(mode == .mobile ? "Type your mobile number." : "Type your email.", bold: true)
             field
+            if !numberPreview.isEmpty {
+                // The field is left exactly as typed; this line reads it back.
+                Text(numberPreview)
+                    .zestFont(.rowName)
+                    .foregroundColor(Theme.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .accessibilityLabel("Your number: \(numberPreview)")
+                    .accessibilityIdentifier("contact-preview")
+            }
             BodyText(mode == .mobile ? "We will text you a 6-digit code." : "We will email you a 6-digit code.", color: Theme.softInk)
             if let problem {
                 Banner(text: problem, tone: .attention)
@@ -118,14 +142,7 @@ struct LoginView: View {
         )
         .contentShape(Rectangle())
         .onTapGesture { contactFocused = true }
-        .onChange(of: contact) { _, newValue in
-            // Group the digits as they are typed: (916) 555-0100.
-            guard mode == .mobile else { return }
-            let grouped = PhoneFormat.display(PhoneFormat.digits(from: newValue))
-            if grouped != newValue {
-                contact = grouped
-            }
-        }
+        // No `.onChange` that rewrites `contact`: see the note at the top.
     }
 
     private func flipMode() {
@@ -139,18 +156,31 @@ struct LoginView: View {
 
     private func sendCode() {
         guard !busy else { return }
-        let value = contactValue
+        // The field is read here, once: "+1 (916) 555-0100", "1-916-555-0100"
+        // and "916.555.0100" all go to the server as 9165550100.
+        let value: String
         switch mode {
         case .mobile:
-            guard PhoneFormat.isComplete(value) else {
-                problem = value.isEmpty ? "Type your mobile number first." : "Type all 10 digits of your mobile number."
+            switch PhoneFormat.check(contact) {
+            case .ok(let digits):
+                value = digits
+            case .empty:
+                problem = "Type your mobile number first."
+                return
+            case .tooShort:
+                problem = "Type all 10 digits of your mobile number."
+                return
+            case .tooLong:
+                problem = "That is more than 10 digits. Please check your mobile number."
                 return
             }
         case .email:
-            guard value.contains("@"), value.contains(".") else {
-                problem = value.isEmpty ? "Type your email first." : "That does not look like an email. Please check it."
+            let typed = contact.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard typed.contains("@"), typed.contains(".") else {
+                problem = typed.isEmpty ? "Type your email first." : "That does not look like an email. Please check it."
                 return
             }
+            value = typed
         }
         busy = true
         problem = nil
@@ -159,8 +189,12 @@ struct LoginView: View {
             busy = false
             if let failure {
                 problem = failure
+                // A whole code typed while this was in the air still goes.
+                if step == .code { codeChanged(code) }
             } else {
+                sentTo = value
                 code = ""
+                lastSubmittedCode = nil
                 step = .code
             }
         }
@@ -220,14 +254,7 @@ struct LoginView: View {
                 .accessibilityLabel("6-digit code")
                 .accessibilityIdentifier("code-field")
                 .onChange(of: code) { _, newValue in
-                    let digits = String(newValue.filter { $0.isASCII && $0.isNumber }.prefix(6))
-                    if digits != newValue {
-                        code = digits
-                        return
-                    }
-                    if digits.count == 6 {
-                        submitCode(digits)
-                    }
+                    codeChanged(newValue)
                 }
             HStack(spacing: spacing) {
                 ForEach(0..<6, id: \.self) { index in
@@ -241,8 +268,16 @@ struct LoginView: View {
         .onTapGesture { codeFocused = true }
     }
 
+    /// The field changed: typed, pasted, or filled in all at once. Its text
+    /// is not touched; a whole code is sent, once.
+    private func codeChanged(_ text: String) {
+        guard !busy, let digits = CodeEntry.shouldSubmit(text: text, lastSubmitted: lastSubmittedCode) else { return }
+        submitCode(digits)
+    }
+
     private func codeBox(_ index: Int, height: CGFloat) -> some View {
-        let digits = Array(code)
+        // The first six digits of whatever is in the field.
+        let digits = Array(CodeEntry.digits(from: code))
         let filled = index < digits.count
         let isNext = index == digits.count
         return Text(filled ? String(digits[index]) : "")
@@ -265,13 +300,17 @@ struct LoginView: View {
         guard !busy else { return }
         busy = true
         problem = nil
-        let value = contactValue
+        lastSubmittedCode = digits
+        let value = sentTo
         Task {
             let failure = await app.verify(contact: value, code: digits)
             busy = false
             if let failure {
                 problem = failure
+                // Start the next try from empty boxes. The check is over, so
+                // no key is in the air to be lost.
                 code = ""
+                lastSubmittedCode = nil
                 codeFocused = true
             }
         }

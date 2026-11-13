@@ -331,6 +331,7 @@ final class AppModel: ObservableObject {
         uploads.onUpdateRequired = { [weak self] in self?.route = .updateRequired }
         uploads.onNotice = { [weak self] text in self?.notice = text }
         uploads.onChange = { [weak self] in self?.queueChanged() }
+        uploads.onUploadProblem = { [weak self] id, detail in self?.uploadProblem(videoID: id, detail: detail) }
         location.onLeave = { [weak self] customerId in self?.leftStop(customerId: customerId) }
 
         route = signedIn ? .today : .login
@@ -395,6 +396,12 @@ final class AppModel: ObservableObject {
             names.insert("small-" + pending.videoFileName)
         }
         return names
+    }
+
+    /// An upload ended with an error or was refused. Kept in the audit
+    /// trail, so "why did this video not go?" has an answer afterwards.
+    private func uploadProblem(videoID: String, detail: [String: String]) {
+        events.log(.uploadFailed, videoId: videoID, customerId: queue.item(videoID)?.customerId, detail: detail)
     }
 
     /// A video reached the server or left the queue.

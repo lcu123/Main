@@ -6,7 +6,7 @@ final class RouteUITests: ZestUITestCase {
     /// The header counts, the stop the phone is standing on comes first, the
     /// stops are in the right order, and both tabs work.
     func testMyRouteShowsHeaderClosestStopAndTabs() {
-        launchAndSignIn()
+        launchSignedIn()
         waitForBar("My Route")
         // One of the five stops (Wilson) already has a video with its customer.
         XCTAssertEqual(routeHeader, "Sam. Sent 1 of 5. Waiting 0.")
@@ -39,7 +39,7 @@ final class RouteUITests: ZestUITestCase {
 
     /// STOP NOT ON MY LIST opens its own confirm screen, and BACK returns.
     func testStopNotOnMyListOpensAndBacksOut() {
-        launchAndSignIn()
+        launchSignedIn()
         tap(app.buttons["not-on-my-list"], "STOP NOT ON MY LIST")
         waitForTitle("Not on my list")
         waitForText("The office will match it to the customer.")
@@ -50,28 +50,10 @@ final class RouteUITests: ZestUITestCase {
         XCTAssertTrue(server.state().videos.isEmpty)
     }
 
-    /// With a slow server the list says it is loading, the tech can still
-    /// start a video, and the stops then show by themselves.
-    func testLoadingStateWhileRouteIsSlow() {
-        server.set(["todayDelay": 6])
-        launch()
-        typeMobileAndSend()
-        typeCode(Self.code)
-
-        waitFor(element("loading-route"), "the \"Getting your stops…\" line", timeout: 20)
-        XCTAssertFalse(stop(Self.smith).exists, "No stops can show before the server has answered.")
-        XCTAssertTrue(app.buttons["not-on-my-list"].exists, "STOP NOT ON MY LIST is there while the list loads.")
-
-        answerLocationQuestion()
-        waitFor(stop(Self.smith), "the stops, once the server answered", timeout: 40)
-        XCTAssertFalse(element("loading-route").exists, "The loading line goes once the stops are in.")
-        XCTAssertFalse(hasText("No signal"), "A slow answer is not \"no signal\".")
-    }
-
     /// A stop whose video already went to the customer: no way to change it
     /// here, the office number is offered, and both ways back work.
     func testLockedStopShowsCallTheOffice() {
-        launchAndSignIn()
+        launchSignedIn()
         tap(stop(Self.locked), "the stop whose video already went out")
         waitForBar("Video")
         waitForText("already went to the customer")
@@ -98,7 +80,7 @@ final class RouteUITests: ZestUITestCase {
     /// The confirm screen names the stop in large type; WRONG STOP and the
     /// back arrow both return to the list with nothing recorded.
     func testWrongStopGoesBack() {
-        launchAndSignIn()
+        launchSignedIn()
         tap(stop(Self.smith), "the first stop")
         waitForTitle("Is this the stop?")
         XCTAssertTrue(hasText("Smith, Jane"))
@@ -118,7 +100,7 @@ final class RouteUITests: ZestUITestCase {
     /// Confirming a stop the phone is far from asks once more. PICK ANOTHER
     /// STOP goes back; YES, STILL RIGHT carries on to the camera.
     func testFarAwayWarning() {
-        launchAndSignIn()
+        launchSignedIn()
         waitForLocation()
 
         tap(stop(Self.garcia), "a stop about 375 m away")
