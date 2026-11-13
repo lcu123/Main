@@ -855,6 +855,18 @@ async def test_the_demo_account_works_end_to_end_and_touches_nothing_real(env: E
     assert wrong.status_code == 401
 
 
+async def test_the_demo_account_can_be_a_made_up_mobile_number_and_never_texts_anyone(tmp_path) -> None:
+    env = await make_env(tmp_path, demo_contact="+1 (916) 555-0142")
+    try:
+        r = await env.http.post("/v1/auth/request-code", json={"contact": "916-555-0142"})
+        assert r.status_code == 200 and env.texter.sent == [] and env.mailer.sent == []
+        r = await env.http.post("/v1/auth/verify", json={"contact": "9165550142", "code": DEMO_CODE})
+        assert r.status_code == 200 and r.json()["tech"]["demo"] is True
+    finally:
+        await env.http.aclose()
+        await env.ctx.engine.dispose()
+
+
 async def test_the_demo_account_does_not_exist_unless_configured(tmp_path) -> None:
     env = await make_env(tmp_path, demo_contact="", demo_code="")
     try:

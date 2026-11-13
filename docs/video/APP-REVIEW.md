@@ -81,9 +81,9 @@ These are the same six the app's own privacy manifest declares
 > company, to record a short video after each service visit. Accounts are
 > issued by the employer; there is no sign-up in the app.
 >
-> DEMO SIGN-IN: on the first screen tap "USE EMAIL INSTEAD", enter
+> DEMO SIGN-IN: on the first screen enter the mobile number
 > [VIDEO_DEMO_CONTACT], tap SEND MY CODE, then enter the code
-> [VIDEO_DEMO_CODE]. No email is sent for this account; the code is fixed.
+> [VIDEO_DEMO_CODE]. No text is sent for this account; the code is fixed.
 >
 > The demo account shows three sample stops. Tap a stop, tap THIS IS IT, tap
 > the red button and record up to 15 seconds, then tap SAVE. Because the demo

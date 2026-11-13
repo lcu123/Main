@@ -82,7 +82,11 @@ async def _find_tech(ctx: Ctx, kind: str, value: str) -> Any | None:
 
 
 def _is_demo(ctx: Ctx, value: str) -> bool:
-    return ctx.cfg.demo_enabled and value == ctx.cfg.demo_contact
+    """The App Review account. Its contact may be a made-up mobile number (so the reviewer
+    walks the same text-message path a tech does) or an email."""
+    if not ctx.cfg.demo_enabled:
+        return False
+    return value == security.normalize_contact(ctx.cfg.demo_contact)[1]
 
 
 async def _new_code(ctx: Ctx, purpose: str, subject: str, issued_by: str | None = None) -> str:
