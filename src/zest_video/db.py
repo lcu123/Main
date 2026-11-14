@@ -258,6 +258,22 @@ email_optouts = sa.Table(
 )
 
 
+async def insert_once(conn: Any, table: sa.Table, values: dict[str, Any]) -> bool:
+    """Insert a row unless one with the same unique key is already there. True when this
+    call put it in.
+
+    Catching the database's complaint about a second row would do for one insert, but on
+    Postgres that complaint spoils the whole save it happens in. This way the save goes
+    on, so a record and what follows from it (a flag, an outbox row) can be written in one
+    step, and two servers running side by side at a deploy cannot trip each other up."""
+    if conn.dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert
+    result = await conn.execute(insert(table).values(**values).on_conflict_do_nothing())
+    return bool(result.rowcount)
+
+
 def make_engine(url: str) -> AsyncEngine:
     if url.startswith("sqlite"):
         kwargs: dict[str, Any] = {"connect_args": {"timeout": 30}}

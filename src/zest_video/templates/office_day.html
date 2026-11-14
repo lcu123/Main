@@ -6,6 +6,18 @@
   {% if video.state != "awaiting_upload" and not video.object_deleted %}
   <a class="btn ghost" href="/office/video/{{ video.id }}" target="_blank" rel="noopener">Watch</a>
   {% endif %}
+  {% if video.state == "no_email" and video.email_skip in held_back %}
+  <form class="inline" method="post" action="/office/video/{{ video.id }}/send">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}">
+    {# With customer emails off nothing can be sent: the button keeps the video and files its link. #}
+    <button type="submit">{{ "Keep it" if email_mode == "off" else "Send it anyway" }}</button>
+  </form>
+  {% if video.email_skip == "overdue" %}
+  {# After a backup was put back the server cannot know that this one was already emailed. #}
+  <div class="muted">Its email was hours late. If a backup was put back, the customer may already have it:
+    look for the video note on the customer's account in FieldRoutes before you press {{ "Keep it" if email_mode == "off" else "Send it anyway" }}.</div>
+  {% endif %}
+  {% endif %}
   {% if video.state != "pulled" %}
   <details class="act">
     <summary>Pull</summary>

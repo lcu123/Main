@@ -104,3 +104,28 @@ jobs:
           echo "video server never became healthy"
           docker logs zest-video-ci
           exit 1
+
+      - name: The video server refuses to start on Railway with no database and no bucket
+        run: |
+          # One of Railway's own variables, and nothing else. A server that came up like this
+          # would keep its records in a file and its videos in memory, and lose both at the
+          # next restart. It must exit with an error and say why in plain words.
+          set +e
+          out=$(timeout 60 docker run --rm --name zest-video-refused \
+            -e PORT=8080 \
+            -e FR_AUTH_KEY=ci -e FR_AUTH_TOKEN=ci -e FR_SUBDOMAIN=ci \
+            -e RAILWAY_ENVIRONMENT_ID=test \
+            fr-mcp:ci zest-video 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -eq 0 ] || [ "$code" -eq 124 ]; then
+            echo "the video server started (or was still running after a minute): it must refuse"
+            docker rm -f zest-video-refused >/dev/null 2>&1 || true
+            exit 1
+          fi
+          if ! echo "$out" | grep -q "NOT starting"; then
+            echo "it stopped with exit code $code, but did not say 'NOT starting'"
+            exit 1
+          fi
+          echo "refused to start, exit code $code"

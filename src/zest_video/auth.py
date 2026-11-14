@@ -53,10 +53,10 @@ async def sync_techs(ctx: Ctx) -> int:
             values = dict(
                 fname=t["fname"], lname=t["lname"], email=t["email"], phone=t["phone"], active=True, synced_at=now
             )
-            if t["id"] in known:
+            # `insert_once`: two servers run side by side for a moment at a deploy, and both
+            # may meet a new hire in the same second. The second one updates him instead.
+            if t["id"] in known or not await db.insert_once(conn, db.techs, dict(id=t["id"], demo=False, **values)):
                 await conn.execute(sa.update(db.techs).where(db.techs.c.id == t["id"]).values(**values))
-            else:
-                await conn.execute(sa.insert(db.techs).values(id=t["id"], demo=False, **values))
         gone = sa.update(db.techs).where(db.techs.c.demo.is_(False)).where(db.techs.c.active.is_(True))
         if ids:
             gone = gone.where(db.techs.c.id.notin_(ids))
@@ -346,8 +346,8 @@ async def ensure_owners(ctx: Ctx) -> None:
         for email in ctx.cfg.owner_emails:
             row = (await conn.execute(sa.select(db.office_users).where(db.office_users.c.email == email))).first()
             if row is None:
-                await conn.execute(
-                    sa.insert(db.office_users).values(email=email, role="owner", active=True, added_at=now, added_by="env")
+                await db.insert_once(
+                    conn, db.office_users, dict(email=email, role="owner", active=True, added_at=now, added_by="env")
                 )
             elif row.role != "owner" or not row.active:
                 await conn.execute(

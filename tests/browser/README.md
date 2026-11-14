@@ -199,7 +199,9 @@ byte ranges, links that really expire, and the refusal a real bucket gives: a 40
 body). `--bucket same-origin` serves the video from the web server itself, for anything that
 cannot accept the certificate: real Safari, or your own phone on the same Wi-Fi (use
 `--host 0.0.0.0 --base-url http://<this machine's address>:19300`, then open the printed
-`watch` link on the phone).
+`watch` link on the phone). A public https `--base-url` (a tunnel, to put a real TV or a
+phone off the Wi-Fi in front of it) makes the server take itself for a real deployment, so
+it starts only with `VIDEO_ALLOW_THROWAWAY_STORAGE=1` set.
 
 The control API, all under `/__test/`:
 

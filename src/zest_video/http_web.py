@@ -5,6 +5,7 @@ is marked noindex, never cached, and rate limited.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -84,6 +85,11 @@ def verify_svix(secret: str, headers: Any, body: bytes, *, tolerance: int = 300)
         for part in given.split()
         if part.startswith("v1,")
     )
+
+
+# /healthz: how long one look at the database is good for, and how long it may take.
+HEALTH_KEEP_SECONDS = 5.0
+HEALTH_WAIT_SECONDS = 3.0
 
 
 def routes(ctx: Ctx) -> list[Any]:
@@ -252,8 +258,40 @@ def routes(ctx: Ctx) -> list[Any]:
         """Where the app's "please update" button lands: the App Store page once it exists."""
         return RedirectResponse(ctx.cfg.app_store_url or "/support", status_code=302)
 
+    # The last look at the database: (when, did it answer). Monotonic time starts at boot,
+    # so "never looked" is -inf, not 0.
+    health: dict[str, Any] = {"at": float("-inf"), "ok": False, "lock": asyncio.Lock()}
+
     async def healthz(request: Request) -> Response:
-        return PlainTextResponse("ok")
+        """Railway asks this before it lets a new deploy take over from the old one.
+
+        "ok" means two things. This server finished its start-up checks, or it would not
+        be listening at all (app.start_up: the settings, the database, the bucket). And
+        the database answered just now. Without the database nothing here works, not one
+        page and not one call from a phone, so "not ready" is simply the truth.
+
+        The bucket, FieldRoutes and the mail service are not asked, on purpose. Each
+        has a fallback that loses nothing (the phone keeps its video, writes wait in the
+        outbox, the saved route is served), so a bad minute at any of them must never
+        make this server look dead and get it replaced or restarted.
+
+        Anyone can call this, so the database is asked at most once every few seconds."""
+        async with health["lock"]:
+            if time.monotonic() - health["at"] >= HEALTH_KEEP_SECONDS:
+                try:
+                    async with asyncio.timeout(HEALTH_WAIT_SECONDS):
+                        async with ctx.engine.connect() as conn:
+                            await conn.execute(sa.text("SELECT 1"))
+                    health["ok"] = True
+                except Exception:  # noqa: BLE001 - every way a database can fail to answer
+                    health["ok"] = False
+                health["at"] = time.monotonic()
+        if health["ok"]:
+            return PlainTextResponse("ok")
+        return PlainTextResponse(
+            "not ready: the database is not answering", status_code=503,
+            headers={"Cache-Control": "no-store", "Retry-After": "5"},
+        )
 
     async def robots(request: Request) -> Response:
         return PlainTextResponse("User-agent: *\nDisallow: /\n")

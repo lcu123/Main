@@ -9,7 +9,7 @@ Apple renumbers now and then.
 
 | # | Why apps get rejected | Guideline | Where Zest Video stands |
 | --- | --- | --- | --- |
-| 1 | It crashes, has bugs, or a button leads nowhere | 2.1 | Compiles on Xcode 16 and 26, and 84 automated tests tap every button in the simulator, including kills and bad network. **Not yet run on a real iPhone**, so the camera itself is untested. Do the pilot on TestFlight before submitting. |
+| 1 | It crashes, has bugs, or a button leads nowhere | 2.1 | Compiles on Xcode 16 and 26, and 99 automated tests tap every button in the simulator, including kills and bad network. **Not yet run on a real iPhone**, so the camera itself is untested. Do the pilot on TestFlight before submitting. |
 | 2 | The reviewer cannot get in | 2.1 | A demo sign-in exists (`VIDEO_DEMO_CONTACT` / `VIDEO_DEMO_CODE` in Railway). It shows three made-up stops, lets the reviewer record and save, and even hands him the customer's watch page. Nothing it does reaches a real customer or FieldRoutes. Put it in the review notes (text below). |
 | 3 | The server is down or not ready during review | 2.1 | The server is live. Keep it running during review and do not change `VIDEO_DEMO_CODE` once submitted. |
 | 4 | Placeholder text, test data, "beta" wording | 2.1, 2.3 | None in the app. The made-up screens exist only in simulator builds and cannot ship. |

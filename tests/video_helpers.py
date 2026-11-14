@@ -233,8 +233,23 @@ async def make_env(tmp_path: Any, **cfg_changes: Any) -> Env:
         secret="test-secret",
         office_phone="+19165550100",
         resend_webhook_secret="whsec_dGVzdC1zZWNyZXQ=",
+        # Where this is running and the start-up overrides are never taken from the machine
+        # the tests run on. With one of Railway's own variables in the environment
+        # (`railway run pytest`, or a box Railway hosts) every test would otherwise be
+        # taken for a real deployment and refused; an override left set would switch a
+        # gate off. A test that wants either says so itself.
+        platform="",
+        allow_throwaway_storage=False,
+        start_with_files_missing=False,
+        start_with_new_database=False,
     )
     cfg = replace(cfg, **cfg_changes)
+    if config.public_https(cfg.base_url) and "allow_throwaway_storage" not in cfg_changes:
+        # The one case that is not a test: the browser rig (tests/browser/serve.py) given a
+        # public https address, so that a real TV or a phone off the Wi-Fi can reach it.
+        # That makes it a real deployment in the server's eyes, and it starts only with the
+        # same loud override a demo needs, set by the person running it.
+        cfg = replace(cfg, allow_throwaway_storage=base.allow_throwaway_storage)
     fake = FakeFR(data=seed())
     storage, mailer, texter, pusher = MemoryStorage(), MemoryMailer(), MemoryTexter(), MemoryPusher()
     ctx = build_ctx(cfg, fr_client=_client_for(fake), storage=storage, mailer=mailer, texter=texter, pusher=pusher)

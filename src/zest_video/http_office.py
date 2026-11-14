@@ -20,12 +20,14 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from . import __version__, auth, db, security, videos
-from .core import DEFAULT_SETTINGS, FLAG_WORDS, ApiError, Ctx, audit, clear_flags, get_settings, set_setting
+from .core import (
+    DEFAULT_SETTINGS, FLAG_WORDS, SETTING_LIMITS, ApiError, Ctx, audit, clear_flags, get_settings, set_setting,
+)
 from .fr import FieldRoutesError, to_id
 from .http_api import client_ip
 from .jobs import techs_with_the_app
 from .render import render
-from .route import LIVE_STATES, helper_techs, lead_techs, sync_day, tech_view
+from .route import LIVE_STATES, covers, helper_techs, lead_techs, sync_day, tech_view
 
 COOKIE = "zv_office"
 OFFICE_HEADERS = {
@@ -47,6 +49,9 @@ EMAIL_SKIP_WORDS = {
     "no_address": "no email on file",
     "fr_reminders_off": "email reminders are off in FieldRoutes",
     "send_failed": "the email could not be sent",
+    "off_route": "the stop is no longer on the route",
+    "second_video": "a second video for this visit",
+    "overdue": "its email was hours late, so it waits for the office",
     "demo": "demo",
 }
 
@@ -64,6 +69,13 @@ SETTING_HELP = {
     "retention_months": "Months videos are kept before they are deleted.",
     "skip_service_ids": "FieldRoutes service type IDs that do not need a video (space or comma between).",
     "respect_fr_email_reminders": "Do not email customers whose email reminders are off in FieldRoutes.",
+    "hold_off_route": "When a tech films a visit that FieldRoutes no longer has on that day (cancelled, a no-show, "
+    "or moved to another day), hold the email until the office says send. The same when a stop changes hands and "
+    "both techs film it: the second video waits. Unticked: the email goes and the office is told after.",
+    "overdue_hours": "After the server or FieldRoutes was down, or a backup was put back: a video whose email is "
+    "more than this many hours late is not sent by itself. It waits for the office to press Send it anyway or "
+    "Pull. The same for a video that waited for the route (its visit was off the day) and is this late by the "
+    "time the visit is back. 0 switches this off, and late emails then go out the moment the server is back.",
     "email_subject": "Email subject. {tech} becomes the tech's first name, {service} the service.",
     "email_intro": "First lines of the email. {tech}, {address} and {service} are filled in.",
     "prompts": "What the tech reads while recording, one per line. {name} becomes the customer's first name.",
@@ -143,6 +155,10 @@ async def board(ctx: Ctx, day: str) -> dict[str, Any]:
         if current is None or (current.state == "pulled" and v.state != "pulled"):
             by_key[key] = v
 
+    here: dict[int, list[Any]] = {}
+    for v in by_key.values():
+        here.setdefault(v.customer_id, []).append(v)
+
     def best(videos: list[Any]) -> Any | None:
         live = [v for v in videos if v.state != "pulled"]
         return (live or videos or [None])[0]
@@ -154,12 +170,17 @@ async def board(ctx: Ctx, day: str) -> dict[str, Any]:
     counts = {"stops": 0, "done": 0, "with_video": 0, "missing": 0}
     for stop in stops:
         helpers = helper_techs(stop)
-        helper_video = best([v for h in helpers if (v := by_key.get((stop.customer_id, h))) is not None])
         # One row per tech with appointments of his own here: each owes his own video.
         for tech_id in lead_techs(stop) or [(stop.tech_ids or [0])[0]]:
             view = tech_view(stop, tech_id)
-            # A helper's video stands in for the lead's.
-            video = best([v for v in (by_key.get((stop.customer_id, tech_id)), helper_video) if v is not None])
+            # A helper's video stands in for the lead's, and so does one left by the tech
+            # who had this work before the office moved it.
+            own = by_key.get((stop.customer_id, tech_id))
+            stand_ins = [
+                v for v in here.get(stop.customer_id, [])
+                if v.tech_id != tech_id and covers(stop, tech_id, v.tech_id, v.appointment_ids, v.state)
+            ]
+            video = best([v for v in (own, *stand_ins) if v is not None])
             has_app = bool(equipped.intersection([tech_id, *helpers]))
             if video is not None:
                 seen_videos.add(video.id)
@@ -245,7 +266,10 @@ async def stats(ctx: Ctx, days: int) -> list[dict[str, Any]]:
         score_rows = (
             await conn.execute(sa.select(db.scores).where(db.scores.c.video_id.in_([v.id for v in vids] or [""])))
         ).all()
-    filmed = {(v.day, v.customer_id, v.tech_id) for v in vids if v.customer_id is not None}
+    filmed: dict[tuple[str, int], list[Any]] = {}
+    for v in vids:
+        if v.customer_id is not None:
+            filmed.setdefault((v.day, v.customer_id), []).append(v)
     stars = {s.video_id: s.stars for s in score_rows}
     equipped = await techs_with_the_app(ctx)
 
@@ -260,7 +284,7 @@ async def stats(ctx: Ctx, days: int) -> list[dict[str, Any]]:
 
     for stop in stops:
         helpers = helper_techs(stop)
-        helped = any((stop.day, stop.customer_id, h) in filmed for h in helpers)
+        here = filmed.get((stop.day, stop.customer_id), [])
         for tech_id in lead_techs(stop) or [(stop.tech_ids or [0])[0]]:
             view = tech_view(stop, tech_id)
             if not view.done or (view.types and view.types <= skip):
@@ -269,7 +293,7 @@ async def stats(ctx: Ctx, days: int) -> list[dict[str, Any]]:
                 continue  # a tech without the app cannot miss a video
             r = row(tech_id)
             r["stops"] += 1
-            if (stop.day, stop.customer_id, tech_id) not in filmed and not helped:
+            if not any(covers(stop, tech_id, v.tech_id, v.appointment_ids, v.state) for v in here):
                 r["missed"] += 1
     for v in vids:
         r = row(v.tech_id)
@@ -397,7 +421,7 @@ def routes(ctx: Ctx) -> list[Route]:
         return html(
             "office_day.html", user, **data, today=today, prev_day=_shift(day, -1), next_day=_shift(day, 1),
             stale=stale, msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""),
-            now=db.now(),
+            now=db.now(), held_back=videos.HELD_BACK,
         )
 
     async def open_video(request: Request, user: auth.OfficeUser) -> Response:
@@ -422,6 +446,17 @@ def routes(ctx: Ctx) -> list[Route]:
             raise ApiError(400, "bad_request", "Pick a customer, or type the FieldRoutes customer number.")
         await videos.move(ctx, request.path_params["video_id"].lower(), customer_id, user.email)
         return back(request, str(form.get("back") or "/office"), msg="Video moved. The right customer gets the email in a minute.")
+
+    async def send_video(request: Request, user: auth.OfficeUser) -> Response:
+        form = await request.form()
+        await videos.send_anyway(ctx, request.path_params["video_id"].lower(), user.email)
+        # Say only what is sure. Whether an email goes is decided on the next pass, like for
+        # any other video: emails may be off, or this customer may have no address.
+        if ctx.cfg.email_mode != "off" and ctx.mailer.delivers:
+            msg = "Let go. If this customer can be emailed, the email goes in a minute. The day page will say."
+        else:
+            msg = "Kept. Customer emails are off, so no email goes. The day page will say what was saved."
+        return back(request, str(form.get("back") or "/office"), msg=msg)
 
     async def add_note(request: Request, user: auth.OfficeUser) -> Response:
         form = await request.form()
@@ -509,6 +544,7 @@ def routes(ctx: Ctx) -> list[Route]:
         return html(
             "office_settings.html", user, settings=await get_settings(ctx), defaults=DEFAULT_SETTINGS, help=SETTING_HELP,
             msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""), cfg=ctx.cfg,
+            limits=SETTING_LIMITS,
         )
 
     async def users_page(request: Request, user: auth.OfficeUser) -> Response:
@@ -553,6 +589,7 @@ def routes(ctx: Ctx) -> list[Route]:
         Route("/office/video/{video_id}", page(open_video)),
         Route("/office/video/{video_id}/pull", page(pull_video), methods=["POST"]),
         Route("/office/video/{video_id}/move", page(move_video), methods=["POST"]),
+        Route("/office/video/{video_id}/send", page(send_video), methods=["POST"]),
         Route("/office/flag/{flag_id:int}/clear", page(clear_flag), methods=["POST"]),
         Route("/office/note", page(add_note), methods=["POST"]),
         Route("/office/techs", page(techs_page)),

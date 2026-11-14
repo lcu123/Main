@@ -22,6 +22,13 @@ class DeliveryError(Exception):
     pass
 
 
+class AlreadyTaken(DeliveryError):
+    """The mail service refused an email because it already holds one under the same key,
+    with other words in it. That proves the key was seen before. It does not prove an
+    email was delivered, so by itself it counts as a send that failed. Only a caller that
+    knows the rest of the story may read more into it (`videos._deliver`)."""
+
+
 @dataclass
 class Email:
     to: str
@@ -76,9 +83,25 @@ class ResendMailer(Mailer):
             resp = await self._http.post("https://api.resend.com/emails", json=body, headers=headers)
         except httpx.TransportError as exc:
             raise DeliveryError(f"email provider unreachable: {exc}") from exc
+        if resp.status_code == 409 and email.idempotency_key and _already_has_it(resp):
+            # "You already gave me an email under this key, and it was not word for word
+            # this one." The mail service keeps what it took the first time and takes
+            # nothing new. It does not say which id it gave the first one.
+            raise AlreadyTaken("the mail service already has an email under this key, with other words in it")
         if resp.status_code >= 300:
             raise DeliveryError(f"email provider said {resp.status_code}: {resp.text[:300]}")
         return str(resp.json().get("id", ""))
+
+
+def _already_has_it(resp: httpx.Response) -> bool:
+    """Is this the mail service's own "that key is used, with a different email"? Only its
+    exact name for it counts. Any other 409 (two tries at the very same moment is one) is
+    an ordinary failed try and will be made again."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("name") == "invalid_idempotent_request"
 
 
 class LogMailer(Mailer):

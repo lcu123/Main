@@ -53,8 +53,85 @@ server:  awaiting_upload → held (tech's 10-minute undo) → sent → watched
 | Recorded outside the check-in time | When the email is sent | Office flag. Never blocks. |
 | Tech sent past a two-keys warning | At register | Office flag and an audit entry. Never blocks. |
 | Customer has no usable email | When the email would go | Link saved as a FieldRoutes note, office flag. |
+| The visit left the route, or it is a second video for one visit | When the email would go | The video waits for the office: no email, nothing written, an office flag, "Send it anyway" and "Pull". See "When the route changes during the day". |
+| The email is hours late | When the email would go, and when the route would let a waiting video go | The same: it waits for the office. Its flag also says what the route says about the visit. See "What survives a restart". |
+| The file is in the bucket and is the one that was confirmed | Before an email goes and each time a customer presses play | A file with another ETag, or one the bucket itself says is gone, is pulled and flagged. On an unclear answer (a bare "not found", a page of words, no ETag) nothing is pulled. |
 | FieldRoutes write failed | After 8 tries over a day | Office flag. Writes wait in an outbox meanwhile. |
+| FieldRoutes write cut off by a restart | When the server is back | Not tried again, so nothing is written twice. Office flag, with what to add by hand. |
 | Tech no longer active in FieldRoutes | Daily, and at login | App locks. |
+
+## When the route changes during the day
+
+The office cancels, adds and moves stops all day, and a phone with no signal
+works from the list it fetched that morning. The rules, each one pinned by
+`tests/test_video_route_day.py`:
+
+- **A video is never refused or lost because the route changed.** The phone
+  hands in what it filmed, for the stop it filmed it at.
+- **A visit taken off the day** (cancelled, deleted, a no-show, moved to another
+  day) leaves the phone at its next fetch and nobody is chased for it. A video
+  filmed for it and not yet emailed is kept and held back: no email, nothing
+  written to FieldRoutes, an office flag, and two buttons on its row, "Send it
+  anyway" and "Pull" ("Keep it" while customer emails are off). If the visit
+  comes back the video goes out by itself. Two things stop that: a person has
+  cleared its flag (then it waits for Send or Pull and a flag says so), or its
+  email is hours late by then (then it waits as any late video does; see
+  "What survives a restart"). If the email had already gone, the office gets a
+  flag saying that. Owner's switch: Settings, "hold the email until the office
+  says send".
+- **No email goes on a list nobody could check.** If the day cannot be read
+  from FieldRoutes when an email is due, the email waits a few minutes, as it
+  does when the customer's address cannot be read.
+- **A stop given to another tech** moves from one phone to the other. A video
+  the first tech already filmed still goes out, with a flag naming who has the
+  stop now. It counts as the second tech's video (his phone shows the stop as
+  filmed, he is not chased) only once it is uploaded, while it is not pulled,
+  and when all his work at that stop is the work that was filmed. With other
+  work of his own there he owes his own, like any two techs at one property.
+- **One visit, one email.** If both techs film a stop that changed hands, the
+  video of the tech who has it now goes and the other waits for the office; if
+  the first had already gone, the later one waits ("Two videos for one visit").
+- **Each change is told once.** One route flag is open per video at most, the
+  one that is true now. When the route changes again the old flag is closed and
+  the new thing gets its own, even if a person cleared the last one.
+- **"Finished with no video" follows the stop.** The flag clears for a tech who
+  no longer has the stop and comes back if the stop does, or if the video that
+  cleared it is deleted (or, after a handover, pulled). A flag a person cleared
+  stays cleared.
+- **A filmed visit the office rolls to another day** is on that day's list
+  again and the app asks for a video again, as before. The office gets a flag
+  that it was already filmed, and "finished with no video" says so too. Whether
+  the first video should count for the new day is one of the owner's choices.
+- **A video for a past day** (it sat on a phone overnight) is checked against
+  that day's route when its email goes. Yesterday's are checked once more after
+  the 3 a.m. read, which also flags work closed out after hours with no video.
+- **The tech is told when the office is holding his video.** Every video in
+  the phone's day carries `withOffice` while it waits for Send it anyway or
+  Pull, and the app shows SENT TO OFFICE where it would show SENT. He cannot
+  delete it or record over it meanwhile; the phone tells him to call the office.
+- **Order does not matter.** A tech may work the stops in any order, film before
+  he checks in or after he checks out, or close out every appointment in one go.
+  Every video goes to the customer it was filmed for. Only one filmed more than
+  20 minutes outside the check-in time raises a flag, and it never blocks.
+
+How soon a change is seen: the server reads the day from FieldRoutes every 5
+minutes in work hours once a tech has the app, and whenever a phone or the
+office page asks and the saved list is over 3 minutes old. While FieldRoutes
+answers that is at most 20 reads an hour, 40 on a day when an appointment names
+no tech: under a fifth of the 3,000 shared reads over a 14-hour day. While it
+fails it is tried once a minute and no more. Checking videos and flags against
+the route costs none. When FieldRoutes is slow or down, phones are served the
+saved list at once, straight after a restart too.
+
+Each rule above that is a judgement call is listed for the owner, with what the
+other choice would mean, in [`GO-LIVE.md`](GO-LIVE.md) under "Choices waiting
+for you".
+
+What it cannot do: if the office cancels a visit in the last 3 minutes before an
+email is due, the email goes on the list read just before, and the office is
+flagged on the next round. A phone that names no appointments for a stop that is
+no longer its tech's cannot be matched to the work, so that video waits for the
+office.
 
 ## Rolling it out to one tech first
 
@@ -76,8 +153,190 @@ Nothing reaches a customer or FieldRoutes until someone turns it on.
 `FR_WRITES` and `FR_WRITE_CUSTOMER_IDS` mean the same thing here as on the MCP
 server. Every other variable is listed in [`.env.example`](../../.env.example).
 Things the owner can change without a deploy (video length, hold time, alert
-timing, email wording, which services need a video) live on the office page
-under Settings.
+timing, email wording, which services need a video, whether a video for a visit
+that left the route waits for the office, and how many hours late an email may
+be before it waits too) live on the office page under Settings.
+
+## What survives a restart
+
+Railway replaces the server's container at every deploy and may restart it at
+any time. The container's own disk and memory are wiped each time, so nothing
+that matters is kept there. Records are in Postgres, a separate service with its
+own volume. Videos are in the bucket: the phone uploads each file straight to it
+with a signed link, and the server never holds a file.
+
+A start goes through three gates before the server takes a request or runs a job:
+
+1. **The settings.** A real deployment does not start without
+   `VIDEO_DATABASE_URL` (Postgres, not a file) and all four bucket settings
+   (`VIDEO_S3_ENDPOINT`, `_BUCKET`, `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`). It
+   prints which one is missing and exits. On Railway a deploy that does not start
+   never takes over, so the version before it keeps serving. "Real" means either
+   Railway's own variables are there or `VIDEO_BASE_URL` is a public https
+   address; a laptop, a test and CI have neither and start with a warning.
+   `VIDEO_ALLOW_THROWAWAY_STORAGE=1` lets a demo through. (So a test rig given
+   a public https address, such as `tests/browser/serve.py --base-url
+   https://...` for a real TV, needs that variable set too.)
+2. **The database.** It is asked until it answers, for up to five minutes, so
+   Postgres restarting beside the server does not leave the server down. A stop
+   signal ends the wait at once, in a container too. An address the driver will
+   never take (`?sslmode=...` on the end, another driver's name, a port that is
+   not a number) is refused at once and not waited for.
+3. **The bucket and the database belong together.** The newest videos the
+   database knows are looked for. If the storage says the key, the bucket name
+   or the region is wrong, or says in its own words that it holds none of them,
+   the server does not start: on the wrong bucket it would pull every video a
+   customer opened. (`VIDEO_START_WITH_FILES_MISSING=1` starts it anyway, for
+   when the files really are gone.) And the other way round: a database that
+   knows of no video at all, and that no phone has ever signed in on, beside a
+   bucket that holds videos, is a new or an emptied database, and the server
+   does not start on it either (`VIDEO_START_WITH_NEW_DATABASE=1`, for a
+   database that really is new). If phones have signed in on it, it is the
+   database in use, with old files beside it (test files, or videos from after
+   a backup that was put back): the server starts and says so in a warning. A
+   bucket that cannot be reached, or answers with somebody else's page (a "not
+   found", or a page of words with a 200 on it), settles nothing and does not
+   stop a start.
+
+A refused start says why once, in plain words, with no stack of code and no
+password in it. An override that is set is named in the first line of every
+start, with a warning to remove it, whether or not that start needed it.
+`FR_WRITES` is read by the connector's own rule (on only for `on`, `1`, `true`,
+`yes`); a word the server does not know is read as off and it says so.
+
+`/healthz` says `ok` only while the database answers. It never asks the bucket,
+FieldRoutes or the mail service: each has a fallback that loses nothing (the
+phone keeps its video, writes wait in the outbox, the saved route is served), so
+a bad minute at one of them must not make a working server look dead.
+
+What lives only in memory, and what a restart costs:
+
+| In memory | What a restart costs |
+| --- | --- |
+| Rate limits per address | They start again from zero. The lock after 5 wrong tries on a login code is in the database. |
+| When FieldRoutes was last read, and the service names | A handful of reads at the next start, eight at most of the 3,000 a day: the day's stops (and yesterday's once more), the tech list, the service names, and the routes on a day with an unassigned appointment. No customer is read again. |
+| Job timers | Every job runs once at start, the daily clean-up included. Each works from times saved in the database, so nothing is early, late or done twice. |
+| The settings cache and the FieldRoutes quota count | Read again from the database, and from FieldRoutes' next answer. |
+| Requests in flight | The phone and the browser ask again. Every phone call is safe to repeat. |
+
+Everything else is in the database: sign-ins and login codes, the day's stops
+and when each was first seen finished, every video and when its email is due,
+the outbox and its retry times, flags, scores, opt-outs, settings and the audit
+trail. There is no list of upload links: a link is signed with the bucket's key
+and checked by the bucket. `tests/test_video_restart.py` restarts the server at
+every step of a video's life (after register, after the upload, all through the
+10 minutes, with an email half sent, with FieldRoutes writes waiting, with a
+"no video" check due) and checks that one email goes out, at the right time.
+It also kills the server before and after every save in a video's life, runs
+two servers side by side over one database, leaves the server down for hours,
+and puts a backup back. `tests/test_video_durable.py` covers the gates, the
+health check, and what the server makes of each answer a bucket can give.
+
+Killed at any moment, and nothing is lost or done twice. Five gaps were found by
+these tests and are closed; the tests that pinned them are plain tests now.
+
+- **A record and what follows from it are one save.** "Sent" is written
+  together with its audit entry, the FieldRoutes note in the outbox, and the
+  follow-up task and flag when the tech recommended something. "No email" is
+  written with its flag and its note. A confirmed video not on the list is
+  written with its flag; a new video with its audit entry and its "sent past a
+  warning" flag; a score with its review and its low-score flag; a pull, a
+  move, an opt-out and "Send it anyway" each with their audit entry. A server
+  killed at that moment leaves all of it or none of it, and with none the step
+  runs again (the mail service takes the same email only once). The few steps
+  that cannot be part of the save, because they look outside the database, are
+  safe to repeat and are repeated: when the phone asks again, or on the next
+  five-minute round. One test kills the server before and after every save in a
+  video's life and checks the result each time.
+- **Two servers at a deploy.** Railway starts the new server before it stops
+  the old one, so for a moment both run the job loops. Whatever both reach for
+  is claimed first, with an update only one of them can win: an email, a push,
+  and now each FieldRoutes write. Flags and outbox rows have a key that can
+  exist once. A claim runs from the moment it is made, not from when the pass
+  began: a pass slowed by FieldRoutes timing out can be many minutes old when
+  it reaches a row. Tests run two servers over one database, side by side, in
+  the very same instant and in the middle of a slow pass, and each email,
+  push, flag and write happens once.
+- **A FieldRoutes write cut off in the middle.** A row is marked as being
+  written when it is claimed. If the server is stopped before the answer comes,
+  nobody can say whether FieldRoutes took the write, so it is not tried again:
+  the office gets a flag that says to look, with the words to add by hand.
+  "Stopped" is read off the row itself: marked as being written, and its claim
+  run out. A row another server is writing right now is not that.
+- **An email that is hours late does not go by itself.** After the server or
+  FieldRoutes was down for hours, the late emails used to go out the moment
+  things worked again, whatever the hour. After a database restore the same
+  rule sent second emails, and sent videos the office had pulled. Now a video
+  whose email is more than 6 hours late (Settings, "Overdue hours"; 0 switches
+  it off) waits for the office like a video whose visit left the route: kept,
+  playable, nobody emailed, nothing written to FieldRoutes, one flag, "Send it
+  anyway" or "Pull". How late is counted from the end of the tech's 10
+  minutes, or from the last time a person at the office put the video back in
+  line (Send it anyway, a move). The route letting a video go does not start
+  the count again, and the route does not let a video go at all once its email
+  is this late: so a video that was waiting for the route when a backup was
+  taken is not sent a second time after that backup is put back, and nobody is
+  emailed at 3 a.m. because a visit was un-cancelled in the evening.
+  With customer emails and FieldRoutes writes both off nothing can go out late,
+  so such a video is simply closed as "customer emails are off", which is the
+  state [`GO-LIVE.md`](GO-LIVE.md) asks for before a restore.
+- **What the flag of a late video says.** After a restore the server no longer
+  knows that a video was emailed days ago, so the flag never says that nobody
+  was emailed. It says the server has no record of an email, that the customer
+  may already have it if a backup was put back, and where to look first: the
+  video note on the customer's account in FieldRoutes, which a restore does
+  not touch. The same words stand beside the button. The flag also says what
+  the route says: that the visit has left the day, or that another tech's
+  video for it went out. When that changes, the flag is replaced by a new one.
+- **Send it anyway on a late video answers the lateness, nothing else.** If
+  the flag in front of the office said only that the email was late, the
+  route is still checked before the email goes. A visit cancelled meanwhile,
+  or a second video for the visit, holds it once more, under the flag for that,
+  and the office decides again. If the flag had already said so, one press is
+  enough.
+- **A video is pulled only on the bucket's own word.** Before an email goes and
+  before a customer's player is handed a link, the server checks that the
+  bucket still holds the file it confirmed. A plain "not found" used to be
+  enough to pull the video, and so was any answer whose size or ETag differed;
+  whatever stands in front of a bucket can say either on a bad minute (a "not
+  found", a page that says "we will be right back" with a 200 on it, the right
+  file with its ETag dropped or marked weak). Now the server pulls only when
+  the bucket says, in its own words, that the file is gone, or answers with a
+  file that has another ETag. On anything else nothing is pulled: the player
+  is let through, and an email waits and is tried again every 5 minutes, with
+  a flag for the office if that lasts half an hour. A bucket that cannot be
+  reached at all proves nothing either way and holds nothing up.
+- **An email the mail service already has.** If the server is killed after
+  handing an email over and the wording changes before the second try, the mail
+  service answers "that key is used" (409, `invalid_idempotent_request`). That
+  proves the key was seen before, not that an email reached anyone. So it is
+  read as sent only when no earlier try for that video was written down as
+  failed (a kill leaves no such entry). If one was, nobody here can say: the
+  server stops trying, the record says no email is known to have gone, and the
+  office is asked to check. The key names the inbox, so an email that went to
+  the test inbox never stands for the customer's.
+
+Still not closed, and small:
+
+- A restore within 6 hours of its backup is inside the limit above, so the
+  safe steps in `GO-LIVE.md` (customer email and FieldRoutes writes off first)
+  still matter. An opt-out made after the backup is forgotten by any restore.
+- After a restore the server cannot know which late videos were already
+  emailed. It tells the office to look for the video note in FieldRoutes
+  before pressing Send it anyway; it does not look itself. If the office
+  presses without looking, that customer gets the email a second time.
+- The FieldRoutes connector itself tries a write again when FieldRoutes does
+  not answer in time. If FieldRoutes took the first try and only its answer was
+  lost, that note is written twice. This is the connector's own behaviour and
+  was not changed here.
+- A FieldRoutes write that was waiting in the outbox at the very moment a
+  backup was taken is waiting again after that backup is put back, and is made
+  again. The safe steps in `GO-LIVE.md` (FieldRoutes writes off first) cover it.
+- Whether the live bucket words a missing file the standard way (`NoSuchKey`)
+  has not been checked against it. If it does not, a file that really is gone
+  is never pulled by the server: the customer's player fails, the email for it
+  waits, and the office gets the "cannot tell whether a video's file is there"
+  flag after half an hour.
 
 ## FieldRoutes use
 
@@ -93,7 +352,8 @@ Reads, sized for the shared 3,000-a-day quota:
   never stores customer emails or phone numbers.
 
 Writes, all through an outbox that retries: `note/create` (the link),
-`review/create` (the score), `task/create` (tech recommended something).
+`review/create` (the score), `task/create` (tech recommended something). A row
+is claimed before it is written, so two servers never write the same one.
 
 Checked against a real day (Nov 12, 2026, 44 completed appointments, 4 techs):
 `assignedTech` on the appointment matched the route's tech and `servicedBy` on
@@ -155,7 +415,7 @@ Proven:
 - URL signing matches Amazon's published SigV4 example.
 - App: compiles and passes its unit tests on Xcode 16 and Xcode 26, and CI
   launches every screen in the iPhone simulator and photographs it.
-- App, end to end in the simulator: 84 UI tests tap through every screen and
+- App, end to end in the simulator: 99 UI tests tap through every screen and
   button against a fake server and check both the screen and what the server
   received. They cover sign-in by text code, the route list, record → "Save
   this video?" → SAVE, record again, delete inside the 10 minutes, the
@@ -262,3 +522,18 @@ Not proven until it runs on real phones with real accounts:
   use the same params the MCP server already verified live.
 - Whether `emailReminders = 0` in FieldRoutes is a fair stand-in for "opted
   out". It is a setting; if it hides too many customers, turn it off.
+- How the live bucket words a missing file, and whether it answers the list
+  call the start-up check makes. Both are built to the S3 standard and fail
+  safe: if the wording differs, no video is ever pulled by mistake, and the
+  office gets a "cannot tell whether a video's file is there" flag instead.
+  One read-only request for a made-up file name on the live bucket would
+  settle it.
+- The mail service's "that key is used with a different email" answer (409,
+  `invalid_idempotent_request`), read as "already sent" only when no earlier
+  try for that video failed. It is built to Resend's documentation and has
+  never been seen from the real service. Whether Resend remembers a key from a
+  request it answered with an error is not known; the server is right either
+  way. One real send with a repeated key, before go-live, would show it.
+- That the live bucket gives a video file an ETag on every answer, and the
+  same one each time. The check for a changed file compares ETags; with none
+  on an answer nothing is pulled and the email waits.

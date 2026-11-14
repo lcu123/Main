@@ -124,17 +124,72 @@ today.
   add-on left open, such as a leaf pick-up, does not keep the stop "not done".)
 - `stop.video` is `{"id", "state", "byYou"}` when this tech has a live video for
   the stop, else `null`. Another tech's video for the same property is not
-  his and is not shown, with one exception: a helper also sees the lead's video
-  (`byYou: false`) so the stop reads as covered. He may still record his own.
+  his and is not shown, unless it stands in for his (`byYou: false`), so the
+  stop reads as covered. That happens three ways: a helper sees the lead's
+  video; a lead sees a helper's; and a tech who was given a stop mid-day sees
+  the video the tech before him already filmed for it. That last one shows
+  only once it has uploaded, and only when all of his work at the stop is the
+  work that was filmed; until then, or if the office pulls it, `video` is
+  `null` and the stop is his to film. He may still record his own over a
+  stand-in. If the customer already has the first tech's video, his own is
+  taken and then waits for the office (`no_email`): one visit, one email.
 - `videos` lists this tech's own videos for the day. For the App Review account
   only (`tech.demo`), each uploaded video also carries `watchUrl`, the page a
   customer would see. A real tech's phone is never sent a customer link.
+- **`withOffice`** is one optional boolean on every video object, in
+  `stops[].video` and in `videos[]` alike. It is there, and `true`, only while
+  the server is holding that video for the office to decide (Send it anyway, or
+  Pull). Otherwise the key is absent: it is never sent as `false` or `null`.
+
+  ```json
+  {"id": "<uuid>", "state": "no_email", "byYou": true, "withOffice": true}
+  {"id": "<uuid>", "customerId": 11753, "state": "no_email", "emailAt": "2026-11-13T18:50:00Z", "withOffice": true}
+  ```
+
+  A held video's `state` is always `no_email`, and the customer has not been
+  emailed. The app shows SENT TO OFFICE where it would show SENT. There are
+  four kinds of hold, and the app does not need to tell them apart:
+  - the visit left the route after it was filmed (cancelled, deleted, a
+    no-show, moved to another day);
+  - it is a second video for one visit (the stop changed hands and both techs
+    filmed it);
+  - FieldRoutes has no work for that tech at that stop any more;
+  - its email was hours late (the server or FieldRoutes was down, or a backup
+    was put back), so it did not go by itself.
+
+  The hold ends when the office sends it (the key goes, and the state becomes
+  `sent`, or stays `no_email` if this customer cannot be emailed), when the
+  office pulls it (it leaves `videos[]`), or by itself when what held it is
+  over: the visit is back on the route, or the other video for the visit is
+  gone. A video held for a late email is only ever let go by the office. While
+  the hold lasts the tech cannot delete the video or record over it: both
+  answer `409` with "The office is looking at this video. Call the office to
+  change it."
 - `config.prompts` is what the tech reads while recording, in order. The app
   swaps the literal `{name}` for the stop's first name ("Hi John"), or the
   business name when there is no person. The tech is asked to say the name
   only; the spoken check still counts a street or house number if it hears one.
 - The phone holds only what is in this body. No phone numbers, emails, billing
   or notes are ever sent to it.
+
+**The list changes during the day.** The office cancels, adds and moves stops,
+and hands them from one tech to another. Each fetch is the truth as the server
+last read it from FieldRoutes, which is at most 3 minutes old (and older only
+while FieldRoutes is not answering; the call still returns at once from the
+saved list). So between two fetches:
+
+- A stop can be gone, a new one can be there, and `order` can change. `order`
+  is only for sorting: the numbers are not 1, 2, 3 without gaps, and nothing
+  makes a tech work in that order.
+- `videos` can hold a video whose `customerId` is no longer in `stops` (the
+  office took the stop off the route after it was filmed). Keep showing it.
+- **Never drop a queued video because its stop is no longer on the list.**
+  Register it exactly as it was filmed (same `customerId`, the
+  `appointmentIds` the list had then). The server takes it and the office
+  decides what happens to it.
+- A visit that was filmed on one day and then moved by the office to another
+  is on the new day's list with `video: null`: videos belong to the day they
+  were filmed for. The office is told it was already filmed.
 
 ## Videos
 
@@ -168,6 +223,12 @@ call. Every call below is safe to repeat with the same ID.
 - `location` is `null` with no fix. `spokenText` is `null` when speech-to-text
   did not run.
 - `recommend: true` when the tech tapped "I recommended something".
+- A stop the office has cancelled, moved to another day or given to another
+  tech since the phone's list was fetched is **still accepted** (`200`, as
+  below). `appointmentIds` is how the server knows which work was filmed when
+  the stop has changed hands, so always send the list's own. With an empty
+  list for a stop that is no longer this tech's, the server cannot tell, and
+  the video waits for the office instead of going to the customer.
 
 `200`:
 
@@ -187,9 +248,10 @@ registering a new ID retires his old video (`replaced`) with no question
 asked. Another tech's video for the same property is never touched.
 
 `409 {"error": "visit_has_video", "message": "...", "existing": {"id": "...", "state": "sent", "byYou": true, "techFirstName": "Pedro"}}`
-only when this tech's own earlier video has already gone to the customer
-(`byYou` is always true). The stop is locked for him; show `message` (it tells
-the tech to call the office).
+only when this tech's own earlier video has already gone to the customer, or
+is with the office (`withOffice` in `GET /v1/today`; `existing.state` is then
+`no_email`). `byYou` is always true. The stop is locked for him; show
+`message` (it tells the tech to call the office).
 
 ### Upload
 
@@ -233,7 +295,7 @@ whose window has already passed.
 | `held` | Server has it; email goes at `emailAt` | Sent |
 | `sent` | Customer emailed | Sent |
 | `watched` | Customer pressed play | Sent |
-| `no_email` | No usable customer email; office flagged | Sent |
+| `no_email` | No email went: no usable address, emails are off for this customer, or the office is deciding (`withOffice` is then `true`). Office flagged | Sent, or Sent to office with `withOffice` |
 | `unmatched` | Not-on-my-list, waiting for the office | Sent |
 | `pulled`, `deleted`, `replaced` | Gone | Removed |
 

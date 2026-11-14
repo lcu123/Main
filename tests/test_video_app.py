@@ -10,7 +10,7 @@ import pytest
 import sqlalchemy as sa
 
 from video_helpers import (
-    DEMO_CODE, DEMO_CONTACT, Env, code_from, demo_login, film, login, make_env, today, video_body,
+    DEMO_CODE, DEMO_CONTACT, Env, code_from, demo_login, film, login, make_env, office_login, today, video_body,
 )
 
 from zest_video import auth, db, jobs, videos
@@ -256,6 +256,29 @@ async def test_the_phone_never_receives_contact_or_billing_data(env: Env) -> Non
         "customerId", "name", "lastName", "address", "cityLine", "lat", "lng", "appointmentIds", "services",
         "order", "checkIn", "checkOut", "done", "video",
     }
+
+    # The video objects are pinned the same way. A stop's video is id, state and byYou; a
+    # video in the tech's own list is id, customerId, state and emailAt.
+    video_id = await film(env, headers, 501)
+    body = (await env.http.get("/v1/today", headers=headers)).json()
+    assert set(body["stops"][0]["video"]) == {"id", "state", "byYou"}
+    assert [set(v) for v in body["videos"]] == [{"id", "customerId", "state", "emailAt"}]
+
+    # One more key, and only while the server holds the video for the office to decide:
+    # "withOffice": true. Never false, never null, and nothing else comes with it.
+    await env.run(sa.update(db.videos).where(db.videos.c.id == video_id).values(state="no_email", email_skip="off_route"))
+    r = await env.http.get("/v1/today", headers=headers)
+    body = r.json()
+    assert body["stops"][0]["video"] == {"id": video_id, "state": "no_email", "byYou": True, "withOffice": True}
+    assert set(body["videos"][0]) == {"id", "customerId", "state", "emailAt", "withOffice"}
+    assert body["videos"][0]["withOffice"] is True
+    for secret in ("jane@example.com", "9165550001", "150.00", "Gate code", "bob@example.com"):
+        assert secret not in r.text
+    for reason in ("email_off", "no_address", "opted_out", "send_failed", "fr_reminders_off", "not_in_test_list"):
+        await env.run(sa.update(db.videos).where(db.videos.c.id == video_id).values(email_skip=reason))
+        body = (await env.http.get("/v1/today", headers=headers)).json()
+        assert set(body["stops"][0]["video"]) == {"id", "state", "byYou"}, reason
+        assert set(body["videos"][0]) == {"id", "customerId", "state", "emailAt"}, reason
 
 
 async def test_a_stop_whose_tech_is_only_on_the_route_reaches_that_tech(env: Env) -> None:
@@ -568,6 +591,17 @@ async def test_a_customer_who_stopped_video_emails_is_not_emailed_again(env: Env
     assert await env.one(sa.select(db.email_optouts)) is None, "opening the page changes nothing"
     assert (await env.http.post(f"/u/{video.token}")).status_code == 200
     assert (await env.one(sa.select(db.email_optouts))).customer_id == 501
+
+    # It is written down in the audit trail, once, with the customer on it. That entry is
+    # the list the owner reads before putting a database backup back (GO-LIVE.md): a
+    # restore forgets the opt-out itself, so the office has to know whom to put back.
+    assert (await env.http.post(f"/u/{video.token}")).status_code == 200, "asked twice"
+    entries = await env.all(sa.select(db.events).where(db.events.c.action == "email_opt_out"))
+    assert [(e.customer_id, e.video_id, e.actor_type) for e in entries] == [(501, video.id, "customer")]
+    await office_login(env)
+    page = await env.http.get("/office/audit?action=email_opt_out")
+    assert page.status_code == 200 and page.text.count('<td data-l="What">email_opt_out</td>') == 1
+    assert '<td data-l="Customer"><small>501</small></td>' in page.text, "the page the owner is sent to lists the customer"
 
     await videos.pull(env.ctx, video.id, "owner@zest.test", "test")
     video, mails = await _sent_state(env, headers, 501)

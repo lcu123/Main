@@ -17,7 +17,9 @@
     <input id="{{ key }}" type="text" name="{{ key }}" value="{{ settings[key] | join(' ') }}">
     {% elif default is number %}
     <label for="{{ key }}">{{ key.replace("_", " ") | capitalize }}</label><small>{{ help[key] }}</small>
-    <input id="{{ key }}" type="number" name="{{ key }}" value="{{ settings[key] }}" style="max-width:140px">
+    {# The lowest and highest the server takes, so a wrong number is caught before Save. #}
+    <input id="{{ key }}" type="number" name="{{ key }}" value="{{ settings[key] }}"{% if key in limits %} min="{{ limits[key][0] }}" max="{{ limits[key][1] }}"{% endif %} style="max-width:140px">
+    {% if key in limits %}<small>From {{ limits[key][0] }} to {{ limits[key][1] }}.</small>{% endif %}
     {% elif key == "email_intro" %}
     <label for="{{ key }}">Email wording</label><small>{{ help[key] }}</small>
     <textarea id="{{ key }}" name="{{ key }}" rows="4">{{ settings[key] }}</textarea>

@@ -11,7 +11,6 @@ from datetime import date, datetime
 from typing import Any
 
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from . import db
@@ -50,6 +49,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "retention_months": 12,
     "skip_service_ids": [],  # service types that do not need a video (e.g. weekly mowing)
     "respect_fr_email_reminders": True,
+    # A video for a visit FieldRoutes no longer has on that day (cancelled, a no-show, or
+    # moved to another day) waits for the office instead of emailing the customer by itself.
+    # So does a second video for one visit, when a stop changed hands and both techs filmed it.
+    "hold_off_route": True,
+    # A video whose email was due more than this many hours ago is not emailed by itself: it
+    # waits for the office (Send it anyway, or Pull). That is what happens after the server
+    # or FieldRoutes was down for hours, or after a database backup was put back, when the
+    # late emails would otherwise all go out at once, whatever the hour, and some of them
+    # for a second time. 0 switches the rule off.
+    "overdue_hours": 6,
     "email_subject": "Your service video from {tech}",
     "email_intro": "{tech} just finished at {address} and recorded a short video for you: "
     "what was done and what is recommended.",
@@ -64,6 +73,7 @@ SETTING_LIMITS: dict[str, tuple[int, int]] = {
     "missing_alert_minutes": (10, 720),
     "stuck_hours": (1, 48),
     "retention_months": (1, 60),
+    "overdue_hours": (0, 168),
 }
 
 
@@ -165,6 +175,33 @@ async def set_setting(ctx: Ctx, key: str, raw: Any, by: str) -> None:
 # -- audit --------------------------------------------------------------------
 
 
+async def add_event(
+    conn: Any,
+    actor_type: str,
+    actor: str | int,
+    action: str,
+    *,
+    video_id: str | None = None,
+    customer_id: int | None = None,
+    detail: dict[str, Any] | None = None,
+    at: datetime | None = None,
+) -> None:
+    """One audit entry, written inside a save that is already open (`conn`). An entry that
+    belongs to a change is written with the change, so a server killed between the two can
+    never leave the one without the other."""
+    await conn.execute(
+        sa.insert(db.events).values(
+            at=at or db.now(),
+            actor_type=actor_type,
+            actor=str(actor),
+            action=action,
+            video_id=video_id,
+            customer_id=customer_id,
+            detail=detail,
+        )
+    )
+
+
 async def audit(
     ctx: Ctx,
     actor_type: str,
@@ -177,17 +214,7 @@ async def audit(
     at: datetime | None = None,
 ) -> None:
     async with ctx.engine.begin() as conn:
-        await conn.execute(
-            sa.insert(db.events).values(
-                at=at or db.now(),
-                actor_type=actor_type,
-                actor=str(actor),
-                action=action,
-                video_id=video_id,
-                customer_id=customer_id,
-                detail=detail,
-            )
-        )
+        await add_event(conn, actor_type, actor, action, video_id=video_id, customer_id=customer_id, detail=detail, at=at)
 
 
 # -- flags --------------------------------------------------------------------
@@ -201,12 +228,48 @@ FLAG_WORDS = {
     "not_my_home": "Customer said: not my home",
     "unmatched": "Not on the list: needs a customer",
     "no_email": "No email went out",
+    "off_route": "Video for a stop that is no longer on the route",
+    "second_video": "Two videos for one visit",
+    "video_waiting": "Video still waiting for the office",
+    "overdue": "Video held: its email was long overdue",
+    "file_doubt": "Cannot tell whether a video's file is there",
     "email_failed": "Email could not be sent",
     "email_bounced": "Email bounced",
     "low_score": "Low score",
     "recommend": "Tech recommended something",
     "fr_write_failed": "FieldRoutes save failed",
 }
+
+
+async def add_flag(
+    conn: Any,
+    kind: str,
+    dedupe: str,
+    *,
+    day: str,
+    tech_id: int | None = None,
+    customer_id: int | None = None,
+    video_id: str | None = None,
+    detail: str = "",
+) -> bool:
+    """Raise a flag once, inside a save that is already open (`conn`). False when the
+    same flag already exists (cleared or not)."""
+    return await db.insert_once(
+        conn,
+        db.flags,
+        dict(
+            dedupe=dedupe,
+            kind=kind,
+            day=day,
+            tech_id=tech_id,
+            customer_id=customer_id,
+            video_id=video_id,
+            detail=detail[:1000],
+            created_at=db.now(),
+            cleared_by="",
+            note="",
+        ),
+    )
 
 
 async def raise_flag(
@@ -221,33 +284,21 @@ async def raise_flag(
     detail: str = "",
 ) -> bool:
     """Raise a flag once. Returns False when the same flag already exists (cleared or not)."""
-    try:
-        async with ctx.engine.begin() as conn:
-            await conn.execute(
-                sa.insert(db.flags).values(
-                    dedupe=dedupe,
-                    kind=kind,
-                    day=day,
-                    tech_id=tech_id,
-                    customer_id=customer_id,
-                    video_id=video_id,
-                    detail=detail[:1000],
-                    created_at=db.now(),
-                    cleared_by="",
-                    note="",
-                )
-            )
-    except IntegrityError:
-        return False
-    return True
+    async with ctx.engine.begin() as conn:
+        return await add_flag(
+            conn, kind, dedupe, day=day, tech_id=tech_id, customer_id=customer_id, video_id=video_id, detail=detail
+        )
 
 
-async def clear_flags(ctx: Ctx, where: Any, by: str, note: str = "") -> int:
+async def close_flags(conn: Any, where: Any, by: str, note: str = "") -> int:
+    """Clear open flags inside a save that is already open (`conn`)."""
     values: dict[str, Any] = {"cleared_at": db.now(), "cleared_by": by}
     if note:
         values["note"] = note[:1000]
-    async with ctx.engine.begin() as conn:
-        result = await conn.execute(
-            sa.update(db.flags).where(db.flags.c.cleared_at.is_(None)).where(where).values(**values)
-        )
+    result = await conn.execute(sa.update(db.flags).where(db.flags.c.cleared_at.is_(None)).where(where).values(**values))
     return result.rowcount or 0
+
+
+async def clear_flags(ctx: Ctx, where: Any, by: str, note: str = "") -> int:
+    async with ctx.engine.begin() as conn:
+        return await close_flags(conn, where, by, note)

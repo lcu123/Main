@@ -29,6 +29,19 @@ from .fr import FieldRoutesError, clean, id_list, local_time, to_float, to_int
 
 LIVE_STATES = ("awaiting_upload", "held", "sent", "no_email", "unmatched")
 
+# Why a video is waiting for the office to say Send it anyway or Pull. Each is the
+# `email_skip` of a video in state `no_email` that has gone to nobody yet.
+OFF_ROUTE = "off_route"  # FieldRoutes no longer has the visit on that day, or no work there for that tech
+SECOND = "second_video"  # another tech's video for the same visit already stands
+OVERDUE = "overdue"  # its email was due hours ago: the server was down, or a backup was put back
+HELD_BACK = (OFF_ROUTE, SECOND, OVERDUE)
+
+
+def held_back(video: Any) -> bool:
+    """Is the server holding this video for the office to decide? Every kind of hold is
+    asked here, so the phone ("withOffice"), the office page and the emailer agree."""
+    return video.state == "no_email" and video.email_skip in HELD_BACK
+
 
 @dataclass(frozen=True)
 class StopView:
@@ -111,6 +124,39 @@ def tech_view(stop: Any, tech_id: int | None) -> StopView:
     )
 
 
+IN_BUCKET = ("held", "sent", "no_email")  # the file is in the bucket: it will not get lost on a phone
+
+
+def covers(stop: Any, tech_id: int, video_tech_id: int, video_appointment_ids: Any, state: str = "sent") -> bool:
+    """Does a video count as `tech_id`'s video for this stop? `state` is the video's.
+
+    His own always does. So does any video for a tech who shares the whole stop (a helper).
+    For a tech with appointments of his own there, a helper's video counts. Another lead's
+    never does: he was there for his own work, and each of them sends his own.
+
+    One more case: the office moved the work to him after another tech filmed it. That
+    video counts as his only when all three hold, so that the phone, the flags and the
+    office page always give the same answer:
+    - it is tied to every appointment he has there. If he also has work of his own at the
+      stop that the video is not tied to, he owes his own video, like any two techs at one
+      property;
+    - it is in the bucket. One still on the other tech's phone may never arrive;
+    - it has not been pulled. The office pulls it when the new tech should film his own."""
+    if video_tech_id == tech_id:
+        return True
+    leads = lead_techs(stop)
+    if tech_id not in leads:
+        return True
+    if video_tech_id in leads:
+        return False
+    if video_tech_id in (stop.tech_ids or []):
+        return True
+    if state not in IN_BUCKET:
+        return False
+    his = tech_view(stop, tech_id).appointment_ids
+    return bool(his) and set(his) <= set(video_appointment_ids or [])
+
+
 def missing_key(day: str, customer_id: int, tech_id: int) -> str:
     """Dedupe key of the 'finished with no video' flag: one per tech per stop."""
     return f"no_video:{day}:{customer_id}:{tech_id}"
@@ -138,15 +184,40 @@ def _city_line(row: dict[str, Any]) -> str:
     return clean(f"{left} {zip_code}")
 
 
-async def sync_day(ctx: Ctx, day: str, *, force: bool = False) -> bool:
+RETRY_AFTER_FAILURE = 60.0  # seconds to leave FieldRoutes alone after it failed to answer
+
+
+def _failed_key(day: str) -> str:
+    """Where `ctx.last_sync` keeps the time of the last failed read of a day."""
+    return f"failed:{day}"
+
+
+async def sync_day(ctx: Ctx, day: str, *, force: bool = False, wait: bool = True) -> bool:
     """Refresh the cached stops for `day`. Returns False when it was fresh enough to skip.
     Raises FieldRoutesError when FieldRoutes cannot be reached; callers that serve the
-    phone catch it and fall back to the cache."""
+    phone catch it and fall back to the cache.
+
+    A slow or dead FieldRoutes must not hold up the phones. One call can take over a
+    minute to give up, and without care every phone asking for its day would queue behind
+    it and then try again itself. So a caller that already has a saved list passes
+    `wait=False` and is not made to stand behind a read that is already under way, and
+    after a failed read nobody asks again for a minute unless told to (`force`)."""
+    if not wait and ctx.sync_lock.locked():
+        return False
     async with ctx.sync_lock:
+        now = time.monotonic()
         last = ctx.last_sync.get(day)
-        if not force and last is not None and time.monotonic() - last < ctx.cfg.sync_seconds:
+        if not force and last is not None and now - last < ctx.cfg.sync_seconds:
             return False
-        await _sync_day(ctx, day)
+        failed = ctx.last_sync.get(_failed_key(day))
+        if not force and failed is not None and now - failed < RETRY_AFTER_FAILURE:
+            raise FieldRoutesError("FieldRoutes did not answer a moment ago; working from the last saved list")
+        try:
+            await _sync_day(ctx, day)
+        except FieldRoutesError:
+            ctx.last_sync[_failed_key(day)] = time.monotonic()
+            raise
+        ctx.last_sync.pop(_failed_key(day), None)
         ctx.last_sync[day] = time.monotonic()
         return True
 
@@ -267,12 +338,16 @@ async def _sync_day(ctx: Ctx, day: str) -> None:
             if before is None:
                 values.setdefault("name", "Customer")
                 values["done_seen_at"] = now if done else None
-                await conn.execute(sa.insert(db.stops).values(day=day, customer_id=customer_id, **values))
-            else:
-                if done and before.done_seen_at is None:
-                    values["done_seen_at"] = now
-                elif not done:
-                    values["done_seen_at"] = None
+            elif done and before.done_seen_at is None:
+                values["done_seen_at"] = now
+            elif not done:
+                values["done_seen_at"] = None
+            # `insert_once`: at a deploy two servers run side by side for a moment, and both
+            # may read a new day in the same second. The second one then finds the stop
+            # already saved and updates it, instead of failing the whole read.
+            if before is not None or not await db.insert_once(
+                conn, db.stops, dict(day=day, customer_id=customer_id, **values)
+            ):
                 await conn.execute(
                     sa.update(db.stops)
                     .where(db.stops.c.day == day, db.stops.c.customer_id == customer_id)
@@ -285,6 +360,17 @@ async def _sync_day(ctx: Ctx, day: str) -> None:
                 .where(db.stops.c.day == day, db.stops.c.customer_id.in_(dropped))
                 .values(gone=True, synced_at=now)
             )
+
+
+async def has_saved_list(ctx: Ctx, day: str) -> bool:
+    """Is there a list for this day to serve without asking FieldRoutes? Either this
+    process has read the day (a day with no stops at all saves no rows), or stops for it
+    are in the database from before a restart."""
+    if ctx.last_sync.get(day) is not None:
+        return True
+    async with ctx.engine.connect() as conn:
+        saved = await conn.execute(sa.select(db.stops.c.customer_id).where(db.stops.c.day == day).limit(1))
+        return saved.first() is not None
 
 
 async def stops_for_day(ctx: Ctx, day: str) -> list[Any]:
@@ -309,6 +395,14 @@ async def live_videos_for_day(ctx: Ctx, day: str) -> list[Any]:
                 )
             ).all()
         )
+
+
+def with_office(video: Any) -> dict[str, bool]:
+    """`"withOffice": true` on a video in GET /v1/today while the server holds it for the
+    office (`held_back`), and nothing at all otherwise. The app then shows SENT TO OFFICE
+    where it would show SENT: the customer has not been emailed, and the tech cannot
+    change the video himself."""
+    return {"withOffice": True} if held_back(video) else {}
 
 
 def demo_stops(day: str) -> list[dict[str, Any]]:
@@ -344,23 +438,41 @@ async def today_payload(ctx: Ctx, device: Device) -> dict[str, Any]:
     settings = await get_settings(ctx)
     if not device.demo:
         try:
-            await sync_day(ctx, day)
+            # With a saved list in hand the phone is not made to wait behind someone
+            # else's read of FieldRoutes: it gets the saved list now and the fresh one
+            # the next time it asks. "In hand" means saved in the database, not only
+            # read by this process: after a restart or a deploy the list is still there.
+            await sync_day(ctx, day, wait=not await has_saved_list(ctx, day))
         except FieldRoutesError:
             pass  # FieldRoutes is down: serve the saved route, the phone keeps working
 
     videos = await live_videos_for_day(ctx, day)
     mine = {v.customer_id: v for v in videos if v.customer_id is not None and v.tech_id == device.tech_id}
-    theirs = {v.customer_id: v for v in videos if v.customer_id is not None and v.tech_id != device.tech_id}
+    theirs: dict[int, list[Any]] = {}
+    for v in videos:
+        if v.customer_id is not None and v.tech_id != device.tech_id:
+            theirs.setdefault(v.customer_id, []).append(v)
 
-    def video_ref(customer_id: int, lead: bool = True) -> dict[str, Any] | None:
-        # One video per tech per property: a tech with his own appointments here sees
-        # only his own video. A helper also sees the lead's, so the stop reads as covered.
+    def video_ref(customer_id: int, stop: Any = None) -> dict[str, Any] | None:
+        # One video per tech per property: a tech sees his own video. He is also shown
+        # another tech's when it stands in for his (see `covers`): a helper sees the
+        # lead's, and a lead sees a helper's or the one left by the tech who had this
+        # work before the office moved it, so the stop reads as covered.
         v = mine.get(customer_id)
-        if v is None and not lead:
-            v = theirs.get(customer_id)
+        if v is None and stop is not None:
+            v = next(
+                (
+                    o for o in theirs.get(customer_id, [])
+                    if covers(stop, device.tech_id, o.tech_id, o.appointment_ids, o.state)
+                ),
+                None,
+            )
         if v is None:
             return None
-        return {"id": v.id, "state": public_state(v.state, v.first_viewed_at), "byYou": v.tech_id == device.tech_id}
+        return {
+            "id": v.id, "state": public_state(v.state, v.first_viewed_at), "byYou": v.tech_id == device.tech_id,
+            **with_office(v),
+        }
 
     if device.demo:
         stops = demo_stops(day)
@@ -387,7 +499,7 @@ async def today_payload(ctx: Ctx, device: Device) -> dict[str, Any]:
                     "checkIn": iso(view.check_in),
                     "checkOut": iso(view.check_out),
                     "done": view.done,
-                    "video": video_ref(row.customer_id, view.lead),
+                    "video": video_ref(row.customer_id, row),
                 }
             )
 
@@ -413,6 +525,7 @@ async def today_payload(ctx: Ctx, device: Device) -> dict[str, Any]:
                 "customerId": v.customer_id,
                 "state": public_state(v.state, v.first_viewed_at),
                 "emailAt": iso(v.email_due_at),
+                **with_office(v),
                 # Only the App Review account is handed the customer's link, so a reviewer
                 # can see the other half of the product. A real tech's phone never gets one.
                 **({"watchUrl": f"{ctx.cfg.base_url}/w/{v.token}"} if device.demo and v.state != "awaiting_upload" else {}),

@@ -45,5 +45,6 @@ That is it. The video sends by itself. You can close the app and drive.
 | --- | --- |
 | No code came | Check you typed the mobile number the office has. Ask for a new code. Still nothing? Call the office. |
 | A video says WAITING | It will send when you have signal. Open the app and leave it open a minute. |
+| A video says SENT TO OFFICE | Your video is safe. The office is looking at it before it goes to the customer. You do not need to do anything. To change it, call the office. |
 | The app says you look far away | If you are at the right house, tap **YES, STILL RIGHT**. |
 | Anything else | Call the office. |
