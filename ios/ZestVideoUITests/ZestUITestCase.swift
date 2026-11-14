@@ -48,6 +48,14 @@ class ZestUITestCase: XCTestCase {
     /// as if the phone had been put away with it. Reset to `nil` after one
     /// launch, so a later relaunch does not age it again.
     var ageDraftDays: Int?
+    /// The first clip of each launch is interrupted this many seconds in,
+    /// as a call would interrupt it; the camera is then away for `lasting`
+    /// seconds and comes back by itself. `cause` is what the phone would
+    /// say took the camera ("call_or_alarm", "camera_taken", "phone_busy"...).
+    var interruption: (at: Double, lasting: Double, cause: String)?
+    /// The stand-in camera never says a recording is over (it neither
+    /// stops at the limit nor answers the ring): the app has to end it.
+    var silentCamera = false
     /// Answer "Don't Allow" to the phone's questions instead of "Allow".
     /// (One test refuses location; it puts this back in its tear-down.)
     static var refusing = false
@@ -239,6 +247,14 @@ class ZestUITestCase: XCTestCase {
             environment["ZEST_TEST_DRAFT_AGE_DAYS"] = String(days)
             ageDraftDays = nil
         }
+        if let call = interruption {
+            environment["ZEST_TEST_INTERRUPT_AT"] = String(call.at)
+            environment["ZEST_TEST_INTERRUPT_FOR"] = String(call.lasting)
+            environment["ZEST_TEST_INTERRUPT_AS"] = call.cause
+        }
+        if silentCamera {
+            environment["ZEST_TEST_SILENT_CAMERA"] = "1"
+        }
         // The token is only ever handed over together with a reset: a
         // restart must show what the app itself kept.
         if reset, signedIn, let token = issuedToken {
@@ -246,6 +262,20 @@ class ZestUITestCase: XCTestCase {
         }
         app.launchEnvironment = environment
         app.launch()
+    }
+
+    /// The words the speech check "hears" from the next start of the app
+    /// on (`relaunch()` keeps everything else as it was).
+    func hear(_ words: String?) {
+        transcript = words
+    }
+
+    /// The number in a stop card's round badge ("Stop 3" reads as 3), or
+    /// nil when the badge shows a tick or a clock instead.
+    func number(onCard customerId: Int) -> Int? {
+        let card = stop(customerId)
+        guard card.exists, let value = card.value as? String, value.hasPrefix("Stop ") else { return nil }
+        return Int(value.dropFirst(5))
     }
 
     /// Kills the app with no warning, the way a crash or a dead battery would.

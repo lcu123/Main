@@ -51,6 +51,9 @@ struct RecordView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             // Back from a call or the home screen: bring the camera back.
+            // (When the phone only borrowed the camera with the app still
+            // on the screen, a call that was declined, say, the camera
+            // comes back by itself: see `CameraService`.)
             if phase == .active && app.recordPhase == .idle {
                 camera.prepare()
             }
@@ -153,8 +156,16 @@ struct RecordView: View {
                 }
                 nameCard(withAddress: true)
             }
+            // One line, when there is something to say: the last clip was
+            // not kept, or the phone has the camera for now (a call).
             if let problem = app.recordProblem {
                 Banner(text: problem, tone: .attention)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("record-problem")
+            } else if let away = camera.away, app.recordPhase == .idle {
+                Banner(text: RecordingRule.cameraAway(away), tone: .attention)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("camera-away")
             }
 
             // The one giant button and its words, in the middle of the room
@@ -237,7 +248,9 @@ struct RecordView: View {
 
     private var readyLabel: String {
         if app.recordPhase != .idle { return "GET READY" }
-        return camera.status == .ready ? "TAP TO RECORD" : "STARTING CAMERA"
+        if camera.status == .ready { return "TAP TO RECORD" }
+        // A call, or another app, has the camera: it comes back by itself.
+        return camera.away == nil ? "STARTING CAMERA" : RecordingRule.cameraAwayLabel
     }
 
     private var flipButton: some View {

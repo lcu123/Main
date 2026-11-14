@@ -28,6 +28,32 @@ Test controls (all JSON):
                                                             appointment of his own there (he
                                                             is shown that video); false means
                                                             he has his own (he is not).
+  POST /__test/route   {"remove": [203], "moveToOtherTech": [204], "restore": [203],
+                        "add": [{"customerId": 206, "name": "Morgan Tidewater",
+                                 "lastName": "Tidewater", "address": "50 Oak Ave",
+                                 "north": 300, "west": 280, "after": 202}]}
+                                                            the OFFICE changes the day's
+                                                            route. "remove": the stop is
+                                                            cancelled, on nobody's list.
+                                                            "moveToOtherTech": it leaves
+                                                            this tech's list but is still a
+                                                            stop that day. "restore" puts
+                                                            either back. "add" puts a new
+                                                            stop after the customer named
+                                                            (at the end if none). Any mix,
+                                                            as often as wanted. The answer
+                                                            lists this tech's stops, in
+                                                            route order.
+  POST /__test/email-due {"customerId": N}                 the time has come to email this
+                                                            tech's video for that customer.
+                                                            If the office has cancelled the
+                                                            stop since it was filmed, no
+                                                            email goes: the video is held
+                                                            for the office ("no_email", and
+                                                            "withOffice": true on it in
+                                                            /v1/today) until the stop is
+                                                            restored, which sends it.
+                                                            Otherwise it is "sent".
   POST /__test/note    {"note": "text"}                    the APP says what it is doing
                                                             (each upload's start and end)
   GET  /__test/state                                        everything it saw
@@ -41,6 +67,15 @@ Switches for /__test/set (each stays until changed or reset):
   unauthorized        bool answer 401 to every signed-in call
   updateRequired      N    answer 426 with minBuild N to every /v1 call (0 = off)
   visitHasVideo       bool answer 409 visit_has_video to register
+  offList             str  what register says to a video for a customer whose stop the
+                           office has cancelled: "accept" (the default, and the
+                           contract: it is taken like any other, and the office
+                           decides what becomes of it) or "refuse" (400 bad_request,
+                           "That stop is not on the list for that day. Use Not On My
+                           List.": what a server from before that rule answers, and
+                           what any server answers for a customer who was never a
+                           stop that day)
+  refuseRegisters     bool answer 400 bad_request to every register, whatever it is for
   expireNextPut       N    answer 403 to the next N uploads (the URL "expired")
   notUploadedNext     N    answer 409 not_uploaded to the next N completes
   todayDelay          s    wait before answering GET /v1/today
@@ -80,6 +115,8 @@ DEFAULT_SWITCHES = {
     "unauthorized": False,
     "updateRequired": 0,
     "visitHasVideo": False,
+    "offList": "accept",
+    "refuseRegisters": False,
     "expireNextPut": 0,
     "notUploadedNext": 0,
     "todayDelay": 0,
@@ -148,6 +185,11 @@ class State:
             self.order = []           # video ids in the order they were first registered
             self.other_order = []     # the other tech's video ids, in the order they were put in
             self.helper_stops = set() # customers where the signed-in tech only helps
+            # What the office has changed on the route since the morning.
+            self.cancelled = set()    # stops taken off the day: on nobody's list
+            self.moved = set()        # stops given to the other tech: still stops that day
+            self.added = []           # stops added during the day: (row, after which customer)
+            self.route_changes = []   # each change, in order, with its time
             # One device token is issued ahead of time, so a test can start
             # the app already signed in instead of typing a number and a code.
             self.issued_token = "issued-" + uuid.uuid4().hex
@@ -183,6 +225,9 @@ class State:
             "completes": [],          # one status per complete call
             "deletes": 0,
             "fixture": fixture,
+            # Held for the office to decide: the visit left the day's route
+            # after it was filmed, and the email time came.
+            "withOffice": False,
         }
 
     # -- the route ---------------------------------------------------------
@@ -194,23 +239,12 @@ class State:
         # takes a stop finished within the hour to be where the tech still
         # is; a time fixed at the reset would run out under a slow test.
         checked_out = iso(utc_now() - datetime.timedelta(minutes=1))
-        rows = [
-            # customerId, name, lastName, address, north (m), west (m), order, checked, done, service
-            (205, "Tom Wilson", "Wilson", "300 Cedar Ln", -1900, -1400, 1, False, True, "Mowing"),
-            (201, "Jane Smith", "Smith", "123 Main St", 0, 0, 2, True, True, "Mowing"),
-            (202, "Robert Johnson", "Johnson", "125 Main St", 0, 22, 3, False, False, "Pest Control"),
-            (203, "Maria Garcia", "Garcia", "48 Oak Ave", 270, 260, 4, False, False, "Fertilization"),
-            (204, "Green Valley HOA", "", "5 Park Blvd", 2700, 2200, 5, False, False, "Irrigation"),
-        ]
-        if self.route == "long":
-            # A long day: twenty houses in a row, 6 metres apart, none checked
-            # in. Customers 301 to 320, in route order.
-            rows = [
-                (301 + i, "%s %s" % (first, last), last, "%d Maple Row" % (101 + 2 * i), 0, LONG_ROUTE_GAP_M * i, i + 1, False, False, "Mowing")
-                for i, (first, last) in enumerate(LONG_ROUTE_NAMES)
-            ]
         out = []
-        for customer, name, last, address, north, west, order, checked, done, service in rows:
+        for customer, name, last, address, north, west, order, checked, done, service in self.rows():
+            # A stop the office gave to another tech is still a stop that
+            # day (it keeps its place in the order): it is just not his.
+            if customer in self.moved:
+                continue
             # One video per tech per property: the tech sees his own video.
             # Another tech's is shown only where he has no appointment of
             # his own (a helper), and only until he has recorded one himself.
@@ -233,9 +267,114 @@ class State:
                 "checkIn": checked_in if checked else None,
                 "checkOut": checked_out if checked else None,
                 "done": done,
-                "video": None if video is None else {"id": video["id"], "state": video["state"], "byYou": by_you},
+                "video": None if video is None else self.video_ref(video, by_you),
             })
         return out
+
+    @staticmethod
+    def video_ref(video, by_you):
+        """A stop's video as /v1/today shows it. "withOffice" is there, and
+        true, only while the server holds the video for the office."""
+        ref = {"id": video["id"], "state": video["state"], "byYou": by_you}
+        if video.get("withOffice"):
+            ref["withOffice"] = True
+        return ref
+
+    def email_due(self, customer_id):
+        """The time has come to email this tech's video for a customer (the
+        real server's own step when the ten minutes are up). A visit the
+        office has taken off the day is not emailed by itself: the video is
+        kept and held for the office. Returns the video, or None."""
+        with self.lock:
+            video = self.live_video(customer_id)
+            if video is None or video["state"] != "held":
+                return None
+            if customer_id in self.cancelled:
+                video["state"] = "no_email"
+                video["withOffice"] = True
+            else:
+                video["state"] = "sent"
+            return video
+
+    def rows(self):
+        """The office's day as it stands now: the morning's stops and the
+        ones added since, less the cancelled ones, in route order.
+
+        `order` is each stop's place in that order, counted afresh after
+        every change, as the real server counts it at every sync: cancel a
+        stop and the later ones move up; add one and they move down. (A
+        stop moved to another tech keeps its place, so this tech's own
+        numbers can have a gap: the app must not expect 1, 2, 3.)"""
+        rows = [
+            # customerId, name, lastName, address, north (m), west (m), order, checked, done, service
+            (205, "Tom Wilson", "Wilson", "300 Cedar Ln", -1900, -1400, 1, False, True, "Mowing"),
+            (201, "Jane Smith", "Smith", "123 Main St", 0, 0, 2, True, True, "Mowing"),
+            (202, "Robert Johnson", "Johnson", "125 Main St", 0, 22, 3, False, False, "Pest Control"),
+            (203, "Maria Garcia", "Garcia", "48 Oak Ave", 270, 260, 4, False, False, "Fertilization"),
+            (204, "Green Valley HOA", "", "5 Park Blvd", 2700, 2200, 5, False, False, "Irrigation"),
+        ]
+        if self.route == "long":
+            # A long day: twenty houses in a row, 6 metres apart, none checked
+            # in. Customers 301 to 320, in route order.
+            rows = [
+                (301 + i, "%s %s" % (first, last), last, "%d Maple Row" % (101 + 2 * i), 0, LONG_ROUTE_GAP_M * i, i + 1, False, False, "Mowing")
+                for i, (first, last) in enumerate(LONG_ROUTE_NAMES)
+            ]
+        for row, after in self.added:
+            places = [i for i, existing in enumerate(rows) if existing[0] == after]
+            rows.insert(places[0] + 1 if places else len(rows), row)
+        rows = [row for row in rows if row[0] not in self.cancelled]
+        return [row[:6] + (place,) + row[7:] for place, row in enumerate(rows, start=1)]
+
+    def has_stop(self, customer_id):
+        """Is this customer a stop today, on anyone's list?"""
+        return any(row[0] == customer_id for row in self.rows())
+
+    def change_route(self, body):
+        """The office changes the day's route. Returns an error text, or None."""
+        with self.lock:
+            known = {row[0] for row in self.rows()} | self.cancelled
+            for key in ("remove", "moveToOtherTech", "restore"):
+                wanted = body.get(key, [])
+                if not isinstance(wanted, list) or any(not isinstance(c, int) for c in wanted):
+                    return "%s takes a list of customer numbers" % key
+                unknown = [c for c in wanted if c not in known]
+                if unknown:
+                    return "%s: no such stop today: %s" % (key, unknown)
+            added = body.get("add", [])
+            if not isinstance(added, list):
+                return "add takes a list of stops"
+            new_rows = []
+            for stop in added:
+                customer = stop.get("customerId") if isinstance(stop, dict) else None
+                if not isinstance(customer, int) or customer in known or any(r[0][0] == customer for r in new_rows):
+                    return "add: each stop needs a customerId that is not on the day already"
+                name = str(stop.get("name") or "Customer %d" % customer)
+                new_rows.append((
+                    (customer, name, str(stop.get("lastName", name.split(" ")[-1])), str(stop.get("address") or "1 New St"),
+                     float(stop.get("north", 0)), float(stop.get("west", 0)), 0, False, False, str(stop.get("service") or "Mowing")),
+                    stop.get("after")))
+            for customer in body.get("remove", []):
+                self.cancelled.add(customer)
+                self.moved.discard(customer)
+            for customer in body.get("moveToOtherTech", []):
+                self.moved.add(customer)
+                self.cancelled.discard(customer)
+            for customer in body.get("restore", []):
+                self.cancelled.discard(customer)
+                self.moved.discard(customer)
+                # The stop is back on the day: a video that was held for
+                # the office over it goes out by itself.
+                held = self.live_video(customer)
+                if held is not None and held.get("withOffice"):
+                    held["state"] = "sent"
+                    held["withOffice"] = False
+            self.added.extend(new_rows)
+            self.route_changes.append({
+                "after": len(self.requests), "t": round(time.monotonic() - self.began, 1),
+                "change": {k: v for k, v in body.items() if v},
+            })
+            return None
 
     def live_video(self, customer_id, tech=None, day=None):
         """The newest video one tech made for a customer on one day that
@@ -273,9 +412,11 @@ class State:
             "config": self.config,
             "stops": self.stops(),
             "videos": [
-                {"id": v["id"], "customerId": v["customerId"], "state": v["state"],
-                 # Not on the list: no email is waiting until the office matches it.
-                 "emailAt": None if v["state"] == "unmatched" else v["emailAt"]}
+                dict(
+                    {"id": v["id"], "customerId": v["customerId"], "state": v["state"],
+                     # Not on the list: no email is waiting until the office matches it.
+                     "emailAt": None if v["state"] == "unmatched" else v["emailAt"]},
+                    **({"withOffice": True} if v.get("withOffice") else {}))
                 for v in self.videos.values()
                 if v["techId"] == TECH["id"] and v["day"] == datetime.date.today().isoformat()
                 and v["state"] not in ("deleted", "replaced", "pulled")
@@ -291,6 +432,13 @@ class State:
                 "requests": self.requests,
                 "videos": [self.videos[i] for i in self.order],
                 "otherTechVideos": [self.videos[i] for i in self.other_order],
+                "route": {
+                    "mine": [s["customerId"] for s in self.stops()],
+                    "cancelled": sorted(self.cancelled),
+                    "moved": sorted(self.moved),
+                    "added": [row[0] for row, _ in self.added],
+                    "changes": self.route_changes,
+                },
                 "codes": self.codes,
                 "logins": self.logins,
                 "logouts": self.logouts,
@@ -310,13 +458,16 @@ class State:
                     extra = " " + json.dumps(r["body"], sort_keys=True)[:300]
                 lines.append("%3d %7.1fs  %-6s %-46s -> %s%s" % (r["n"], r.get("t", 0.0), r["method"], r["path"], r["status"], extra))
             for v in (self.videos[i] for i in self.order):
-                lines.append("video %s customer=%s state=%s registers=%d puts=%s bytes=%d completes=%s deletes=%d" % (
-                    v["id"], v["customerId"], v["state"], v["registers"],
-                    [p["status"] for p in v["puts"]], v["bytes"], v["completes"], v["deletes"]))
+                lines.append("video %s customer=%s state=%s%s registers=%d puts=%s bytes=%d completes=%s deletes=%d" % (
+                    v["id"], v["customerId"], v["state"], " (held for the office)" if v.get("withOffice") else "",
+                    v["registers"], [p["status"] for p in v["puts"]], v["bytes"], v["completes"], v["deletes"]))
             for v in (self.videos[i] for i in self.other_order):
                 lines.append("another tech's video %s customer=%s state=%s (%s)" % (
                     v["id"], v["customerId"], v["state"],
                     "this tech only helps there" if v["customerId"] in self.helper_stops else "this tech has his own appointment there"))
+            for change in self.route_changes:
+                lines.append("the office changed the route after request %d (%.1fs): %s" % (
+                    change["after"], change["t"], json.dumps(change["change"], sort_keys=True)))
             if self.notes:
                 lines.append("what the app said about its uploads:")
                 for note in self.notes:
@@ -542,6 +693,23 @@ class Handler(BaseHTTPRequestHandler):
         if not -1 <= age <= 14:
             return self.error(400, "bad_request", "This video is too old to send.")
 
+        if STATE.switches["refuseRegisters"]:
+            return self.error(400, "bad_request", "This video cannot be taken.")
+
+        # A video for a customer who is not a stop that day. The contract:
+        # a stop the office cancelled (or gave to another tech) after the
+        # phone's list was fetched is still taken, and the office decides.
+        # A customer who was never a stop that day is refused, with the
+        # real server's words. ("offList": "refuse" answers a cancelled
+        # stop the same way, as a server from before that rule did.)
+        with STATE.lock:
+            customer = body.get("customerId")
+            for_customer = not body.get("notOnMyList") and customer is not None and video_id not in STATE.videos
+            cancelled = customer in STATE.cancelled
+            never_a_stop = not cancelled and not STATE.has_stop(customer)
+        if for_customer and (never_a_stop or (cancelled and STATE.switches["offList"] == "refuse")):
+            return self.error(400, "bad_request", "That stop is not on the list for that day. Use Not On My List.")
+
         with STATE.lock:
             customer = body.get("customerId")
             existing = STATE.videos.get(video_id)
@@ -552,7 +720,7 @@ class Handler(BaseHTTPRequestHandler):
                 # that recording again replaces it. Another tech's video is
                 # never replaced and never stands in the way.
                 current = STATE.live_video(customer, day=filmed.isoformat()) if customer is not None else None
-                if current is not None and current["state"] in ("sent", "watched"):
+                if current is not None and current["state"] in ("sent", "watched", "no_email"):
                     locked = current
                 else:
                     locked = None
@@ -592,11 +760,18 @@ class Handler(BaseHTTPRequestHandler):
                               "emailAt": existing["emailAt"]}
         if answer is None:
             return self.error(
-                409, "visit_has_video",
-                "This video already went to the customer. Call the office to change it.",
+                409, "visit_has_video", self.locked_words(locked),
                 existing={"id": locked["id"], "state": locked["state"], "byYou": True,
                           "techFirstName": TECH["firstName"]})
         self.reply(200, answer)
+
+    @staticmethod
+    def locked_words(video):
+        """What a tech is told when he can no longer change a video himself."""
+        if video.get("withOffice"):
+            # Held back because the visit left the day: it has gone to nobody yet.
+            return "The office is looking at this video. Call the office to change it."
+        return "This video already went to the customer. Call the office to change it."
 
     def upload(self, video_id):
         if self.command != "PUT":
@@ -699,6 +874,7 @@ class Handler(BaseHTTPRequestHandler):
                 answer, status = {"id": video_id, "state": video["state"]}, 200
             elif video["state"] not in ("awaiting_upload", "held", "unmatched"):
                 answer, status = None, 409
+                message = self.locked_words(video)
             elif video["state"] == "unmatched" and utc_now() > self.delete_closes(video):
                 # Not on the list: no email closes the window, so the same
                 # ten minutes are counted from when it was filmed.
@@ -737,6 +913,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/__test/set" and self.command == "POST":
             with STATE.lock:
                 for key, value in (body or {}).items():
+                    if key == "offList" and value not in ("accept", "refuse"):
+                        return self.reply(400, {"error": "offList is \"accept\" or \"refuse\""}, record=False)
                     if key in STATE.switches:
                         STATE.switches[key] = value
                     elif key in STATE.config:
@@ -746,6 +924,24 @@ class Handler(BaseHTTPRequestHandler):
                 answer = {"ok": True, "switches": STATE.switches, "config": STATE.config}
             print("      set %s" % json.dumps(body, sort_keys=True), flush=True)
             return self.reply(200, answer, record=False)
+        if path == "/__test/route" and self.command == "POST":
+            problem = STATE.change_route(body or {})
+            if problem:
+                return self.reply(400, {"error": problem}, record=False)
+            with STATE.lock:
+                mine = [s["customerId"] for s in STATE.stops()]
+            print("      the office changed the route %s: this tech now has %s" % (
+                json.dumps(body, sort_keys=True), mine), flush=True)
+            return self.reply(200, {"ok": True, "customers": mine}, record=False)
+        if path == "/__test/email-due" and self.command == "POST":
+            customer = (body or {}).get("customerId")
+            video = STATE.email_due(customer) if isinstance(customer, int) else None
+            if video is None:
+                return self.reply(400, {"error": "this tech has no held video for that customer"}, record=False)
+            print("      the email time came for customer %s: %s%s" % (
+                customer, video["state"], " (held for the office)" if video["withOffice"] else ""), flush=True)
+            return self.reply(200, {"ok": True, "id": video["id"], "state": video["state"],
+                                    "withOffice": video["withOffice"]}, record=False)
         if path == "/__test/other-tech" and self.command == "POST":
             body = body or {}
             customer = body.get("customerId")
@@ -1114,7 +1310,105 @@ def self_test():
     check("another tech's video" in call("GET", "/__test/log")[1].decode(), "the log names the other tech's videos")
 
     # Reset forgets everything except the locked fixture.
+    # The office changes the route during the day.
+    status, body = call("POST", "/__test/reset", {"test": "route day", "config": {"maxSeconds": 3}})
+    token = body["token"]
+
+    def my_stops():
+        return call("GET", "/v1/today", token=token)[1]["stops"]
+
+    def numbers():
+        return [(s["customerId"], s["order"]) for s in my_stops()]
+
+    def send(video_id, **more):
+        """Register, upload, complete. Returns the state complete gave."""
+        status, body = register(token, video_id, **more)
+        if status != 200:
+            return status, body
+        check(put(body["upload"]["url"], video_bytes)[0] == 200, "upload %s" % video_id)
+        return call("POST", "/v1/videos/%s/complete" % video_id, {"sizeBytes": len(video_bytes)}, token=token)
+
+    check(numbers() == [(205, 1), (201, 2), (202, 3), (203, 4), (204, 5)], "the morning's route")
+    status, body = call("POST", "/__test/route", {"remove": [203]})
+    check(status == 200 and body["customers"] == [205, 201, 202, 204], "a stop is cancelled")
+    check(numbers() == [(205, 1), (201, 2), (202, 3), (204, 4)], "the later stops move up")
+    # A video for the cancelled stop is still taken, for that customer.
+    status, body = send("66666666-6666-4666-8666-666666666601", customer=203)
+    check(status == 200 and body["state"] == "held", "a cancelled stop's video is taken, not refused")
+    today = call("GET", "/v1/today", token=token)[1]
+    check(203 not in [s["customerId"] for s in today["stops"]]
+          and [v["customerId"] for v in today["videos"] if v["id"].endswith("01")] == [203],
+          "it is among his videos though its stop is off the list")
+    # A server from before that rule refuses it, in these words.
+    call("POST", "/__test/set", {"offList": "refuse"})
+    status, body = register(token, "66666666-6666-4666-8666-666666666602", customer=203)
+    check(status == 400 and body["error"] == "bad_request" and "Not On My List" in body["message"], "offList refuse: 400")
+    check(len(call("GET", "/__test/state")[1]["videos"]) == 1, "and no video is made of it")
+    # The same video, sent again as not on my list, is taken for the office.
+    status, body = send("66666666-6666-4666-8666-666666666602", customer=None, notOnMyList=True, appointmentIds=[])
+    check(status == 200 and body["state"] == "unmatched" and body["emailAt"] is None, "as not on my list: unmatched")
+    check(call("POST", "/__test/set", {"offList": "unmatched"})[0] == 400, "offList takes two words only")
+    call("POST", "/__test/set", {"offList": "accept"})
+    # The email time comes for that video: the visit is off the day, so no
+    # email goes and the server holds it for the office.
+    status, body = call("POST", "/__test/email-due", {"customerId": 203})
+    check(status == 200 and body["state"] == "no_email" and body["withOffice"] is True, "held for the office")
+    today = call("GET", "/v1/today", token=token)[1]
+    held = [v for v in today["videos"] if v["customerId"] == 203]
+    check(len(held) == 1 and held[0]["state"] == "no_email" and held[0].get("withOffice") is True, "withOffice in videos[]")
+    check(all("withOffice" not in v for v in today["videos"] if v["customerId"] != 203), "and on no other video")
+    status, body = register(token, "66666666-6666-4666-8666-666666666607", customer=203)
+    check(status == 409 and body["error"] == "visit_has_video" and body["existing"]["state"] == "no_email"
+          and body["existing"]["byYou"] is True and body["message"].startswith("The office is looking at this video."),
+          "a new video for it: 409, the office is looking")
+    status, body = call("DELETE", "/v1/videos/66666666-6666-4666-8666-666666666601", token=token)
+    check(status == 409 and body["error"] == "too_late" and body["message"].startswith("The office is looking"),
+          "and it cannot be deleted from the phone")
+    check(call("POST", "/__test/email-due", {"customerId": 203})[0] == 400, "the email time comes once")
+    check(call("POST", "/__test/email-due", {"customerId": 204})[0] == 400, "and only for a video the server holds")
+    # A customer who was never a stop that day is refused whatever the switch.
+    status, body = register(token, "66666666-6666-4666-8666-666666666606", customer=999)
+    check(status == 400 and "Not On My List" in body["message"], "never a stop that day: 400")
+
+    # Moved to another tech: off his list, still a stop, the video is taken.
+    status, body = call("POST", "/__test/route", {"moveToOtherTech": [204]})
+    check(body["customers"] == [205, 201, 202], "a stop goes to another tech")
+    status, body = send("66666666-6666-4666-8666-666666666603", customer=204)
+    check(status == 200 and body["state"] == "held", "its video is still taken for the customer")
+
+    # Put back, and one added in the middle.
+    status, body = call("POST", "/__test/route", {"restore": [203, 204], "add": [
+        {"customerId": 206, "name": "Morgan Tidewater", "lastName": "Tidewater", "address": "50 Oak Ave",
+         "north": 300, "west": 280, "after": 202}]})
+    check(status == 200 and body["customers"] == [205, 201, 202, 206, 203, 204], "restored, and one added after 202")
+    back = [s for s in my_stops() if s["customerId"] == 203][0]["video"]
+    check(back["state"] == "sent" and "withOffice" not in back and back["byYou"] is True,
+          "the stop is back, so its held video went out and withOffice is gone")
+    check(numbers() == [(205, 1), (201, 2), (202, 3), (206, 4), (203, 5), (204, 6)], "numbered afresh")
+    added = [s for s in my_stops() if s["customerId"] == 206][0]
+    check(added["name"] == "Morgan Tidewater" and added["video"] is None and not added["done"], "the new stop is an open stop")
+    check(register(token, "66666666-6666-4666-8666-666666666604", customer=206)[0] == 200, "and takes a video")
+    # A gap in his numbers when a stop in the middle is another tech's.
+    call("POST", "/__test/route", {"moveToOtherTech": [202]})
+    check(numbers() == [(205, 1), (201, 2), (206, 4), (203, 5), (204, 6)], "his own numbers can have a gap")
+    # Twice a day, and back again.
+    call("POST", "/__test/route", {"remove": [206, 204], "restore": [202]})
+    call("POST", "/__test/route", {"restore": [204]})
+    check(numbers() == [(205, 1), (201, 2), (202, 3), (203, 4), (204, 5)], "the morning's route again")
+    seen = call("GET", "/__test/state")[1]["route"]
+    check(seen["cancelled"] == [206] and seen["moved"] == [] and seen["added"] == [206] and len(seen["changes"]) == 6,
+          "the state says what the office did")
+    check("the office changed the route" in call("GET", "/__test/log")[1].decode(), "and so does the log")
+    for bad in ({"remove": [999]}, {"remove": "203"}, {"add": [{"customerId": 201}]}, {"add": [{"name": "x"}]}):
+        check(call("POST", "/__test/route", bad)[0] == 400, "a bad route change is refused: %s" % json.dumps(bad))
+    # A register that is refused whatever it is for.
+    call("POST", "/__test/set", {"refuseRegisters": True})
+    status, body = register(token, "66666666-6666-4666-8666-666666666605", customer=None, notOnMyList=True, appointmentIds=[])
+    check(status == 400 and body["error"] == "bad_request", "refuseRegisters: 400 even for the office")
+    call("POST", "/__test/set", {"refuseRegisters": False})
+
     call("POST", "/__test/reset", {"test": "again"})
+    check(call("GET", "/__test/state")[1]["route"]["changes"] == [], "a reset puts the route back")
     state = call("GET", "/__test/state")[1]
     check(state["videos"] == [] and state["otherTechVideos"] == [] and state["requests"] == []
           and state["config"]["maxSeconds"] == 15, "reset")

@@ -6,8 +6,8 @@ name: iOS
 #   screens     pictures of every screen, taken in the simulator (artifact "screens")
 #   ui-tests    end-to-end tests: the real app in the simulator against a fake
 #               server on the runner (artifacts "ui-tests-a", "ui-tests-b",
-#               "ui-tests-d"; "ui-tests-c" is informational and cannot fail
-#               the run)
+#               "ui-tests-d", "ui-tests-e"; "ui-tests-c" is informational and
+#               cannot fail the run)
 #   sizes       every screen on the smallest iPhone, a 6.1-inch iPhone, an iPad
 #               and at the largest text sizes: pictures (artifacts "screens-small",
 #               "screens-largest-accessibility",
@@ -387,7 +387,11 @@ jobs:
     # misbehave. The app's simulator-only UI-test mode swaps in a stand-in
     # for the camera; none of that mode exists in a build for a real phone.
     #
-    # Jobs "a" and "b" are the tests. Job "c" is informational: it builds the
+    # Jobs "a", "b", "d" and "e" are the tests. "e" is the day going wrong:
+    # a call in the middle of a recording (the stand-in camera is told to be
+    # interrupted), the office changing the route during the day (the fake
+    # server is told to), and a tech who does not drive the route in order.
+    # Job "c" is informational: it builds the
     # app ad-hoc signed and runs the one test that uses the real background
     # upload session, to show what the simulator does with it. It can never
     # turn the run red.
@@ -414,6 +418,11 @@ jobs:
           - name: storage, drafts, twenty offline, no location
             slug: d
             classes: StorageUITests DraftUITests LongDayUITests WithoutLocationUITests
+            signed: false
+            informational: false
+          - name: a call mid-recording, the route changed, out of order
+            slug: e
+            classes: InterruptionUITests RouteDayUITests
             signed: false
             informational: false
           - name: background uploads, signed build, informational

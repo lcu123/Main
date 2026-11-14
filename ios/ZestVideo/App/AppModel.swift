@@ -24,6 +24,9 @@ struct VideoSummary: Equatable {
         case locked
         /// The server refused it; shows the server's words.
         case blocked(String)
+        /// Still on the phone, and the server will not take it. Waiting
+        /// will not send it: the screen says to call the office.
+        case stuck
         /// Nothing to show any more.
         case gone
     }
@@ -38,6 +41,14 @@ struct VideoSummary: Equatable {
     /// Filmed as "not on my list": it goes to the office to be matched, not
     /// to a customer. No screen may say an email is on its way.
     var toOffice = false
+    /// The server is holding this video for the office to decide (the
+    /// visit left the day's route after it was filmed). It reads SENT TO
+    /// OFFICE, and nothing may say it went to the customer.
+    var withOffice = false
+    /// The stop as the phone last saw it, when the office has since taken
+    /// it off the list. Only for showing the address and for RECORD AGAIN;
+    /// `stop` stays nil, because the stop is not on the list.
+    var formerStop: Stop?
 }
 
 /// The two-keys check for the clip on the review screen.
@@ -170,7 +181,25 @@ final class AppModel: ObservableObject {
         }
     }
     @Published private(set) var tech: TechInfo?
-    @Published private(set) var today: TodayResponse?
+    @Published private(set) var today: TodayResponse? {
+        didSet {
+            // Every stop seen on today's list is remembered until the day
+            // changes, so a stop the office takes off the route keeps its
+            // address on the screens that still talk about it.
+            guard let today else {
+                seenStops = [:]
+                return
+            }
+            for stop in today.stops {
+                seenStops[stop.customerId] = stop
+            }
+        }
+    }
+    /// Today's stops as last seen, the ones since removed included.
+    private var seenStops: [Int: Stop] = [:]
+    /// When the day's list was last asked for, answered or not (this run
+    /// of the app).
+    private var lastListAsk: Date?
     @Published private(set) var target: RecordTarget?
     @Published private(set) var draft: Draft?
     @Published private(set) var check: CheckState = .idle
@@ -199,6 +228,11 @@ final class AppModel: ObservableObject {
     private var started = false
     private var signingOut = false
     private var checkTask: Task<Void, Never>?
+    /// The clip the camera is recording now. Its end is dealt with once.
+    private var recordingID: String?
+    /// A clip left by an earlier run, or one that would not save, is being
+    /// looked at: one look at a time.
+    private var recovering = false
     /// What RECORD ANYWAY or TRY AGAIN on the storage screen goes on to do.
     private var afterStorage: (@MainActor () -> Void)?
     /// Videos the tech deleted or recorded over in this run of the app.
@@ -289,10 +323,19 @@ final class AppModel: ObservableObject {
         return stops.first { $0.customerId == customerId }
     }
 
-    /// The stop's place on the route, counting from 1.
+    /// The number on the stop's card: its place on the route as planned,
+    /// counting from 1. Not where the card sits on the screen, and nothing
+    /// depends on it. See `RouteNumbers`.
     func routeNumber(of stop: Stop) -> Int {
-        let ordered = stops.sorted { $0.order != $1.order ? $0.order < $1.order : $0.customerId < $1.customerId }
-        return (ordered.firstIndex { $0.customerId == stop.customerId } ?? 0) + 1
+        RouteNumbers.number(of: stop.customerId, in: stops)
+    }
+
+    /// The stop on the confirm screen is no longer on the list the server
+    /// sends: the office changed the route while the tech had it open. He
+    /// is told, and can still record (the work may be done already).
+    var targetLeftList: Bool {
+        guard let target, !target.notOnMyList else { return false }
+        return RouteList.hasLeft(customerId: target.customerId, list: today?.stops)
     }
 
     /// What a stop's card shows, and so what tapping it does.
@@ -342,6 +385,8 @@ final class AppModel: ObservableObject {
         case .waiting:
             let text = summary.statusText == "WAITING" ? "WAITING TO SEND" : summary.statusText
             return RowState(badge: .waiting, text: text, tone: .waiting)
+        case .stuck:
+            return RowState(badge: .problem, text: VideoWords.stuckRow, tone: .problem)
         case .locked:
             // "SENT ✓", or "SENT TO OFFICE" for a video not on the list.
             return RowState(badge: .sent, text: summary.toOffice ? VideoWords.sentToOffice : VideoWords.sent, tone: .good)
@@ -428,6 +473,9 @@ final class AppModel: ObservableObject {
             queue.pruneOldDays(today: workingDay)
         }
         discardExpiredDraft()
+        // A clip whose file could not be made ready the last time (the
+        // phone was locked in the middle of it, say) is tried again now.
+        Task { await recoverInterruptedRecording() }
         guard signedIn else { return }
         askAboutEarlierDraft()
         location.askWhenInUse()
@@ -450,6 +498,8 @@ final class AppModel: ObservableObject {
     func nudged() {
         guard started, signedIn else { return }
         uploads.pump(wake: true)
+        // And look at the list again: the office may have changed the route.
+        Task { await refreshToday() }
     }
 
     private func syncNudges() {
@@ -523,6 +573,24 @@ final class AppModel: ObservableObject {
 
     // MARK: - Today
 
+    /// How old the list may be before it is fetched again as My Route
+    /// comes on screen or a stop is tapped: half a minute. (The server's
+    /// own copy can be three minutes behind FieldRoutes; the phone should
+    /// not add much to that.)
+    static let staleListSeconds: TimeInterval = 30
+
+    /// Fetches the list again if it was last asked for more than
+    /// `staleListSeconds` ago. Never waits: the screen carries on.
+    /// (The first fetch of a run is `becameActive`'s; this adds none to it.)
+    func refreshTodayIfStale() {
+        guard signedIn, !refreshing, let lastListAsk,
+              Date().timeIntervalSince(lastListAsk) >= AppModel.staleListSeconds else { return }
+        Task {
+            guard !refreshing else { return }
+            await refreshToday()
+        }
+    }
+
     func refreshToday() async {
         guard signedIn else { return }
         // Asked again while a fetch is in the air (a video was just deleted
@@ -541,6 +609,8 @@ final class AppModel: ObservableObject {
     }
 
     private func fetchToday() async {
+        // (Answered or not: a phone with no signal does not ask on every tap.)
+        defer { lastListAsk = Date() }
         do {
             let fresh = try await api.today()
             today = fresh
@@ -555,7 +625,10 @@ final class AppModel: ObservableObject {
             offline = false
             // The server's word on each of my videos.
             for video in fresh.videos where queue.item(video.id) != nil {
-                queue.apply(.serverState(video.state, emailAt: video.emailAt), to: video.id)
+                // (A stop's own video object may be the one that says the
+                // office is holding it: either list's word counts.)
+                let held = video.isWithOffice || fresh.stops.contains { $0.video?.id == video.id && $0.video?.isWithOffice == true }
+                queue.apply(.serverState(video.state, emailAt: video.emailAt, withOffice: held), to: video.id)
             }
             // Dropped videos the server no longer lists as live can be forgotten.
             let stillLive = Set(fresh.stops.compactMap { $0.liveVideo?.id })
@@ -683,6 +756,11 @@ final class AppModel: ObservableObject {
 
     func open(stop: Stop) {
         notice = nil
+        // The office may have changed the route since the list was last
+        // fetched. The stop opens at once from the list the phone has; the
+        // fresh list follows in a moment, and if this stop has left it the
+        // confirm screen says so.
+        refreshTodayIfStale()
         // One thing at a time: an unsaved clip is dealt with first.
         if draft != nil {
             openReview()
@@ -835,13 +913,25 @@ final class AppModel: ObservableObject {
         Haptics.thump()
         Sounds.beginRecording()
         let maxSeconds = config.maxSeconds
+        let movie = Files.video(pending.movieFileName)
+        recordingID = pending.id
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 350_000_000)
             self.recordPhase = .recording
-            self.camera.startRecording(to: Files.video(pending.movieFileName), maxSeconds: maxSeconds) { [weak self] clip in
+            let rolling = Date()
+            self.camera.startRecording(to: movie, maxSeconds: maxSeconds) { [weak self] end in
                 Task { @MainActor in
-                    await self?.finishRecording(pending: pending, clip: clip)
+                    await self?.finishRecording(pending: pending, end: end)
                 }
+            }
+            // Never stuck. The camera reports the end of every recording.
+            // If one day it does not, the recording is ended here a few
+            // seconds after its time is up: whatever is on disk is handed
+            // over, the red frame comes down, and the tech can carry on.
+            try? await Task.sleep(nanoseconds: UInt64((Double(maxSeconds) + RecordingRule.overdueSeconds) * 1_000_000_000))
+            if self.recordingID == pending.id, self.recordPhase == .recording,
+               RecordingRule.isOverdue(elapsed: Date().timeIntervalSince(rolling), maxSeconds: Double(maxSeconds)) {
+                self.camera.giveUpRecording(of: movie)
             }
         }
     }
@@ -853,38 +943,82 @@ final class AppModel: ObservableObject {
         camera.stopRecording()
     }
 
-    private func finishRecording(pending: PendingRecording, clip: RecordedClip?) async {
+    /// The camera stopped: at the time limit, at the tech's tap, or because
+    /// the phone took it away (a call, the screen locked: `end.cut`).
+    private func finishRecording(pending: PendingRecording, end: RecordingEnd) async {
+        // Handed over once only (the camera, or the watch for a silent one).
+        guard recordingID == pending.id else { return }
+        recordingID = nil
         recordPhase = .saving
         Haptics.thump()
         Sounds.endRecording()
-        events.log(.recordStop, videoId: pending.id, customerId: pending.target.customerId)
 
-        let saved = await makeDraft(from: pending, startedAt: clip?.startedAt)
-        recordPhase = .idle
-        if saved {
-            // The camera's job is done: free the microphone and the battery.
-            camera.shutDown()
-            openReview()
-        } else {
-            recordProblem = "That video did not save. Please record it again."
+        // The phone may have just been locked, or a call may have the
+        // screen: iOS is asked for the time to finish saving the clip.
+        // (If that time runs out first, the camera's file and its record
+        // are on disk: the clip is saved the next time the app is opened.)
+        let background = UIApplication.shared.beginBackgroundTask(withName: "zest.save.clip", expirationHandler: nil)
+        defer {
+            if background != .invalid {
+                UIApplication.shared.endBackgroundTask(background)
+            }
         }
+
+        // How it ended is written down first, so that a second try at
+        // saving it (or a restart) treats the clip the same way.
+        var ended = pending
+        ended.cut = end.cut
+        ended.seconds = end.seconds
+        if let rolled = end.clip?.startedAt {
+            // When the camera really began, not when the button was tapped.
+            ended.startedAt = rolled
+        }
+        draftStore.savePending(ended)
+
+        let made = await makeDraft(from: ended)
+        recordPhase = .idle
+        settle(made, pending: ended)
+    }
+
+    private enum Made {
+        /// The clip is saved as a draft. `seconds` is how long it really is.
+        case draft(Draft, seconds: Double)
+        /// The camera's file had nothing in it worth keeping.
+        case nothing
+        /// The file could not be made ready this time. It is kept, and
+        /// tried again when the app is next opened.
+        case keptForLater
     }
 
     /// Re-wraps the camera file as the upload-ready .mp4 and stores it as a draft.
-    private func makeDraft(from pending: PendingRecording, startedAt: Date?) async -> Bool {
+    private func makeDraft(from pending: PendingRecording) async -> Made {
         let movie = Files.video(pending.movieFileName)
         let fileName = pending.videoFileName
-        let output = await VideoExporter.makeMP4(from: movie, to: Files.video(fileName))
-        guard let output else {
+        let output: VideoExporter.Output
+        switch await VideoExporter.makeMP4(from: movie, to: Files.video(fileName)) {
+        case .success(let made):
+            output = made
+        case .failure(.nothingThere):
             Files.remove(movie)
             draftStore.clearPending()
-            return false
+            return .nothing
+        case .failure(.failed):
+            // Nothing lost: the camera's own file stays where it is.
+            var kept = pending
+            kept.tries = (pending.tries ?? 0) + 1
+            if RecordingRule.keepForAnotherTry(triesSoFar: kept.tries ?? 1) {
+                draftStore.savePending(kept)
+                return .keptForLater
+            }
+            Files.remove(movie)
+            draftStore.clearPending()
+            return .nothing
         }
 
         let draft = Draft(
             id: pending.id, target: pending.target, fileName: fileName, stopDate: pending.stopDate,
-            recordedAt: startedAt ?? pending.startedAt, durationSec: output.seconds, sizeBytes: output.bytes,
-            location: pending.location, createdAt: Date()
+            recordedAt: pending.startedAt, durationSec: output.seconds, sizeBytes: output.bytes,
+            location: pending.location, createdAt: Date(), cut: pending.cut
         )
         // On disk the instant recording stops: it survives anything from here.
         // The draft is written BEFORE the recording marker is cleared, so
@@ -894,22 +1028,94 @@ final class AppModel: ObservableObject {
         Files.remove(movie)
         draftStore.clearPending()
         Notifier.scheduleDraftNudge(name: draft.target.name)
-        return true
+
+        // How long the clip ran. The file says; except in a UI test, where
+        // the stand-in camera's file is always the same two seconds and the
+        // clock is what was "recorded".
+        var seconds = output.seconds
+        #if targetEnvironment(simulator)
+        if camera.standIn, let clock = pending.seconds {
+            seconds = clock
+        }
+        #endif
+        return .draft(draft, seconds: seconds)
     }
 
-    /// The app was killed, or a call came in, in the middle of a clip.
-    private func recoverInterruptedRecording() async {
-        guard let pending = draftStore.loadPending(), recordPhase == .idle else { return }
-        if draft == nil, Files.size(of: Files.video(pending.movieFileName)) > 0 {
-            let recovered = await makeDraft(from: pending, startedAt: nil)
-            // "Keep or record again?" straight away, not a card to go and find.
-            if recovered, signedIn, route == .today {
+    /// What becomes of a recording once its file has been dealt with (see
+    /// `RecordingRule`): "Save this video?", with a line if it was cut
+    /// short; or, cut too short to be worth sending, one line on the
+    /// camera screen and the record button again.
+    private func settle(_ made: Made, pending: PendingRecording) {
+        let customerId = pending.target.customerId
+        switch made {
+        case .draft(_, let seconds):
+            switch RecordingRule.next(seconds: seconds, cut: pending.cut) {
+            case .review:
+                events.log(
+                    .recordStop, videoId: pending.id, customerId: customerId,
+                    detail: RecordingRule.auditDetail(seconds: seconds, cut: pending.cut, kept: true)
+                )
+                // "Save this video?" straight away, not a card to go and
+                // find. (Unless another screen is asking something.)
+                guard signedIn, route == .record || route == .today else { return }
+                // The camera's job is done: free the microphone and the battery.
+                camera.shutDown()
                 openReview()
+            case .recordAgain(let message):
+                events.log(
+                    .recordStop, videoId: pending.id, customerId: customerId,
+                    detail: RecordingRule.auditDetail(seconds: seconds, cut: pending.cut, kept: false)
+                )
+                discardDraft(log: false)
+                say(message)
             }
-        } else {
+        case .nothing:
+            events.log(
+                .recordStop, videoId: pending.id, customerId: customerId,
+                detail: RecordingRule.auditDetail(seconds: 0, cut: pending.cut ?? .unknown, kept: false)
+            )
+            say(pending.cut.map { RecordingRule.tooShort($0) } ?? RecordingRule.notSaved)
+        case .keptForLater:
+            // Said only to a tech who is looking at the camera. If the
+            // phone is locked or on a call, the clip is tried again when
+            // the app is back, and he is asked about it then.
+            if UIApplication.shared.applicationState == .active {
+                say(RecordingRule.notSaved)
+            }
+        }
+    }
+
+    /// One line about a clip that was not kept: on the camera screen if he
+    /// is there, else at the top of My Route.
+    private func say(_ message: String) {
+        if route == .record {
+            recordProblem = message
+        } else if route == .today {
+            notice = message
+        }
+    }
+
+    /// A recording was left unfinished: the app was killed in the middle of
+    /// a clip, or the clip's file could not be made ready the first time.
+    /// Looked at when the app starts and each time it is opened.
+    private func recoverInterruptedRecording() async {
+        guard !recovering, recordPhase == .idle, var pending = draftStore.loadPending() else { return }
+        recovering = true
+        defer { recovering = false }
+        guard draft == nil, Files.size(of: Files.video(pending.movieFileName)) > 0 else {
             Files.remove(Files.video(pending.movieFileName))
             draftStore.clearPending()
+            return
         }
+        if pending.seconds == nil, pending.cut == nil {
+            // The camera never got to say how the clip ended: the app
+            // itself was stopped while it was recording.
+            pending.cut = .appStopped
+        }
+        let made = await makeDraft(from: pending)
+        // (A new recording may have begun while that ran: leave it be.)
+        guard recordPhase == .idle else { return }
+        settle(made, pending: pending)
     }
 
     private func loadDraft() {
@@ -934,6 +1140,12 @@ final class AppModel: ObservableObject {
     var draftStanding: DraftRule.Standing {
         guard let draft else { return .today }
         return DraftRule.standing(stopDate: draft.stopDate, today: workingDay)
+    }
+
+    /// The one line on "Save this video?" when the clip was cut short: "A
+    /// call stopped this video early."
+    var draftCutNote: String? {
+        draft?.cut.map { RecordingRule.reviewNote($0) }
     }
 
     /// "Filmed Thursday, Nov 12", for a clip from an earlier day.
@@ -1216,16 +1428,30 @@ final class AppModel: ObservableObject {
             item = queue.item(id)
         }
 
+        // A video for a stop the office has since taken off the list: the
+        // stop as it was when the phone last saw it.
+        var formerStop: Stop?
+        if stop == nil, let item, item.stopDate == workingDay, let customerId = item.customerId {
+            formerStop = seenStops[customerId]
+        }
+
         let name = stop?.listName ?? item?.customerName ?? "This stop"
-        let address = stop?.address ?? ""
+        let address = stop?.address ?? formerStop?.address ?? ""
 
         if let item {
             var summary = VideoSummary(
                 name: name, address: address, statusText: item.displayText, mode: .waiting,
-                stop: stop, itemID: item.id, serverVideoID: nil, toOffice: item.goesToOffice
+                stop: stop, itemID: item.id, serverVideoID: nil, toOffice: item.goesToOffice, formerStop: formerStop
             )
+            summary.withOffice = item.withOffice == true
             if item.phase == .blocked {
                 summary.mode = .blocked(item.blockedMessage ?? UploadManager.lockedMessage)
+            } else if item.isStuck {
+                summary.mode = .stuck
+            } else if item.phase == .done, item.withOffice == true {
+                // The office has it: the server takes no change from the
+                // phone now, whatever the clock says.
+                summary.mode = .locked
             } else if HoldWindow.isOpen(recordedAt: item.recordedAt, now: now, holdMinutes: config.holdMinutes) {
                 summary.mode = .changeable(closesAt: HoldWindow.closesAt(recordedAt: item.recordedAt, holdMinutes: config.holdMinutes))
             } else if item.phase == .done {
@@ -1241,9 +1467,11 @@ final class AppModel: ObservableObject {
         if let stop {
             let cover = StopCover.of(stop, ownVideos: myServerVideos)
             if let video = cover.video {
+                // (A video the server holds for the office has gone to nobody.)
+                let held = cover.isMine && video.isWithOffice
                 var summary = VideoSummary(
-                    name: name, address: address, statusText: "SENT ✓", mode: .locked,
-                    stop: stop, itemID: nil, serverVideoID: video.id
+                    name: name, address: address, statusText: held ? VideoWords.sentToOffice : VideoWords.sent, mode: .locked,
+                    stop: stop, itemID: nil, serverVideoID: video.id, toOffice: held, withOffice: held
                 )
                 switch cover.standing(now: now) {
                 case .change(let closesAt):
@@ -1280,14 +1508,25 @@ final class AppModel: ObservableObject {
             recordOwn(summary)
             return
         }
+        let item = summary.itemID.flatMap { queue.item($0) }
         if let stop = summary.stop {
             target = RecordTarget(stop: stop)
+        } else if let item, !item.notOnMyList, item.stopDate == workingDay, let customerId = item.customerId {
+            // His own video of today for a customer, whose stop the office
+            // has since taken off the list. Recording again is still for
+            // that customer, and the new clip replaces this one. (It used
+            // to become a "not on my list" video here, which replaced
+            // nothing: the old clip went to the customer and the new one
+            // to the office.)
+            target = summary.formerStop.map { RecordTarget(stop: $0) }
+                ?? RecordTarget(customerId: customerId, name: item.customerName, appointmentIds: item.appointmentIds)
         } else {
             target = .notOnMyList
         }
+        let customer = target?.customerId
         enterCamera { [weak self] in
             guard let self else { return }
-            self.events.log(.retake, videoId: summary.itemID ?? summary.serverVideoID, customerId: summary.stop?.customerId)
+            self.events.log(.retake, videoId: summary.itemID ?? summary.serverVideoID, customerId: customer)
             self.recordProblem = nil
             self.focus = nil
             self.route = .record

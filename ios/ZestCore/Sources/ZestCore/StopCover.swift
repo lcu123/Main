@@ -48,10 +48,15 @@ public enum StopCover: Equatable, Sendable {
             ownVideos.first { $0.id == id }?.emailAt
         }
         if shown.byYou {
-            return .mine(shown, emailAt: emailAt(shown.id))
+            // (Whichever of the two lists says the office has it, it has.)
+            var mine = shown
+            if ownVideos.first(where: { $0.id == shown.id })?.isWithOffice == true {
+                mine.withOffice = true
+            }
+            return .mine(mine, emailAt: emailAt(shown.id))
         }
         if let own = ownVideos.last(where: { $0.customerId == stop.customerId && !$0.state.isGone }) {
-            return .mine(StopVideo(id: own.id, state: own.state, byYou: true), emailAt: own.emailAt)
+            return .mine(StopVideo(id: own.id, state: own.state, byYou: true, withOffice: own.withOffice), emailAt: own.emailAt)
         }
         return .team(shown)
     }

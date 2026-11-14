@@ -40,6 +40,20 @@ import ZestCore
 /// 9. `ZEST_TEST_DRAFT_AGE_DAYS` makes the unsaved clip found at launch that
 ///    many days old, as if the phone had been put away with it. What the
 ///    app then does with an old clip is the real code.
+/// 10. `ZEST_TEST_INTERRUPT_AT` (seconds) has the stand-in recorder
+///    interrupted that long into the first clip of the launch, the way the
+///    phone interrupts the camera when a call rings: the clip ends there,
+///    the camera is away for `ZEST_TEST_INTERRUPT_FOR` seconds (3 unless
+///    said), then comes back by itself. `ZEST_TEST_INTERRUPT_AS` names what
+///    did it (`call_or_alarm` unless said; the values of `RecordingCut`). The
+///    stand-in also behaves like the camera when the app leaves the screen:
+///    a clip being recorded ends there, and the camera comes back when the
+///    app does. What the app makes of the clip, what it says and where it
+///    goes next is the real code. What is NOT tested this way is iOS itself
+///    telling the app about a real call: that needs a real phone.
+/// 11. `ZEST_TEST_SILENT_CAMERA=1` makes the stand-in recorder never report
+///    that a recording is over, so the app's own watch for that can be seen
+///    to end it.
 ///
 /// `-ZestUITestReset 1` wipes everything the app has stored first, so a test
 /// starts from a clean install. With `ZEST_TEST_TOKEN` in the environment
@@ -57,6 +71,10 @@ enum UITestMode {
     static let metricsVariable = "ZEST_TEST_METRICS"
     static let freeSpaceVariable = "ZEST_TEST_FREE_MB"
     static let draftAgeVariable = "ZEST_TEST_DRAFT_AGE_DAYS"
+    static let interruptAtVariable = "ZEST_TEST_INTERRUPT_AT"
+    static let interruptForVariable = "ZEST_TEST_INTERRUPT_FOR"
+    static let interruptAsVariable = "ZEST_TEST_INTERRUPT_AS"
+    static let silentCameraVariable = "ZEST_TEST_SILENT_CAMERA"
 
     static var isOn: Bool { flag(argument) }
 
@@ -91,6 +109,23 @@ enum UITestMode {
     static var draftAgeDays: Int? {
         guard isOn, let days = Int(ProcessInfo.processInfo.environment[draftAgeVariable] ?? ""), days > 0 else { return nil }
         return days
+    }
+
+    /// The interruption a test asked for: how far into the first clip, how
+    /// long the camera then stays away, and what took it.
+    static var interruption: (at: TimeInterval, lasting: TimeInterval, cut: RecordingCut)? {
+        let environment = ProcessInfo.processInfo.environment
+        guard isOn, let at = TimeInterval(environment[interruptAtVariable] ?? ""), at >= 0 else { return nil }
+        let lasting = TimeInterval(environment[interruptForVariable] ?? "") ?? 3
+        let cut = RecordingCut(rawValue: environment[interruptAsVariable] ?? "") ?? .callOrAlarm
+        return (at, max(0.2, lasting), cut)
+    }
+
+    /// The stand-in camera is to say nothing when a recording should be
+    /// over: not at the time limit, not when the ring is tapped. The app
+    /// must notice and end the recording itself.
+    static var silentCamera: Bool {
+        isOn && ProcessInfo.processInfo.environment[silentCameraVariable] == "1"
     }
 
     /// The same clip, filmed `days` days earlier. (Its stop's check-in

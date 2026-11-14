@@ -63,6 +63,63 @@ struct FakeServer {
         return reply.json["id"] as? String
     }
 
+    /// A stop the office adds during the day.
+    struct NewStop {
+        var customerId: Int
+        var name: String
+        var lastName: String
+        var address: String
+        /// Metres north and west of the first customer's lawn (where the
+        /// test "phone" stands).
+        var north: Double = 0
+        var west: Double = 0
+        /// The customer it comes after on the route (the end, if nil).
+        var after: Int?
+    }
+
+    /// The office changes the day's route.
+    /// - Parameters:
+    ///   - remove: stops that are cancelled: on nobody's list any more. (A
+    ///     video for one is still taken, as the contract says; the switch
+    ///     `offList: "refuse"` makes the server answer 400 instead.)
+    ///   - moveToOtherTech: stops given to another tech: off this tech's
+    ///     list, still stops that day.
+    ///   - restore: stops put back (from either).
+    ///   - add: new stops.
+    /// - Returns: this tech's stops afterwards, in route order; nil if the
+    ///   server refused.
+    @discardableResult
+    func changeRoute(
+        remove: [Int] = [], moveToOtherTech: [Int] = [], restore: [Int] = [], add: [NewStop] = []
+    ) -> [Int]? {
+        let body: [String: Any] = [
+            "remove": remove, "moveToOtherTech": moveToOtherTech, "restore": restore,
+            "add": add.map { stop -> [String: Any] in
+                var row: [String: Any] = [
+                    "customerId": stop.customerId, "name": stop.name, "lastName": stop.lastName,
+                    "address": stop.address, "north": stop.north, "west": stop.west,
+                ]
+                if let after = stop.after { row["after"] = after }
+                return row
+            },
+        ]
+        guard let reply = request("POST", "/__test/route", json: body), reply.status == 200 else { return nil }
+        return reply.json["customers"] as? [Int]
+    }
+
+    /// The time has come to email this tech's video for a customer. If the
+    /// office has cancelled the stop since it was filmed, no email goes and
+    /// the server holds the video for the office (`no_email`, with
+    /// `withOffice: true` in `/v1/today`) until the stop is restored;
+    /// otherwise it is `sent`.
+    /// - Returns: the video's new state, or nil if the server had no held
+    ///   video of his for that customer.
+    @discardableResult
+    func emailDue(customerId: Int) -> String? {
+        guard let reply = request("POST", "/__test/email-due", json: ["customerId": customerId]), reply.status == 200 else { return nil }
+        return reply.json["state"] as? String
+    }
+
     /// Everything the server has seen since the last reset.
     func state() -> ServerState {
         ServerState(raw: request("GET", "/__test/state")?.json ?? [:])
@@ -210,6 +267,9 @@ struct ServerState {
         let answer: String
         /// Seconds since the test's server was reset.
         let at: Double
+        /// The customer it was sent for; nil for a video sent as not on my list.
+        let customerId: Int?
+        let notOnMyList: Bool
 
         var gotThrough: Bool { answer == "200" }
         var summary: String { "\(videoId.prefix(8)) \(answer) at \(Int(at)) s" }
@@ -223,7 +283,10 @@ struct ServerState {
                   ((entry["path"] as? String) ?? "").components(separatedBy: "?").first == "/v1/videos" else { return nil }
             let body = (entry["body"] as? [String: Any]) ?? [:]
             let answer = (entry["status"] as? Int).map(String.init) ?? (entry["status"] as? String) ?? "?"
-            return RegisterTry(videoId: (body["id"] as? String) ?? "", answer: answer, at: (entry["t"] as? Double) ?? 0)
+            return RegisterTry(
+                videoId: (body["id"] as? String) ?? "", answer: answer, at: (entry["t"] as? Double) ?? 0,
+                customerId: body["customerId"] as? Int, notOnMyList: (body["notOnMyList"] as? Bool) ?? false
+            )
         }
     }
 
@@ -275,6 +338,10 @@ struct ServerVideo {
     var recommend: Bool { (payload["recommend"] as? Bool) ?? false }
     var override: Bool { (payload["override"] as? Bool) ?? false }
     var notOnMyList: Bool { (payload["notOnMyList"] as? Bool) ?? false }
+    /// The server is holding it for the office to decide.
+    var withOffice: Bool { (raw["withOffice"] as? Bool) ?? false }
+    /// The appointments the app sent with it.
+    var appointmentIds: [Int] { (payload["appointmentIds"] as? [Int]) ?? [] }
     var signals: [String: String] { (payload["signals"] as? [String: String]) ?? [:] }
 
     /// The server holds the whole file and has confirmed it.

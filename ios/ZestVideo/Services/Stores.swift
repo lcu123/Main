@@ -64,6 +64,20 @@ struct RecordTarget: Codable, Equatable {
         self.stop = stop
     }
 
+    /// A customer whose stop has left the day's list, as the video already
+    /// made for him remembers him: who, and for which appointments. No
+    /// address and no map pin (the list that had them is gone).
+    init(customerId: Int, name: String, appointmentIds: [Int]) {
+        self.customerId = customerId
+        self.name = name
+        address = ""
+        cityLine = ""
+        self.appointmentIds = appointmentIds
+        notOnMyList = false
+        greeting = nil
+        stop = nil
+    }
+
     private init() {
         customerId = nil
         name = "Not on my list"
@@ -86,6 +100,14 @@ struct PendingRecording: Codable, Equatable {
     var stopDate: String
     var location: VideoLocation?
     var startedAt: Date
+    /// Written when the camera stops: what cut the clip short (a call, the
+    /// app leaving the screen), if anything did, and how long it had run.
+    /// Missing in a record left by an app that was stopped mid-clip.
+    var cut: RecordingCut? = nil
+    var seconds: Double? = nil
+    /// How many times the camera's file could not be made ready to send.
+    /// It is kept and tried again (see `RecordingRule.saveTries`).
+    var tries: Int? = nil
 
     var movieFileName: String { "recording-\(id).mov" }
     /// The upload-ready file the recording is re-wrapped into.
@@ -103,6 +125,9 @@ struct Draft: Codable, Equatable {
     var sizeBytes: Int64
     var location: VideoLocation?
     var createdAt: Date
+    /// What cut this clip short, if anything did. "Save this video?" says
+    /// so in one line.
+    var cut: RecordingCut? = nil
 }
 
 final class DraftStore {

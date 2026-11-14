@@ -66,6 +66,20 @@ public struct QueueItem: Codable, Equatable, Identifiable, Sendable {
     /// videos recorded after this one would fail the same way, so they wait
     /// behind it and go in order when the signal is back.
     public var waitingForSignal: Bool?
+    /// True for a video the tech recorded for a customer on his list that
+    /// the server would not take for that customer ("That stop is not on
+    /// the list for that day. Use Not On My List."). It was sent to the
+    /// office as "not on my list" instead. `customerId` and `customerName`
+    /// still say who he picked.
+    public var leftTheList: Bool?
+    /// The server's words when it would not take the video at all, even
+    /// for the office. The video stays on the phone; the row says so.
+    public var refusedMessage: String?
+    /// True while the server says it is holding this video for the office
+    /// to decide (`withOffice` in `/v1/today`): the visit left the day's
+    /// route after it was filmed. No email has gone to anyone, so the row
+    /// says SENT TO OFFICE, never SENT ✓.
+    public var withOffice: Bool?
 
     public init(
         id: String, stopDate: String, customerId: Int?, customerName: String, appointmentIds: [Int],
@@ -168,7 +182,7 @@ public struct QueueItem: Codable, Equatable, Identifiable, Sendable {
 
     public var displayText: String {
         switch display {
-        case .waiting: return "WAITING"
+        case .waiting: return isStuck ? VideoWords.stuckRow : "WAITING"
         case .sending(let percent): return "SENDING \(percent)%"
         case .sent: return goesToOffice ? VideoWords.sentToOffice : VideoWords.sent
         case .blocked: return "NOT SENT"
@@ -182,12 +196,20 @@ public struct QueueItem: Codable, Equatable, Identifiable, Sendable {
     /// The server's word once it has given one (`unmatched`, and after the
     /// office matches it `held` or `sent` like any other); until then, what
     /// the phone knows itself.
+    ///
+    /// Also true while the server is holding a customer's video for the
+    /// office to decide (`withOffice`): it has not gone to the customer.
     public var goesToOffice: Bool {
+        if withOffice == true { return true }
         if let serverState, serverState != .awaitingUpload, serverState != .unknown {
             return serverState == .unmatched
         }
         return notOnMyList
     }
+
+    /// Still on the phone, and the server has said it will not take it.
+    /// Waiting will not send it: someone at the office has to look.
+    public var isStuck: Bool { isWaiting && refusedMessage != nil }
 }
 
 /// The words for where a video has gone. A video on the list goes to its
@@ -202,11 +224,37 @@ public enum VideoWords {
     }
 
     /// Once the time to change it has passed.
-    public static func locked(toOffice: Bool) -> String {
-        toOffice
+    /// - Parameter deciding: the server is holding a customer's video for
+    ///   the office to decide (`withOffice`). The customer is known, so
+    ///   nothing is said about matching; the words are the server's own.
+    public static func locked(toOffice: Bool, deciding: Bool = false) -> String {
+        if deciding { return officeDeciding }
+        return toOffice
             ? "This video went to the office. They will match it to the customer. Call the office to change it."
             : "This video already went to the customer. Call the office to change it."
     }
+
+    /// A video the server is holding for the office to decide.
+    public static let officeDeciding = "The office is looking at this video. Call the office to change it."
+
+    // MARK: The office changed the route
+
+    /// On the confirm screen, when the stop the tech has open is no longer
+    /// on the list the server sends. True whatever the reason (cancelled,
+    /// moved to another day, given to another tech), and he can still
+    /// record: the work may be done already.
+    public static let stopLeftList = "This stop is no longer on your list. You can still record it."
+
+    /// On My Route, once a video for such a stop has gone to the office
+    /// instead of the customer.
+    public static func wentToOfficeInstead(name: String) -> String {
+        let who = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(who.isEmpty ? "That stop" : who) is no longer on your list. The video goes to the office."
+    }
+
+    /// A video the server will not take at all. It stays on the phone.
+    public static let stuckRow = "NOT SENT · CALL OFFICE"
+    public static let stuck = "This video could not be sent. It is safe on this phone. Please call the office."
 }
 
 /// What the server's "no" means for a video, worked out from the status
@@ -224,6 +272,32 @@ public enum ServerSays {
         // stays on the phone until that has worked.
         if status == 404 { return .notUploaded }
         return nil
+    }
+
+    public enum Register: Equatable, Sendable {
+        /// `409 visit_has_video`: this tech's own earlier video for the
+        /// stop has already gone to the customer.
+        case stopLocked
+        /// `400`: a plain "no" to this video as it stands. Asking again
+        /// with the same words gets the same answer.
+        case refused
+        /// Not for this function to say (signed out, update needed, no
+        /// answer, a server error): the caller's usual handling.
+        case other
+    }
+
+    /// A failed register.
+    ///
+    /// The one `400` a healthy phone can meet is "That stop is not on the
+    /// list for that day. Use Not On My List." The server takes a video for
+    /// a stop the office cancelled or handed on after the phone's list was
+    /// fetched, so this is rare: a customer who was never a stop that day,
+    /// or a server from before that rule. See `QueueEvent.refused` for what
+    /// happens next.
+    public static func afterFailedRegister(status: Int?, code: String) -> Register {
+        if code == "visit_has_video" { return .stopLocked }
+        if status == 400 { return .refused }
+        return .other
     }
 
     public enum Delete: Equatable, Sendable {
@@ -258,6 +332,21 @@ public enum QueueEvent: Equatable, Sendable {
     case serverAlreadyHas(state: VideoState, emailAt: Date?)
     /// Register answered `409 visit_has_video`: the stop is locked.
     case stopLocked(message: String)
+    /// Register answered `400`: the server will not take this video as it
+    /// stands.
+    ///
+    /// - A video recorded for a customer is first sent exactly as it was
+    ///   filmed, and normally taken, even when the stop has since left the
+    ///   list. If the server still says no, it has no such stop for that
+    ///   day. Its own words are "Use Not On My List", and that is what the
+    ///   phone does, by itself: the same clip under the same ID is sent to
+    ///   the office to be matched. Nothing is lost, and the tech is not
+    ///   sent back to a house he has left to film it again.
+    /// - For a video that is already going to the office there is no other
+    ///   way to send it. It stays on the phone, the row says to call the
+    ///   office, and it is tried again now and then (`refusedRetrySeconds`)
+    ///   and each time the app is opened.
+    case refused(message: String)
     case progress(Double)
     /// The upload task finished with this HTTP status.
     case uploadFinished(status: Int)
@@ -271,8 +360,9 @@ public enum QueueEvent: Equatable, Sendable {
     case callFailed(String, retryAfter: TimeInterval?)
     /// The file is gone from the phone before the server confirmed it.
     case fileLost
-    /// Fresh word from `/v1/today` about this video.
-    case serverState(VideoState, emailAt: Date?)
+    /// Fresh word from `/v1/today` about this video. `withOffice`: the
+    /// server is holding it for the office to decide.
+    case serverState(VideoState, emailAt: Date?, withOffice: Bool = false)
     /// The tech deleted it, or recorded again for the same stop.
     case deletedByTech
     /// The server acknowledged the delete (or never knew the video).
@@ -287,6 +377,11 @@ public enum QueueMachine {
         let capped = min(max(attempts, 1), 7)
         return min(300, 5 * pow(2, Double(capped - 1)))
     }
+
+    /// How long a video the server refused outright waits before it is
+    /// offered again: an hour. (Opening the app tries at once.) It is never
+    /// dropped, and it never asks every few seconds.
+    public static let refusedRetrySeconds: TimeInterval = 60 * 60
 
     public static func reduce(_ item: QueueItem, _ event: QueueEvent, now: Date = Date()) -> QueueItem {
         var next = item
@@ -316,6 +411,7 @@ public enum QueueMachine {
             next.lastError = nil
             next.notBefore = nil
             next.waitingForSignal = nil
+            next.refusedMessage = nil
             clearURL()
             if next.phase == .done { next.progress = 1 }
         }
@@ -342,7 +438,7 @@ public enum QueueMachine {
         case (.deleting, _):
             return item
 
-        case (.blocked, .serverState(let state, _)) where state.isGone:
+        case (.blocked, .serverState(let state, _, _)) where state.isGone:
             next.phase = .removed
         case (.blocked, _):
             return item
@@ -364,6 +460,7 @@ public enum QueueMachine {
             next.lastError = nil
             next.notBefore = nil
             next.waitingForSignal = nil
+            next.refusedMessage = nil
 
         case (.queued, .serverAlreadyHas(let state, let emailAt)),
              (.uploading, .serverAlreadyHas(let state, let emailAt)),
@@ -381,6 +478,22 @@ public enum QueueMachine {
             next.phase = .blocked
             next.blockedMessage = message
             next.notBefore = nil
+
+        case (.queued, .refused(let message)), (.uploading, .refused(let message)):
+            clearURL()
+            next.phase = .queued
+            if item.notOnMyList {
+                // Not even for the office. Keep it, say so, ask again rarely.
+                next.refusedMessage = message
+                fail(message, retryAfter: refusedRetrySeconds)
+            } else {
+                // The server has no such stop: to the office instead, at once.
+                next.notOnMyList = true
+                next.leftTheList = true
+                next.lastError = message
+                next.notBefore = nil
+                next.waitingForSignal = nil
+            }
 
         case (.uploading, .progress(let fraction)):
             next.progress = max(item.progress, min(max(fraction, 0), 1))
@@ -436,17 +549,21 @@ public enum QueueMachine {
             next.phase = .blocked
             next.blockedMessage = "This video is no longer on the phone. Please record it again."
 
-        case (.done, .serverState(let state, let emailAt)):
+        case (.done, .serverState(let state, let emailAt, let withOffice)):
             next.serverState = state
             next.emailAt = emailAt ?? item.emailAt
+            // Each answer says afresh whether the office is holding it: the
+            // office may have sent it, or the stop may be back on the route.
+            next.withOffice = withOffice ? true : nil
             if state.isGone { next.phase = .removed }
 
-        case (.queued, .serverState(let state, let emailAt)),
-             (.uploading, .serverState(let state, let emailAt)),
-             (.uploaded, .serverState(let state, let emailAt)):
+        case (.queued, .serverState(let state, let emailAt, let withOffice)),
+             (.uploading, .serverState(let state, let emailAt, let withOffice)),
+             (.uploaded, .serverState(let state, let emailAt, let withOffice)):
             // The server may have confirmed a file whose answer never reached us.
             if state.isGone || state.serverHasFile {
                 finish(state: state, emailAt: emailAt)
+                next.withOffice = withOffice ? true : nil
             }
 
         default:

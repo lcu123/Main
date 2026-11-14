@@ -61,7 +61,7 @@ struct StopVideoView: View {
                 back
             }
         case .locked:
-            locked(summary, message: VideoWords.locked(toOffice: summary.toOffice))
+            locked(summary, message: VideoWords.locked(toOffice: summary.toOffice, deciding: summary.withOffice))
         case .blocked(let message):
             Screen(bar: "Video", onBack: goBack) {
                 page(summary, chip: nil) {
@@ -73,6 +73,22 @@ struct StopVideoView: View {
                     BigButton(title: "CALL OFFICE", kind: .primary) { app.callOffice() }
                 }
                 BigButton(title: "OK", kind: .plain) { app.dismissBlocked(summary) }
+            }
+        case .stuck:
+            // Still on the phone; the server will not take it. Nothing here
+            // deletes it: the office has to look.
+            Screen(bar: "Video", onBack: goBack) {
+                page(summary, chip: StatusChip(text: "NOT SENT", tone: .waiting)) {
+                    Banner(text: VideoWords.stuck, tone: .attention)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("stuck-note")
+                    officeNumber
+                }
+            } footer: {
+                if app.canCallOffice {
+                    BigButton(title: "CALL OFFICE", kind: .primary) { app.callOffice() }
+                }
+                back
             }
         case .gone:
             gone

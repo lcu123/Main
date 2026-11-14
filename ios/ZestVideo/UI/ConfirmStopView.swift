@@ -54,6 +54,12 @@ struct ConfirmStopView: View {
                 }
             } else {
                 StopHeadline(name: target.name, address: target.address, cityLine: target.cityLine)
+                // The office changed the route while this screen was open.
+                if app.targetLeftList {
+                    Banner(text: VideoWords.stopLeftList, tone: .attention)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("left-list")
+                }
             }
         } footer: {
             BigButton(title: target.notOnMyList ? "RECORD" : "THIS IS IT", kind: .primary) {

@@ -64,6 +64,10 @@ struct TodayView: View {
         }
         #endif
         .task {
+            // My Route has come on screen (after a video, from My Videos,
+            // from BACK): the tech is about to pick a stop, so the list is
+            // fetched again now if it is more than half a minute old.
+            app.refreshTodayIfStale()
             // Keep the list fresh while it is on screen. Stops with the view.
             while !Task.isCancelled {
                 // With no route yet, look again soon; otherwise every two minutes.
@@ -335,8 +339,16 @@ struct StopCard: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(spokenLabel)
+        .accessibilityValue(spokenNumber)
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("stop-\(stop.customerId)")
+    }
+
+    /// The number in the round badge, read out after the rest: "Stop 3".
+    /// (Nothing for a card whose badge shows a tick or a clock instead.)
+    private var spokenNumber: String {
+        if case .number(let number) = state.badge { return "Stop \(number)" }
+        return ""
     }
 
     /// Everything on the card, read out in order: "Closest stop. Smith, Jane,

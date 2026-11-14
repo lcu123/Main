@@ -71,6 +71,14 @@ struct ReviewView: View {
         // smallest phone), the clip goes down to its smallest, and then the
         // page scrolls.
         Screen(bar: "Review", title: "Save this video?", squeeze: true) {
+            // A call (or the like) ended the clip before its time: said
+            // once, plainly. The question stays the same: save it, or
+            // record again.
+            if let note = app.draftCutNote {
+                Banner(text: note, tone: .attention)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("cut-note")
+            }
             if let draft = app.draft {
                 Text(draft.target.name)
                     .zestFont(.rowName)

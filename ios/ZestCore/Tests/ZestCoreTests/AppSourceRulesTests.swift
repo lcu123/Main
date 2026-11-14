@@ -246,6 +246,32 @@ final class AppSourceRulesTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(try XCTUnwrap(Double(number)), 0.75)
     }
 
+    /// CallKit is never linked, in any form.
+    ///
+    /// Apple does not allow CallKit in apps offered in the China mainland
+    /// store, and App Store Connect offers every country unless someone
+    /// unticks it: an app that links CallKit can be turned away in review.
+    /// The app once used its call observer only to say "a call" instead of
+    /// "a call or alarm" when a recording was cut short. Not worth it.
+    func testCallKitIsNeverLinked() throws {
+        var places = try appSources()
+        for file in ["project.yml", "Config/App.xcconfig", "ZestVideo/Resources/ZestVideo.entitlements"] {
+            if let words = try? text(file) {
+                places.append((file, words))
+            }
+        }
+        XCTAssertTrue(places.contains { $0.name == "project.yml" }, "the project file was not found")
+        // (Spelt in pieces, so that this file can be read by its own rule.)
+        let banned = ["Call" + "Kit", "CX" + "CallObserver", "CX" + "Provider", "CX" + "CallController", "PK" + "PushRegistry", "Push" + "Kit"]
+        for place in places {
+            for word in banned {
+                XCTAssertFalse(place.text.contains(word), "\(place.name) mentions \(word): the app must not link it")
+            }
+            XCTAssertFalse(place.text.lowercased().contains("<string>voip</string>"), "\(place.name): no VoIP background mode")
+            XCTAssertFalse(place.text.contains("- voip"), "\(place.name): no VoIP background mode")
+        }
+    }
+
     /// No third-party code, and no sharing of a video out of the app.
     func testNoShareSheetAndNoThirdPartyImports() throws {
         let allowed: Set<String> = [

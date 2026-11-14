@@ -50,6 +50,8 @@ final class KillUITests: ZestUITestCase {
 
         waitForTitle("Save this video?", timeout: 60)
         XCTAssertTrue(hasText("Smith, Jane"), "The recovered clip is for the stop that was being recorded.")
+        // And it says why the clip is short.
+        waitForLabel(element("cut-note"), "the line under the title", contains: "This video stopped early when the app closed.", timeout: 5)
         XCTAssertTrue(server.state().videos.isEmpty, "Nothing is sent until the tech says SAVE.")
 
         saveClip()

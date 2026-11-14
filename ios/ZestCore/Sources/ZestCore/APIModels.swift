@@ -203,20 +203,29 @@ public struct StopVideo: Codable, Equatable, Sendable {
     public var id: String
     public var state: VideoState
     public var byYou: Bool
+    /// Present and true only while the server is holding this video for
+    /// the office to decide (the visit left the day's route after it was
+    /// filmed). No email has gone to anyone. An older server never sends it.
+    public var withOffice: Bool?
 
-    public init(id: String, state: VideoState, byYou: Bool) {
+    public init(id: String, state: VideoState, byYou: Bool, withOffice: Bool? = nil) {
         self.id = id
         self.state = state
         self.byYou = byYou
+        self.withOffice = withOffice
     }
 
-    enum CodingKeys: String, CodingKey { case id, state, byYou }
+    /// The office has this video and is deciding what becomes of it.
+    public var isWithOffice: Bool { withOffice == true }
+
+    enum CodingKeys: String, CodingKey { case id, state, byYou, withOffice }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         state = c.value(.state, default: .unknown)
         byYou = c.value(.byYou, default: false)
+        withOffice = c.value(.withOffice, default: nil)
     }
 }
 
@@ -303,15 +312,21 @@ public struct TodayVideo: Codable, Equatable, Sendable {
     public var customerId: Int?
     public var state: VideoState
     public var emailAt: Date?
+    /// See `StopVideo.withOffice`.
+    public var withOffice: Bool?
 
-    public init(id: String, customerId: Int?, state: VideoState, emailAt: Date?) {
+    public init(id: String, customerId: Int?, state: VideoState, emailAt: Date?, withOffice: Bool? = nil) {
         self.id = id
         self.customerId = customerId
         self.state = state
         self.emailAt = emailAt
+        self.withOffice = withOffice
     }
 
-    enum CodingKeys: String, CodingKey { case id, customerId, state, emailAt }
+    /// The office has this video and is deciding what becomes of it.
+    public var isWithOffice: Bool { withOffice == true }
+
+    enum CodingKeys: String, CodingKey { case id, customerId, state, emailAt, withOffice }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -319,6 +334,7 @@ public struct TodayVideo: Codable, Equatable, Sendable {
         customerId = c.value(.customerId, default: nil)
         state = c.value(.state, default: .unknown)
         emailAt = c.value(.emailAt, default: nil)
+        withOffice = c.value(.withOffice, default: nil)
     }
 }
 

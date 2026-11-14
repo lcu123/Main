@@ -142,6 +142,135 @@ No third-party code. Apple frameworks only, system font, one bundled image
   nothing to type after sign-in. `Theme` is built from these numbers and
   `ScreensUITests` measures the real screens against the same ones.
 
+## When the day goes wrong
+
+Three things happen on a real route. For each: nothing is lost, the app is
+never stuck, and the tech is told in one plain line.
+
+### A call (or anything else) stops a recording
+
+When a call rings, Siri or an alarm takes the microphone, the app leaves
+the screen (home, the lock button, an answered call) or another app takes
+the camera, iOS interrupts the camera and ends the clip itself. The file is
+written in one-second pieces, so what was filmed up to then is there.
+`CameraService` listens for the interruption (it did not before), says what
+took the camera (`RecordingCut`), and `RecordingRule` (ZestCore) decides
+what happens to the clip:
+
+| The clip | What the tech sees |
+| --- | --- |
+| ran to the limit, or he tapped the ring | "Save this video?", as always |
+| cut short, 3 seconds or longer | "Save this video?" with one line: "A call or alarm stopped this video early." He chooses SAVE or RECORD AGAIN |
+| cut short under 3 seconds | the camera screen, with "A call or alarm stopped the video too soon. Please record it again." and the same big button |
+
+Three seconds is the same three seconds before which he cannot end a clip
+himself. While the phone has the camera the record button waits and the
+screen says "The camera is off during a call. It comes back by itself." It
+does: when the interruption ends the camera restarts with no touch.
+
+The phone does not say whether it took the microphone for a call,
+FaceTime, Siri, an alarm or a timer, so the app says "a call or alarm".
+Telling them apart would mean linking Apple's call framework, **which this
+app must never do**: Apple does not allow it in the China mainland store,
+App Store Connect offers every country by default, and an app that links
+it can be turned away in review. `AppSourceRulesTests.testCallKitIsNeverLinked`
+fails if it ever appears in the sources, the project file or the
+entitlements. What the phone does name is said exactly: "Another app took
+the camera.", "The phone ran out of room.", "This video stopped early when
+the app closed."
+
+Also here: the red frame and the ring come down the moment the camera
+stops, whatever the reason; a clip being saved as the phone locks asks iOS
+for the time to finish, and if that is not enough the camera's own file is
+kept and saved on the next open (three tries, then it says the video did
+not save); and if the camera ever fails to report the end of a recording,
+the app ends it four seconds after the time is up and offers what is on
+disk (`RecordingRule.isOverdue`). `record_stop` in the audit trail carries
+how long the clip ran, what ended it and whether it was kept.
+
+Control Centre, the notification shade and a low-battery alert do not stop
+the camera: the clip runs on and the ring keeps true time.
+
+### The office changes the route
+
+The phone asks for the day's list again when the app comes to the front,
+after every video that reaches the server (or is refused, or deleted), when
+a notification arrives, and every two minutes while My Route is showing
+(every 15 seconds while it has no list). It also asks as My Route comes on
+screen and when a stop is tapped, if the list was last asked for more than
+half a minute ago (`AppModel.refreshTodayIfStale`); the stop opens at once
+from the list the phone has, and the fresh one follows. There is no
+pull-to-refresh: no swipes. (The server's own copy can be three minutes
+behind FieldRoutes.)
+
+- **A stop added** appears at the next look, ready to record. **A stop
+  taken off** disappears; **put back**, it returns, with its video if it
+  had one. A video already made is never touched by a change of route.
+- **The stop he has open** keeps its screen. Confirm, camera, "Save this
+  video?" and the stop's video screen all work from the stop as it was
+  when he picked it. If it has left the list while "Is this the stop?" is
+  up, one line says "This stop is no longer on your list. You can still
+  record it." (the work may be done already).
+- **A video for a stop that has left the list** (filmed from a stale list
+  with no signal, or while the office was changing it) is sent exactly as
+  it was filmed: the customer he picked, the appointments the list had.
+  The server takes it and the office decides what becomes of it
+  (`docs/video/API.md`). It stays on My Videos under the customer's name,
+  with the stop's address, though the stop is off the list.
+- **A video the server holds for the office** (`withOffice: true` on the
+  video in the day's answer: the visit left the day after it was filmed,
+  and no email went). The row says SENT TO OFFICE, not SENT ✓; its screen
+  says "The office is looking at this video. Call the office to change
+  it."; nothing says it went to the customer and nothing is offered that
+  the server would refuse. When the server stops saying so (the office
+  sent it, or the stop is back on the route) the row says SENT ✓ again.
+  A server that never sends the field changes nothing: a plain `no_email`
+  still reads SENT ✓.
+- **If the server says no to that stop** (`400`, "That stop is not on the
+  list for that day. Use Not On My List.": a customer who was never a stop
+  that day, or a server from before the rule above), the app does what the
+  answer says, by itself: the same clip, under the same ID, goes to the
+  office as not-on-my-list (`QueueEvent.refused`). The row says SENT TO
+  OFFICE under the customer's name, My Route says "Smith, Jane is no
+  longer on your list. The video goes to the office.", and `upload_failed`
+  in the audit trail says why and names the customer he picked. (Before,
+  the app asked again every five minutes for ever and the row said
+  WAITING.)
+- **A video the server will not take at all** (a second `400`) stays on
+  the phone. Its row says NOT SENT · CALL OFFICE, its screen says "This
+  video could not be sent. It is safe on this phone. Please call the
+  office.", and it is offered again once an hour and each time the app is
+  opened, never every few seconds.
+- **RECORD AGAIN on a video whose stop has left the list** is still for
+  the same customer and replaces that video. (It used to become a
+  not-on-my-list recording, which replaced nothing.)
+- **Never the wrong customer.** A video carries the customer the tech
+  picked and confirmed, by number, from the moment he picks it. A list
+  that changes afterwards cannot change that; the tests check that no call
+  ever names another customer.
+
+### The route is driven in another order
+
+Nothing in the app depends on the order in FieldRoutes. The list puts the
+stop he is standing at first (an open check-in that is believable, else
+the nearest by GPS); stops with a video drop to the bottom; every stop is
+always on the list. Only with no location and no check-in does the planned
+order show, as "Next stop", and then a stop he has just completed still
+comes first.
+
+**The number on a card** (`RouteNumbers`) is the stop's place on his own
+route as the office planned it, counting from 1. It is the stop's label,
+not where the card sits and not an instruction: a tech working back to
+front sees 9 on top, then 8. Filming, checking in or finishing a stop
+never changes a number. When the office takes a stop off, the later stops
+move up by one, as they do in FieldRoutes. A stop with a video shows its
+state in the badge instead of its number. VoiceOver reads the number
+after the rest of the card ("Stop 3").
+
+Skipping a stop and coming back, doing the last stop first, two customers
+at one address (both are offered; the name he says tells them apart) and
+going back to a finished stop are each a test in `RouteDayTests`.
+
 ## Build and run
 
 Needs a Mac with Xcode 16 or later and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
@@ -169,7 +298,7 @@ in that file).
 cd ios/ZestCore && swift test
 ```
 
-runs the logic tests anywhere, Linux included (253 tests). Among them are
+runs the logic tests anywhere, Linux included (295 tests). Among them are
 rules about the app's own source, checked by reading the files
 (`AppSourceRulesTests`): no photo-library key or call, no share sheet,
 Apple frameworks only, and every pair of colours the screens use has the
@@ -206,7 +335,13 @@ repository's `tests/test_video_contract.py` plays the same day against it
 and against the real server and compares the answers, so it cannot drift
 from what a real phone will meet. It
 also plays a second tech who already recorded a stop (`/__test/other-tech`),
-with the signed-in tech as the lead or as a helper there. The list of
+with the signed-in tech as the lead or as a helper there. And it plays
+the office changing the day's route (`/__test/route`): a stop cancelled,
+given to another tech, put back, or added, as often as a test wants; a
+video for a cancelled stop is taken, as the contract says, or with the
+`offList` switch refused (`400`) as an older server refused it; and
+`/__test/email-due` plays the moment the email would go, which for a
+cancelled stop holds the video for the office (`withOffice`). The list of
 switches is at the top of the file. It checks itself with:
 
 ```bash
@@ -233,6 +368,13 @@ Launched with `-ZestUITest 1`, the app is the real app with these differences:
    server).
 5. Every upload task's start and end, with the system's error if there was
    one, is posted to the test server, so a failed test's report says why.
+6. The stand-in recorder can be interrupted the way a call interrupts the
+   real camera: `ZEST_TEST_INTERRUPT_AT` (seconds into the first clip),
+   `ZEST_TEST_INTERRUPT_FOR` (how long the camera stays away) and
+   `ZEST_TEST_INTERRUPT_AS` (`call_or_alarm`, `camera_taken`...). It
+   is also taken away when the app leaves the screen, as the real one is.
+   Everything after the hand-over is the real code. `ZEST_TEST_SILENT_CAMERA=1`
+   makes it never report the end of a recording.
 
 `-ZestUITestReset 1` wipes what the app has stored. With `ZEST_TEST_TOKEN` in
 the environment that clean install starts already signed in (the fake server
@@ -240,7 +382,7 @@ issues the token when a test resets it), so only the sign-in tests type a
 number and a code. A test that kills the app starts it again *without* the
 reset: what the app kept is what is being tested.
 
-**What is covered** (84 tests):
+**What is covered** (99 tests):
 
 | Class | What it proves |
 | --- | --- |
@@ -248,6 +390,8 @@ reset: what the app kept is what is being tested.
 | `RouteUITests` | header counts, nearest stop first, both tabs, locked stop, WRONG STOP, the far-away warning |
 | `RecordUITests` | record → SAVE → one register, the whole file once, one complete; FLIP, BACK, ending early; RECORD AGAIN; the recommend switch; the two-keys warning both ways; another customer's name said where the place and the time fit still asks ("It sounded like…"), a forgotten name at the right house does not; change and delete inside ten minutes; not-on-my-list (SENT TO OFFICE, no promise of an email, deletable for ten minutes and not after); double taps; and that the audit events (record, retake, override) really reach the server for the right customer |
 | `KillUITests` | the app killed mid-recording, on review, mid-upload, before "complete" is answered, and right after SAVE: after it is started again there is exactly one video on the server |
+| `InterruptionUITests` | a call two seconds into a clip: one line on the camera screen, nothing red left, the button waits and comes back by itself, nothing sent, RECORD works again and one video arrives; a call nine seconds in: "Save this video?" with "A call or alarm stopped this video early.", SAVE sends it once, and `record_stop` says `endedBy: call_or_alarm`; RECORD AGAIN while the call is still on waits for the camera and then records; another app taking the camera is said exactly, with no call blamed; the home button mid-clip keeps what was filmed; a camera that never reports the end is ended by the app |
+| `RouteDayUITests` | the office changes the route: a stop cancelled while it is open says so in one line, still records, and its video is sent as filmed (the customer he picked, the list's appointments) and taken; the same from a stale list with no signal; against a server that refuses the stop the same clip goes to the office (two register calls, one upload, SENT TO OFFICE, no more calls after); the list follows a stop cancelled, added and put back, once with no touch, and the numbers follow; a filmed stop taken off and put back keeps its video; a video the server holds for the office (`withOffice`) reads SENT TO OFFICE with "The office is looking at this video.", offers no RECORD AGAIN or DELETE, and reads SENT ✓ again once the stop is back; RECORD AGAIN after the stop left the list replaces the video for the same customer; a video the server refuses outright stays on the phone, says to call the office, and goes when the server takes it; and stops filmed out of order each go to their own customer with the numbers unmoved. No call in any of them names a customer the tech did not pick |
 | `NetworkUITests` | 500s, no server, an expired upload address, "not uploaded", signed out by the server, update required, a stop locked by the server, starting with no signal; "Do not delete this app" while a video waits, gone once it is sent |
 | `LongDayUITests` | the brief's own number: twenty videos saved in a row with no server, all twenty arriving once each and in order when it is back, the phone left holding no files, and My Videos saying WAITING, never SENT, until each one is really there. What it may cost: with no signal only the oldest video is tried, again after 5, 10, 20, 40... seconds, and those tries reach nothing; once the signal is back each video is one register, one upload, one complete, and nothing is asked twice |
 | `StorageUITests` | under 200 MB free the camera is never reached: from THIS IS IT, from RECORD for a stop not on the list, and from both RECORD AGAIN buttons, with the clip already made still there to save; under 500 MB one warning, and RECORD ANYWAY reaches the camera |
@@ -327,7 +471,15 @@ transfer service works for a signed build. It cannot turn the run red.
 - a real force-quit by the user (swiping the app away), which iOS treats
   differently from a crash: it cancels the app's background uploads until the
   app is next opened. The tests kill the app the way a crash does;
-- how well speech recognition hears a name outdoors.
+- how well speech recognition hears a name outdoors;
+- iOS itself interrupting the real camera: a real call (declined, answered,
+  FaceTime, WhatsApp), Siri, an alarm. The tests interrupt the stand-in
+  recorder; that iOS sends the notices the app listens for, with the
+  reasons it expects, that the cut file plays, and that the camera
+  restarts when the call ends are all untested until a real phone is rung;
+- saving a clip while the phone is locked or a call has the screen (the
+  export runs in background time iOS may cut short);
+- AirPods, CarPlay or a headset joining or leaving in the middle of a clip.
 
 Those need a real phone.
 
@@ -340,7 +492,7 @@ Those need a real phone.
 | `core` | Linux | `swift test` for ZestCore |
 | `app` | macOS | generates the project, builds for an iPhone simulator, runs the unit tests |
 | `screens` | macOS | takes a picture of every screen in the simulator; download the `screens` artifact |
-| `ui-tests` | macOS, jobs `a`, `b` and `d` side by side (plus `c`, informational) | starts the fake server, runs the UI tests in the simulator; on a failure, the log names the test, the assertion and what the server saw |
+| `ui-tests` | macOS, jobs `a`, `b`, `d` and `e` side by side (plus `c`, informational) | starts the fake server, runs the UI tests in the simulator; on a failure, the log names the test, the assertion and what the server saw |
 | `sizes` | macOS, four jobs side by side | pictures of every screen on the smallest iPhone (plus the awkward names), a 6.1-inch iPhone, an iPad, and at the largest text sizes; then `ScreensUITests` on each. Artifacts `screens-small`, `screens-odd-names`, `screens-mid`, `screens-ipad`, `screens-large-text`, `screens-largest-accessibility` |
 | `performance` | macOS, informational | `PerformanceUITests`, plus the size of a Release build for a phone; prints a table and uploads it as `performance.txt` |
 | `testflight` | macOS, manual | archives and uploads to App Store Connect |

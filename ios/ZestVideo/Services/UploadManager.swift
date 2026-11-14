@@ -262,12 +262,15 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
                     onChange?()
                 }
             } catch let error as APIError {
-                if error.code == "visit_has_video" {
+                switch ServerSays.afterFailedRegister(status: error.status, code: error.code ?? "") {
+                case .stopLocked:
                     // The earlier video already went to the customer: the stop is locked.
                     store.apply(.stopLocked(message: error.message), to: item.id)
                     onNotice?(error.message)
                     onChange?()
-                } else {
+                case .refused:
+                    refused(item.id, error)
+                case .other:
                     failed(item.id, error)
                 }
             } catch {
@@ -404,6 +407,35 @@ final class UploadManager: NSObject, URLSessionTaskDelegate {
     }
 
     static let lockedMessage = VideoWords.locked(toOffice: false)
+
+    /// Register answered a plain "no" (400). For a customer's video that
+    /// means the server has no such stop for that day: the same clip goes
+    /// to the office instead, at once (the `pump()` that follows every
+    /// register sends it). A video the server will not take even for the
+    /// office stays on the phone and says so. See `QueueEvent.refused`.
+    private func refused(_ id: String, _ error: APIError) {
+        guard let before = store.item(id), let after = store.apply(.refused(message: error.message), to: id) else { return }
+        var detail = [
+            "step": "register", "status": String(error.status ?? 0), "error": error.code ?? "",
+            "message": String(error.message.prefix(120)),
+        ]
+        if !before.notOnMyList, after.notOnMyList {
+            detail["then"] = "sent_to_office"
+            trace("register for \(id) refused (\(error.message)): it goes to the office instead")
+            onNotice?(VideoWords.wentToOfficeInstead(name: after.customerName))
+            onUploadProblem?(id, detail)
+        } else if before.refusedMessage == nil {
+            // Said once, and written down once: it is asked again every
+            // hour and each time the app is opened.
+            detail["then"] = "kept_on_phone"
+            trace("register for \(id) refused (\(error.message)): kept on the phone")
+            onNotice?(VideoWords.stuck)
+            onUploadProblem?(id, detail)
+        } else {
+            trace("register for \(id) refused again (\(error.message))")
+        }
+        onChange?()
+    }
 
     private func failed(_ id: String, _ error: APIError) {
         switch error {
