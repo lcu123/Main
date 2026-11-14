@@ -468,9 +468,20 @@ class State:
             for change in self.route_changes:
                 lines.append("the office changed the route after request %d (%.1fs): %s" % (
                     change["after"], change["t"], json.dumps(change["change"], sort_keys=True)))
-            if self.notes:
+            # Where the app went (each change of screen, each big button a
+            # finger came down on, and any tap its double-tap shield kept),
+            # apart from what it said of its uploads.
+            def of_screens(note):
+                return note["note"].startswith(("screen ", "shield", "press "))
+            screens = [note for note in self.notes if of_screens(note)]
+            uploads = [note for note in self.notes if not of_screens(note)]
+            if screens:
+                lines.append("the app's screens:")
+                for note in screens:
+                    lines.append("  %.1fs: %s" % (note.get("t", 0.0), note["note"]))
+            if uploads:
                 lines.append("what the app said about its uploads:")
-                for note in self.notes:
+                for note in uploads:
                     lines.append("  after request %d (%.1fs): %s" % (note["after"], note.get("t", 0.0), note["note"]))
             else:
                 lines.append("the app said nothing about its uploads (no upload task was made)")
@@ -1041,6 +1052,14 @@ def self_test():
     check(all(isinstance(note.get("t"), float) for note in state["notes"]), "notes are timed")
     check(all(isinstance(r.get("t"), float) for r in state["requests"]), "requests are timed")
     check("upload task 1 made" in call("GET", "/__test/log")[1].decode(), "notes are in the log")
+    call("POST", "/__test/note", {"note": "screen review to record"})
+    call("POST", "/__test/note", {"note": "shield kept a tap 0.21 s after its screen appeared"})
+    text = call("GET", "/__test/log")[1].decode()
+    check("the app's screens:" in text and "screen review to record" in text and "shield kept a tap" in text,
+          "the app's screens are in the log")
+    check(text.index("the app's screens:") < text.index("what the app said about its uploads:")
+          and "screen review" not in text.split("what the app said about its uploads:")[1],
+          "and are kept apart from what it said about its uploads")
     check(call("POST", "/__test/reset", {"test": "self-test", "config": {"maxSeconds": 3}})[0] == 200, "reset")
     check("the app said nothing about its uploads" in call("GET", "/__test/log")[1].decode(), "no notes after reset")
     check(call("POST", "/v1/auth/request-code", {"contact": "9165550100"})[0] == 200, "request-code")

@@ -28,7 +28,7 @@ final class BackgroundUploadUITests: ZestUITestCase {
         }
 
         let seen = server.state()
-        let said = seen.notes.isEmpty ? "(the app made no upload task)" : seen.notes.joined(separator: " | ")
+        let said = seen.uploadNotes.isEmpty ? "(the app made no upload task)" : seen.uploadNotes.joined(separator: " | ")
         let video = seen.videos.first.map { $0.summary } ?? "(no video was registered)"
         let verdict = arrived ? "ARRIVED" : "DID NOT ARRIVE"
         let report = "background session upload \(verdict). Server: \(video). The app said: \(said)"

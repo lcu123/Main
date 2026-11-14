@@ -231,9 +231,24 @@ struct ServerState {
     var codesRequested: [String] { (raw["codes"] as? [String]) ?? [] }
     var events: [[String: Any]] { (raw["events"] as? [[String: Any]]) ?? [] }
 
-    /// What the app said about its uploads: each task's start and end.
+    /// Everything the app said, in order: each upload task's start and
+    /// end, each change of screen ("screen review to record"), each big
+    /// button a finger came down on ("press RECORD AGAIN"), and any tap
+    /// its double-tap shield kept.
     var notes: [String] {
         ((raw["notes"] as? [[String: Any]]) ?? []).compactMap { $0["note"] as? String }
+    }
+
+    /// The app's changes of screen, in order: "screen review to record".
+    var screens: [String] { notes.filter { $0.hasPrefix("screen ") } }
+
+    /// Taps the app's double-tap shield kept ("shield kept a tap 0.21 s
+    /// after its screen appeared"), and screens that "appeared" twice.
+    var shieldNotes: [String] { notes.filter { $0.hasPrefix("shield") } }
+
+    /// What the app said about its uploads only.
+    var uploadNotes: [String] {
+        notes.filter { !$0.hasPrefix("screen ") && !$0.hasPrefix("shield") && !$0.hasPrefix("press ") }
     }
 
     /// The numbers the app posted for the performance tests, in order. Each

@@ -105,6 +105,13 @@ No third-party code. Apple frameworks only, system font, one bundled image
   (`AppSourceRulesTests` reads them from `Theme.swift`).
 - **AppModel** is the one router. A screen is a value of `route`; there is no
   navigation stack to swipe back through.
+- **A new screen ignores touches for 0.4 seconds** (`SettleFirst`), so the
+  second tap of a gloved double tap cannot answer the next question. The
+  shield opens once and never closes again while that screen is up.
+- **The clip on "Save this video?"** is a small view of its own
+  (`ReviewClip`). When it reaches its end only the clip is drawn again
+  (TAP TO PLAY AGAIN), not the page and its two buttons: that is the very
+  moment a tech taps SAVE or RECORD AGAIN.
 - **A video's life**: record to `.mov` → re-wrap as a fast-start `.mp4`
   (H.264 + AAC, about 5 MB) → saved as a *draft* → the tech taps SAVE → a
   queue row is written to disk → `POST /v1/videos` → background upload
@@ -375,6 +382,12 @@ Launched with `-ZestUITest 1`, the app is the real app with these differences:
    is also taken away when the app leaves the screen, as the real one is.
    Everything after the hand-over is the real code. `ZEST_TEST_SILENT_CAMERA=1`
    makes it never report the end of a recording.
+7. Each change of screen is posted to the test server ("screen review to
+   record"), and so are a finger coming down on a big button ("press
+   RECORD AGAIN") and any tap the double-tap shield kept. A failure report
+   lists them under "the app's screens", so a tap that did nothing can be
+   told apart: the app moved, the button felt it and nothing happened,
+   the shield kept it, or the touch never reached the app.
 
 `-ZestUITestReset 1` wipes what the app has stored. With `ZEST_TEST_TOKEN` in
 the environment that clean install starts already signed in (the fake server
@@ -439,8 +452,8 @@ The UI tests have their own scheme, so the ordinary build and unit tests
 (scheme `ZestVideo`) never need the server.
 
 **When a test fails** it prints one block: the test's name, the assertion,
-what was on the screen, every request the server got during that test, and
-what the app said about its uploads. It also saves a picture of the screen.
+what was on the screen, every request the server got during that test, the
+screens the app went through, and what the app said about its uploads. It also saves a picture of the screen.
 Only a test that failed prints a FAILED block; something the system merely
 noted during a test that passed (on an iPad, Apple's note about Info.plist
 keys) is printed once, as a `NOTE`.

@@ -175,7 +175,11 @@ final class AppModel: ObservableObject {
     @Published var route: Route = .login {
         didSet {
             #if targetEnvironment(simulator)
-            // Performance tests only: numbers for each screen (see UITestMode).
+            // UI tests only: which screen followed which, for a failure
+            // report, and numbers for each screen (see UITestMode).
+            if route != oldValue {
+                UITestMode.note("screen \(oldValue) to \(route)")
+            }
             UITestMode.routeChanged(to: String(describing: route))
             #endif
         }

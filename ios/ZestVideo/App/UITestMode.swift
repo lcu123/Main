@@ -54,6 +54,11 @@ import ZestCore
 /// 11. `ZEST_TEST_SILENT_CAMERA=1` makes the stand-in recorder never report
 ///    that a recording is over, so the app's own watch for that can be seen
 ///    to end it.
+/// 12. Each change of screen is posted to the test server ("screen review
+///    to record"), and so are a finger coming down on a big button
+///    ("press RECORD AGAIN") and a tap that the double-tap shield kept
+///    (`SettleFirst`). A failed test's report then says where the app
+///    went, and whether a tap that did nothing ever reached a button.
 ///
 /// `-ZestUITestReset 1` wipes everything the app has stored first, so a test
 /// starts from a clean install. With `ZEST_TEST_TOKEN` in the environment

@@ -38,6 +38,55 @@ final class InterruptionUITests: ZestUITestCase {
         leaveAndComeBack()
     }
 
+    /// RECORD AGAIN on "Save this video?", and proof that the app took it.
+    ///
+    /// The first time this test ran, the tap was made on the button in
+    /// plain view, about three seconds after the screen came up (as the
+    /// clip was reaching its end), and the app stayed where it was. Nothing
+    /// in that run could say whether the touch ever reached the button. Now
+    /// the app says what it feels and where it goes (UI-test mode: a finger
+    /// down on a big button, each change of screen, a tap kept by its
+    /// double-tap shield), so the cases can be told apart:
+    ///
+    /// - the app changed screen: it took the tap (the checks after this
+    ///   say whether it went to the right place);
+    /// - the button felt the finger and the app did not move, or its
+    ///   shield kept the tap: the app's fault, and this fails saying which;
+    /// - the app felt nothing at all: the simulator did not deliver the
+    ///   touch. That is said out loud as a NOTE in the log, and the tap is
+    ///   made once more. If the second goes the same way, the test fails.
+    private func tapRecordAgainOnTheReview(file: StaticString = #filePath, line: UInt = #line) {
+        // Only what the app says from here on counts.
+        let start = server.state().notes.count
+        var said: [String] = []
+        func heard(_ prefix: String) -> Bool { said.contains { $0.hasPrefix(prefix) } }
+        var all: String { said.isEmpty ? "nothing" : said.joined(separator: "; ") }
+
+        for attempt in 1...2 {
+            tap(button("RECORD AGAIN"), "RECORD AGAIN", file: file, line: line)
+            // The app says "screen review to record" the moment it moves.
+            let deadline = Date().addingTimeInterval(5)
+            repeat {
+                pause(0.3)
+                said = Array(server.state().notes.dropFirst(start))
+            } while !heard("screen ") && Date() < deadline
+            if heard("screen ") { return }
+
+            if heard("shield kept") {
+                XCTFail("RECORD AGAIN was tapped on a screen that had been up for seconds, and the app's double-tap shield kept the tap. The app said: \(all)", file: file, line: line)
+                return
+            }
+            if heard("press RECORD AGAIN") {
+                XCTFail("The RECORD AGAIN button felt the finger and the app did not act on it. The app said: \(all)", file: file, line: line)
+                return
+            }
+            if attempt == 1 {
+                print("NOTE \(shortName): a tap on RECORD AGAIN changed nothing, and the app felt nothing (no button pressed, no tap kept by its shield, no change of screen): the simulator did not deliver the touch. Tapping once more. Since the tap the app said: \(all)")
+            }
+        }
+        XCTFail("RECORD AGAIN was tapped twice and the app stayed on \"\(screenTitle)\". Since the first tap the app said: \(all)", file: file, line: line)
+    }
+
     /// A call two seconds in. Two seconds is nothing to send: there is no
     /// "Save this video?". The camera screen says what happened in one
     /// line, nothing red is left on it, the camera comes back by itself
@@ -144,7 +193,7 @@ final class InterruptionUITests: ZestUITestCase {
         waitForTitle("Save this video?", timeout: 20)
         waitForLabel(element("cut-note"), "the line under the title", contains: "A call or alarm stopped this video early.", timeout: 5)
 
-        tap(button("RECORD AGAIN"), "RECORD AGAIN")
+        tapRecordAgainOnTheReview()
         waitFor(record, "the camera screen again", timeout: 15)
         waitForLabel(
             element("camera-away"), "the line on the camera screen",

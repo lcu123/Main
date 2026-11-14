@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import SwiftUI
 import ZestCore
 
@@ -27,10 +28,7 @@ struct ReviewView: View {
 
     @State private var stage: Stage
     @State private var player: AVPlayer?
-    @State private var ended = false
     @State private var recommend: Bool
-
-    private let finished = NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)
 
     /// The defaults are the real flow. Other values only come from `ScreenSeeds`.
     init(stage: Stage = .ask, recommend: Bool = false) {
@@ -49,9 +47,6 @@ struct ReviewView: View {
         }
         .onAppear(perform: startPlayer)
         .onDisappear(perform: stopPlayer)
-        .onReceive(finished) { _ in
-            ended = true
-        }
         .onChange(of: app.check) { _, newValue in
             // SAVE was tapped before the check finished: carry on now.
             if stage == .checking, case .done = newValue {
@@ -149,39 +144,7 @@ struct ReviewView: View {
 
     /// The clip. Tapping it plays it again; there are no small controls.
     private var clip: some View {
-        Button(action: playAgain) {
-            ZStack {
-                Color.black
-                #if targetEnvironment(simulator)
-                if app.seeds.standInPicture {
-                    StandInPicture()
-                } else if let player {
-                    ClipPlayerView(player: player)
-                }
-                #else
-                if let player {
-                    ClipPlayerView(player: player)
-                }
-                #endif
-                if ended {
-                    Text("TAP TO PLAY AGAIN")
-                        .zestFont(.bodyBold)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background(Capsule().fill(Color.black.opacity(0.7)))
-                        .overlay(Capsule().strokeBorder(Color.white, lineWidth: 2))
-                }
-            }
-            .frame(maxWidth: .infinity)
-            // As tall as the room allows, between these two limits.
-            .frame(minHeight: Theme.clipMinHeight, idealHeight: Theme.clipMinHeight, maxHeight: Theme.clipHeight)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Your video. Double tap to play it again.")
-        .accessibilityIdentifier("clip")
+        ReviewClip(player: player, standInPicture: app.seeds.standInPicture)
     }
 
     /// "I recommended something": a row with a big switch, blue when it is YES.
@@ -346,15 +309,7 @@ struct ReviewView: View {
         let newPlayer = AVPlayer(playerItem: item)
         newPlayer.actionAtItemEnd = .pause
         player = newPlayer
-        ended = false
         newPlayer.play()
-    }
-
-    private func playAgain() {
-        guard let player else { return }
-        ended = false
-        player.seek(to: .zero)
-        player.play()
     }
 
     /// Lets go of the player (and the file) as soon as the screen is done.
@@ -362,6 +317,73 @@ struct ReviewView: View {
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
+    }
+}
+
+/// The clip on "Save this video?", and TAP TO PLAY AGAIN once it has played
+/// through.
+///
+/// A view of its own, with its own state, so that when the clip reaches its
+/// end only this is drawn again. The whole screen used to be, both big
+/// buttons included, at the very moment a tech is most likely to tap one:
+/// he watches the clip to its end and then says SAVE or RECORD AGAIN.
+private struct ReviewClip: View {
+    let player: AVPlayer?
+    /// Screenshot mode only: a still picture in place of the player.
+    let standInPicture: Bool
+
+    @State private var ended = false
+
+    /// The clip reaching its end. The system may say so on any thread; it
+    /// is brought to the main one before anything on the screen changes.
+    private let finished = NotificationCenter.default
+        .publisher(for: .AVPlayerItemDidPlayToEndTime)
+        .receive(on: DispatchQueue.main)
+
+    var body: some View {
+        Button(action: playAgain) {
+            ZStack {
+                Color.black
+                #if targetEnvironment(simulator)
+                if standInPicture {
+                    StandInPicture()
+                } else if let player {
+                    ClipPlayerView(player: player)
+                }
+                #else
+                if let player {
+                    ClipPlayerView(player: player)
+                }
+                #endif
+                if ended {
+                    Text("TAP TO PLAY AGAIN")
+                        .zestFont(.bodyBold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Capsule().fill(Color.black.opacity(0.7)))
+                        .overlay(Capsule().strokeBorder(Color.white, lineWidth: 2))
+                }
+            }
+            .frame(maxWidth: .infinity)
+            // As tall as the room allows, between these two limits.
+            .frame(minHeight: Theme.clipMinHeight, idealHeight: Theme.clipMinHeight, maxHeight: Theme.clipHeight)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Your video. Double tap to play it again.")
+        .accessibilityIdentifier("clip")
+        .onReceive(finished) { _ in
+            ended = true
+        }
+    }
+
+    private func playAgain() {
+        guard let player else { return }
+        ended = false
+        player.seek(to: .zero)
+        player.play()
     }
 }
 

@@ -46,7 +46,7 @@ struct BigButton: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
         }
-        .buttonStyle(BigButtonStyle(kind: kind))
+        .buttonStyle(BigButtonStyle(kind: kind, name: title))
         .disabled(isBusy)
         .accessibilityLabel(title.capitalized)
         // For UI tests: the button is found by the words on it.
@@ -56,6 +56,8 @@ struct BigButton: View {
 
 struct BigButtonStyle: ButtonStyle {
     let kind: BigButton.Kind
+    /// The words on the button. Only UI tests use it (see `makeBody`).
+    var name = ""
 
     static func foreground(_ kind: BigButton.Kind) -> Color {
         switch kind {
@@ -85,6 +87,16 @@ struct BigButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: Theme.corner, style: .continuous)
                     .strokeBorder(Theme.blue, lineWidth: kind == .plain ? 2 : 0)
             )
+            #if targetEnvironment(simulator)
+            // UI tests only: say when a finger came down on this button. If
+            // a tap then does nothing, the report can tell a touch that
+            // never arrived from one the button felt and did not act on.
+            .onChange(of: configuration.isPressed) { _, pressed in
+                if pressed {
+                    UITestMode.note("press \(name)")
+                }
+            }
+            #endif
             .contentShape(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous))
     }
 }
@@ -99,11 +111,26 @@ struct BigButtonStyle: ButtonStyle {
 /// both questions could be answered by accident; on a small phone the record
 /// button can sit under THIS IS IT too. With this, the second tap of a
 /// double tap falls on a screen that is not listening yet.
+///
+/// The sheet opens once and stays open: only a new screen starts closed.
+/// (It used to close again on every "appeared" SwiftUI sent for the
+/// screen. SwiftUI may send more than one, and a second one would have
+/// made a screen that had been up for seconds swallow a tap on a button
+/// in plain view.)
 struct SettleFirst: ViewModifier {
     /// Longer than a double tap, far shorter than reading the screen.
     static let seconds: Double = 0.4
 
     @State private var settled = false
+    #if targetEnvironment(simulator)
+    /// UI tests only: when this screen first appeared, and how often.
+    @State private var seen = Sightings()
+
+    private final class Sightings {
+        var first: Date?
+        var count = 0
+    }
+    #endif
 
     func body(content: Content) -> some View {
         content
@@ -114,17 +141,35 @@ struct SettleFirst: ViewModifier {
                 if !settled {
                     Color.clear
                         .contentShape(Rectangle())
-                        .onTapGesture {}
+                        .onTapGesture {
+                            #if targetEnvironment(simulator)
+                            // A failed UI test can then say that its tap
+                            // was kept here, and how old the screen was.
+                            let age = String(format: "%.2f", Date().timeIntervalSince(seen.first ?? Date()))
+                            UITestMode.note("shield kept a tap \(age) s after its screen appeared")
+                            #endif
+                        }
                         .ignoresSafeArea()
                         .accessibilityHidden(true)
                 }
             }
+            #if targetEnvironment(simulator)
             .onAppear {
-                settled = false
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: UInt64(SettleFirst.seconds * 1_000_000_000))
-                    settled = true
+                // UI tests only: was "appeared" sent twice for one screen?
+                seen.count += 1
+                if let first = seen.first {
+                    let later = String(format: "%.2f", Date().timeIntervalSince(first))
+                    UITestMode.note("shield: its screen appeared again (time \(seen.count)), \(later) s after the first")
+                } else {
+                    seen.first = Date()
                 }
+            }
+            #endif
+            // `task`, not `onAppear`: it belongs to this screen's one life,
+            // and it only ever opens the sheet.
+            .task {
+                try? await Task.sleep(nanoseconds: UInt64(SettleFirst.seconds * 1_000_000_000))
+                settled = true
             }
     }
 }
