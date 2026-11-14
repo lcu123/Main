@@ -183,10 +183,17 @@ test('a video that keeps failing after it has moved on: the page stops at six tr
   const moveOn = async () => {
     // The fresh source is in, then the picture moves more than 3 s past where it failed.
     await expect.poll(async () => (await videoState(page)).ready, { message: 'the fresh source never loaded' }).toBeGreaterThanOrEqual(1);
-    await page.evaluate(() => { document.getElementById('v').currentTime = 5; });
-    await expect.poll(async () => { const s = await videoState(page); return !s.seeking && s.time > 4.5; }).toBe(true);
-    await page.evaluate(() => { document.getElementById('v').currentTime = 0.5; });
-    await expect.poll(async () => { const s = await videoState(page); return !s.seeking && s.time < 1; }).toBe(true);
+    // A source loaded with "#t=..." goes to that second by itself. On Safari's own video
+    // stack that first move can land after a skip made the moment the source is ready, and
+    // undo it; so the skip is made again until it holds.
+    const skipTo = (seconds, there) => expect.poll(async () => {
+      const s = await videoState(page);
+      if (!s.seeking && there(s.time)) return true;
+      if (!s.seeking) await page.evaluate((t) => { document.getElementById('v').currentTime = t; }, seconds);
+      return false;
+    }, { message: `the player never got to ${seconds} s`, timeout: 15_000, intervals: [250] }).toBe(true);
+    await skipTo(5, (time) => time > 4.5);
+    await skipTo(0.5, (time) => time < 1);
   };
   for (let tries = 1; tries <= 6; tries += 1) {
     await moveOn();
@@ -375,12 +382,17 @@ test.describe('the "try again" note, pressed', () => {
     await page.goto(clip.watch);
     await expect(note(page)).toHaveText(FAILED);
     const before = gate.asked;
+    await watchNote(page); // from here on, count how often the page loads the video afresh
     // Two presses a few milliseconds apart, as a double tap or a double click sends them. The
     // second used to count as "the second press in a row", which opens the page again.
     await note(page).evaluate((el) => { el.click(); el.click(); });
     await expect(note(page), 'the try failed: the note must be back').toHaveText(FAILED);
     await page.waitForTimeout(1200);
-    expect(gate.asked - before, 'a double tap must be one more try').toBeLessThanOrEqual(projectFacts(testInfo).engine === 'chromium' ? 1 : 2);
+    // One try is one fresh load by the page. How many requests the browser makes for that
+    // one load is its own business: Chromium one, Safari on a Mac up to four when the
+    // connection fails.
+    expect(await sourceReloads(page), 'a double tap must be one more try').toBe(1);
+    if (projectFacts(testInfo).engine === 'chromium') expect(gate.asked - before).toBe(1);
     expect(gate.asked - before).toBeGreaterThanOrEqual(1);
     expect(await pageLoads(server, clip), 'a double tap opened the page again').toBe(1);
     expect(await page.evaluate(() => document.querySelectorAll('.stars input:checked').length), 'a double tap picked a star').toBe(0);

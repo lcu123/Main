@@ -99,9 +99,23 @@ async function startServer() {
 }
 
 async function control(pathAndQuery, options) {
-  const response = await fetch(`http://127.0.0.1:${PORT}/__test${pathAndQuery}`, options);
-  if (!response.ok) throw new Error(`serve.py ${pathAndQuery}: ${response.status} ${await response.text()}`);
-  return response.json();
+  // A request that never reaches the server is tried again: after the two silent minutes a
+  // simulator takes to boot, the first request sometimes went out on a connection the
+  // server had long closed ("fetch failed"), and that one line failed a whole phone.
+  let failure;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    let response;
+    try {
+      response = await fetch(`http://127.0.0.1:${PORT}/__test${pathAndQuery}`, { ...options, signal: AbortSignal.timeout(20_000) });
+    } catch (error) {
+      failure = error;
+      await sleep(500 * attempt);
+      continue;
+    }
+    if (!response.ok) throw new Error(`serve.py ${pathAndQuery}: ${response.status} ${await response.text()}`);
+    return response.json();
+  }
+  throw new Error(`serve.py ${pathAndQuery} could not be reached in 4 tries: ${failure && (failure.cause ? failure.cause.message || failure.cause.code : failure.message)}`);
 }
 const newVideo = (options = {}) => control('/video?' + new URLSearchParams(options), { method: 'POST' });
 const stateOf = (token) => control('/state?token=' + token);
@@ -457,8 +471,10 @@ async function runTarget(target) {
     }
     const clip = await newVideo();
     result.problems.push(...await watchOne(driver, clip.watch, 'a local watch page'));
+    // The page sends "played" when the picture starts, and again by itself (after 4 s, up to
+    // three times) if that message did not arrive; a simulator's network can be that slow.
     let state = await stateOf(clip.token);
-    for (let i = 0; i < 12 && state.played < 1; i += 1) { await sleep(250); state = await stateOf(clip.token); }
+    for (let i = 0; i < 30 && state.played < 1; i += 1) { await sleep(500); state = await stateOf(clip.token); }
     say(`  the server recorded: "played" ${state.played} time(s); /video asked ${state.hits.video} time(s); bucket asked ${state.bucket.length} time(s): `
       + `${state.bucket.map((r) => r.range || 'whole file').slice(0, 10).join(', ')}${state.bucket.length > 10 ? ', ...' : ''}`);
     if (state.played !== 1) result.problems.push(`the server was told "played" ${state.played} times, not once`);
@@ -466,8 +482,14 @@ async function runTarget(target) {
 
     fs.mkdirSync(SHOTS, { recursive: true });
     const file = path.join(SHOTS, `${target.name.replace(/[^A-Za-z0-9]+/g, '-')}.png`);
-    fs.writeFileSync(file, Buffer.from(await driver.takeScreenshot(), 'base64'));
-    say(`  picture: ${path.relative(HERE, file)}`);
+    try {
+      // With a limit: on the iPad simulator this call once never came back, and the step sat
+      // there until the job's own 50 minutes ran out.
+      fs.writeFileSync(file, Buffer.from(await within(driver.takeScreenshot(), 60_000, 'taking a picture'), 'base64'));
+      say(`  picture: ${path.relative(HERE, file)}`);
+    } catch (error) {
+      say(`  no picture: ${String(error.message).split('\n')[0]}`);
+    }
 
     try {
       result.probe = await expiredLinkProbe(driver);
@@ -523,7 +545,14 @@ async function main() {
   try {
     // Started now, while the Mac is idle: a booting simulator takes every core for a minute.
     await ensureDriver();
-    for (const target of targets) results.push(await runTarget(target));
+    for (const target of targets) {
+      // No one browser may take the whole step: nine minutes each, then on to the next.
+      results.push(await within(runTarget(target), 9 * 60_000, `everything for ${target.name}`).catch((error) => {
+        say(`  RESULT: ${target.name}: FAIL: ${error.message}`);
+        if (target.device) shutdown(target.device);
+        return { name: target.name, status: 'fail', problems: [error.message], probe: '', live: '', seen: '' };
+      }));
+    }
   } finally {
     stopDriver();
     server.stop();

@@ -56,9 +56,18 @@ const test = base.test.extend({
 
   // Everything that went wrong on the page while the test ran. Tests end with
   // `expect(problems.list()).toEqual([])` so that the failure message names the problem.
-  problems: async ({ page }, use) => {
+  problems: async ({ page }, use, testInfo) => {
     const found = [];
     const allowed = [EXPECTED_STATUS_NOISE];
+    // Playwright's WebKit on a Mac draws Safari's own player. At three device pixels per CSS
+    // pixel (the iPhone 13, 15 and 17 rows) that player asks for "placard" pictures its Mac
+    // build does not carry at that density, and logs "Button failed to load ... placard ...
+    // [MacOSLayoutTraits ...]". It is the test browser's own player, not the page: the rows
+    // at two pixels, the same rows on Linux, and real Mobile Safari on those phones in the
+    // simulator log nothing. (The page's CSP does allow blob: pictures; that was not it.)
+    if (projectFacts(testInfo).engine === 'webkit' && process.platform === 'darwin') {
+      allowed.push(/^Button failed to load, iconName = [\w-]*placard, layoutTraits = \[MacOSLayoutTraits/);
+    }
     page.on('pageerror', (error) => {
       if (allowed.some((pattern) => pattern.test(error.message))) return; // only what a test has named, with its reason
       found.push(`uncaught error: ${error.message}`);
