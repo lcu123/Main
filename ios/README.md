@@ -583,6 +583,18 @@ looks, the row is somewhere else, often half under a bar, and that is when
 it says "Contrast failed" about plain dark words on white. Nothing in the
 checks relies on the audit seeing a row where the test put it.
 
+**One drag that moves nothing is not a page that cannot scroll.** The
+checks drag every page from its top to its end. Once (the odd names on My
+Route, opened at its end, on the smallest iPhone) one drag out of 71 moved
+nothing: the page had just been dragged from its end to its top in 14
+drags, was dragged 56 more times afterwards, and was the same height as in
+the run before, which passed. The check said "does not scroll" because its
+first step down had moved nothing. Now a drag that moves nothing is made
+again; only two in a row mean the page goes no further, the top and the end
+of a page are read from where its pieces are (no drag is needed to find
+them), and the table gets an `astray` line each time, so the log says how
+often it happens.
+
 **Contrast is settled by the pixels.** Apple's audit says "Contrast failed"
 with no numbers. So for every line of text it flags, the test scrolls the
 line whole on to the screen itself, takes a picture of just that line, and

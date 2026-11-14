@@ -319,18 +319,52 @@ class ScreenChecks: ZestUITestCase {
         start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.25)
     }
 
+    /// True when the page is as far that way as it goes: its first piece is
+    /// in the room (the top), or its last piece is (the end). Read from where
+    /// the pieces are, so it needs no drag to find out.
+    private func pageIsAtEdge(_ frames: [CGRect], room: CGRect, end: Bool) -> Bool {
+        guard !frames.isEmpty else { return false }
+        if end {
+            return (frames.map { $0.maxY }.max() ?? 0) <= room.maxY + 1.5
+        }
+        return (frames.map { $0.minY }.min() ?? 0) >= room.minY - 1.5
+    }
+
     /// Scrolls the page as far as it goes, to its top or to its end.
-    private func scrollPage(toEnd: Bool) {
-        guard let room = pageRoom() else { return }
+    ///
+    /// It stops when the page is there (seen from where its pieces are), not
+    /// when one drag happens to move nothing: once in a long while a drag
+    /// made by the test moves nothing on a page that scrolls perfectly well
+    /// (a touch that went astray). One such drag is made again; only two in
+    /// a row are taken to mean the page goes no further.
+    /// - Returns: true if the page moved at all.
+    @discardableResult
+    private func scrollPage(toEnd: Bool) -> Bool {
+        guard let room = pageRoom() else { return false }
+        var moved = false
+        var still = 0
         var last = pageTexts().map { $0.frame }
-        for _ in 0..<14 {
+        for _ in 0..<30 {
+            if pageIsAtEdge(last, room: room, end: toEnd) { break }
             scrollPage(points: (toEnd ? 1 : -1) * room.height * 0.6)
             let now = pageTexts().map { $0.frame }
-            if now == last { break }
+            if now == last {
+                still += 1
+                if still >= 2 { break }
+            } else {
+                strayDrags += still          // it moved after all: that drag was a stray
+                still = 0
+                moved = true
+            }
             last = now
         }
         settle()
+        return moved
     }
+
+    /// Drags that moved nothing and were made again, on the screen being
+    /// looked at. Written into the table, so the log says how often.
+    private var strayDrags = 0
 
     private enum Sight {
         /// Whole inside the room the page scrolls in.
@@ -375,13 +409,23 @@ class ScreenChecks: ZestUITestCase {
     private func bringIntoPageRoom(key: String) -> CGRect? {
         var last: CGRect?
         var moved = false
-        for _ in 0..<12 {
+        var still = 0
+        for _ in 0..<14 {
             guard let room = pageRoom(), let spot = frame(of: key) else { return nil }
             if room.insetBy(dx: -1.5, dy: -1.5).contains(spot) {
                 if !moved { return spot }                           // it was there already
+                if let last, last != spot { strayDrags += still }
                 break
             }
-            if let last, last == spot { break }                     // the page no longer moves
+            if let last, last == spot {
+                // One drag that moves nothing is made again; two in a row
+                // and the page no longer moves.
+                still += 1
+                if still >= 2 { break }
+            } else {
+                strayDrags += still
+                still = 0
+            }
             last = spot
             moved = true
             if spot.height > room.height - 8 {
@@ -405,11 +449,18 @@ class ScreenChecks: ZestUITestCase {
     @discardableResult
     private func bringEndIntoPageRoom(key: String) -> CGRect? {
         var last: CGRect?
-        for _ in 0..<12 {
+        var still = 0
+        for _ in 0..<14 {
             guard let room = pageRoom(), let spot = frame(of: key) else { return nil }
             let over = spot.maxY - room.maxY
             if over <= 1.5, spot.maxY >= room.minY + 24 { break }
-            if let last, last == spot { break }                     // the page no longer moves
+            if let last, last == spot {
+                still += 1
+                if still >= 2 { break }                             // the page no longer moves
+            } else {
+                strayDrags += still
+                still = 0
+            }
             last = spot
             scrollPage(points: over > 1.5 ? over + 22 : -(room.minY + 24 - spot.maxY + 22))
         }
@@ -421,13 +472,20 @@ class ScreenChecks: ZestUITestCase {
     /// page, reached the way a thumb reaches it, without pulling at a page
     /// that is already there.
     private func showEndOfPage() {
-        for _ in 0..<14 {
+        var still = 0
+        for _ in 0..<16 {
             let texts = pageTexts()
             guard let room = pageRoom(), let last = texts.max(by: { $0.frame.maxY < $1.frame.maxY }) else { return }
             let over = last.frame.maxY - room.maxY
             if over <= -6 { break }                                 // whole, with a little air under it
             scrollPage(points: over + 22)
-            if pageTexts().map({ $0.frame }) == texts.map({ $0.frame }) { break }   // the page no longer moves
+            if pageTexts().map({ $0.frame }) == texts.map({ $0.frame }) {
+                still += 1
+                if still >= 2 { break }                             // the page no longer moves
+            } else {
+                strayDrags += still
+                still = 0
+            }
         }
         settle()
     }
@@ -445,7 +503,10 @@ class ScreenChecks: ZestUITestCase {
     private func scrollProblems(on name: String) -> [String] {
         // Nothing to do when the whole page is in view already.
         guard let room = pageRoom(), !pageFits() else { return [] }
-        scrollPage(toEnd: false)
+        strayDrags = 0
+        // (A page opened at its end is first taken to its top. If it moved
+        // on the way, it is a page that scrolls, whatever one drag does.)
+        let cameUp = scrollPage(toEnd: false)
         let clear = room.insetBy(dx: -1.5, dy: -1.5)
         var texts = pageTexts()
 
@@ -464,20 +525,34 @@ class ScreenChecks: ZestUITestCase {
                 if text.frame.maxY <= clear.maxY, text.frame.maxY >= room.minY + 24 { seenEnd.insert(text.key) }
             }
         }
-        for _ in 0..<16 {
+        var still = 0
+        for _ in 0..<26 {
             look()
             let before = texts.map { $0.frame }
+            // (Once it has moved: the end of the page is in the room.)
+            if moved, pageIsAtEdge(before, room: room, end: true) { break }
             scrollPage(points: room.height * 0.45)
             settle()
             texts = pageTexts()
-            if texts.map({ $0.frame }) == before { break }   // the end of the page
+            if texts.map({ $0.frame }) == before {
+                // One drag that moves nothing is made again. Two in a row:
+                // the page goes no further.
+                still += 1
+                if still >= 2 { break }
+                continue
+            }
+            strayDrags += still
+            still = 0
             moved = true
         }
         look()
         var problems: [String] = []
-        if !moved {
-            problems.append("\(name): the page is taller than the room above the buttons and does not scroll.")
+        if !moved && !cameUp {
+            problems.append("\(name): the page is taller than the room above the buttons and does not scroll (two drags, one after the other, moved nothing).")
+        } else if !moved {
+            problems.append("\(name): the page was scrolled from its end to its top, and then two drags, one after the other, did not move it down again.")
         }
+
         // Whatever was never whole on the way down gets its own try: the
         // steps above can pass over a tall card.
         let missed = known.filter { !seenWhole.contains($0.key) }
@@ -509,7 +584,20 @@ class ScreenChecks: ZestUITestCase {
             problems.append("\(name): \(words) can never be seen whole: the page does not scroll it clear of the bar or the buttons.")
         }
         scrollPage(toEnd: false)
+        noteStrayDrags(on: name)
         return problems
+    }
+
+    /// Says in the table how many drags moved nothing and were made again
+    /// while this screen was looked at. It is in every run's table, so it
+    /// can be seen how often it happens; it is never a failure by itself.
+    private func noteStrayDrags(on name: String) {
+        guard strayDrags > 0 else { return }
+        appendNote(
+            named: "accessibility-audit.\(Self.device).info",
+            "astray  \(name): \(strayDrags) drag(s) moved nothing, and the same drag made again moved the page: a touch that went astray, not a page that cannot scroll"
+        )
+        strayDrags = 0
     }
 
     /// With the largest text a page is often taller than its room. What the
@@ -1113,6 +1201,7 @@ class ScreenChecks: ZestUITestCase {
         if app.state == .runningForeground, !pageFits() {
             scrollPage(toEnd: false)
         }
+        noteStrayDrags(on: name)
         return problems
     }
 
