@@ -32,7 +32,9 @@
 // engine then settled two entries that had been written without those engines at hand: Enter
 // on the player works in both (entry deleted), and in a Windows contrast theme Firefox showed
 // a picked star too close to an unpicked one (fixed in the page: a picked star is filled with
-// the theme's text colour; entry deleted). Six are left.
+// the theme's text colour; entry deleted). The first full run on a Mac settled a third: Safari
+// does not wait for the whole file before it shows a faststart video (entry deleted). Five
+// are left.
 
 const everywhere = () => true;
 
@@ -83,19 +85,5 @@ module.exports = [
     where: ({ engine }) => engine === 'webkit',
     what: 'In Safari on a Mac the space bar and the arrow keys do not work the player the way they do in Chrome, Edge and '
       + 'Firefox (Safari\'s own player has its own keys, and on a Mac a plain Tab does not stop on every control). A click works.',
-  },
-  {
-    id: 'webkit-ready-only-after-the-whole-file',
-    // First CI run, WebKit on Linux and macOS: a faststart file of 2.7 MB at 300 KB a second was
-    // "ready" after 9.9 to 12.4 s, the time the WHOLE file takes, where Chromium and Firefox need
-    // under 2 s. But that test also waited for the page's "load" event, which WebKit holds back
-    // while its one request for the whole file (Range: bytes=0-<end>) is still running; and
-    // on a slower bucket, without that wait, WebKit had the picture long before the file was
-    // in. The test now measures from the first byte of the page, without waiting for "load".
-    // Run that way on WebKit on Linux (2026-11-13): it does not happen there. WebKit on a Mac
-    // plays through Apple's own video stack and has not reported yet.
-    where: ({ engine }) => (engine === 'webkit' && process.platform === 'darwin' ? 'unverified' : false),
-    what: 'In Safari, on a connection slower than the video itself, the player may show nothing until most of the file has '
-      + 'arrived, even though the file is faststart.',
   },
 ];

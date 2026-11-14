@@ -107,7 +107,7 @@ Every run ends by printing the gaps it touched and on which projects (also in
 * **DEPENDS ON THE DEVICE**: an entry marked `'varies'` is reported, never failed. (None today:
   the stars used to be drawn with whatever symbol font the device had; they are drawings now.)
 
-The list on 2026-11-13, after two fix rounds and the first run in Firefox and Safari's engine: 6 entries. (The first list had 24; 18 were fixed
+The list on 2026-11-14, after two fix rounds and the first runs in Firefox, in Safari's engine and on a Mac: 5 entries. (The first list had 24; 18 were fixed
 or shown not to happen and deleted, and 8 new ones were found on the fixed page. The second
 round fixed 6 of those 14: the half-minute wait on an expired link in Chrome, "try again"
 counted as watched, the focus lost when the note is pressed, the stars on a browser-darkened
@@ -120,7 +120,6 @@ page, the office number sticking out of its button at 200% zoom, and the small s
 | `tv-words-too-small` | TV windows 1080 px and taller | Left as it is on purpose; listed so the decision stays visible. |
 | `script-off-player-cannot-be-started` | WebKit | Safari with script off draws no player buttons; the noscript link is the way out. |
 | `safari-player-keys` | WebKit | Space and arrows on the player are Safari's own. |
-| `webkit-ready-only-after-the-whole-file` | WebKit: to confirm | The first run's measurement included the page's `load` event; the test no longer does. |
 
 `static/compat-allowlist.json` is the same idea for old-browser support.
 
@@ -166,6 +165,12 @@ time from `xcrun simctl list devices available`. For each: loads a watch page, s
 video, checks time moves, takes a picture (`safari-shots/`), and reports what Safari does once
 the bucket link has expired. With `LIVE_WATCH_URL` set it also plays the real video. It prints
 every step.
+
+The run of 2026-11-14 (workflow run 43541391450): Safari 27.2 on macOS, and Mobile Safari
+on iOS 26.2 on an iPhone SE (3rd generation), an iPhone 17, an iPhone 17 Pro Max and an iPad
+(A16): all five PASS. In each the video played, the server was told "played" once, and a page
+whose bucket link had expired played to the end with no note. In the same run WebKit on macOS
+passed all 596 checks on the iPhone, iPad and desktop Safari rows.
 
 Each target ends as one of three, and they are not the same thing:
 

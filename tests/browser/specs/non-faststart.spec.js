@@ -3,7 +3,7 @@
 // gets if one day it does not (an app update, a re-encode, a file fixed by hand).
 
 const {
-  test, expect, checkGap, projectFacts, videoState, waitForMetadata, pressPlay, waitForTime,
+  test, expect, projectFacts, videoState, waitForMetadata, pressPlay, waitForTime,
 } = require('../lib/harness');
 
 /**
@@ -67,7 +67,10 @@ test('on a slow connection: a faststart file is ready early, and an index at the
   const late = [];
   if (front.ms > whole / 2) late.push(`a faststart file was only ready after ${front.ms} ms; the whole file takes ${whole} ms`);
   if (front.ms > end.ms + 1500) late.push(`faststart (${front.ms} ms) was slower than the same file with its index at the end (${end.ms} ms)`);
-  checkGap(testInfo, 'webkit-ready-only-after-the-whole-file', late, 'on a slow connection the player waited for far more than the index');
+  // (Safari's engine was in doubt after the first CI run, which had also waited for the
+  // page's "load" event. Measured without that wait it does the same as the others, on Linux
+  // and on Apple's own video stack on a Mac: runs of 2026-11-14.)
+  expect.soft(late.join('; '), 'on a slow connection the player waited for far more than the index').toBe('');
 
   expect(await pressPlay(page, testInfo)).not.toBe('');
   await waitForTime(page, 0.5, 40_000);

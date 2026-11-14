@@ -183,12 +183,17 @@ Proven:
   down while the page is open; a weak signal and a lost one; a file with its
   index at the end; dark mode, a page the browser has darkened, and Windows
   contrast themes; 200% and 400% zoom; a keyboard alone; a TV remote (arrows,
-  OK, and the play and pause keys). The run of November 14 on Linux: 1,116
-  checks passed and none failed, across all 38 sizes and the three engines.
-  The deployed page was also opened read-only at the 14 Chrome-family sizes,
-  playing a real file from the real bucket: 28 of 28 passed. What the suite
-  still excuses is listed in `tests/browser/lib/known-gaps.js`, each entry with
-  what the customer sees; there are six, and none stops a customer watching
+  OK, and the play and pause keys). The run of November 14: on Linux every
+  check passed across all 38 sizes and the three engines (over 1,100 checks);
+  on a Mac, Safari's engine with Apple's own video stack passed all 596 checks
+  on the iPhone, iPad and desktop Safari sizes; and real Safari passed on the
+  Mac, on an iPhone SE, an iPhone 17 and an iPhone 17 Pro Max, and on an iPad,
+  in Apple's simulator (the video played, and a page whose link had expired
+  still played to the end). The deployed page was also opened read-only at the
+  14 Chrome-family sizes, playing a real file from the real bucket: 28 of 28
+  passed. What the suite still excuses is listed in
+  `tests/browser/lib/known-gaps.js`, each entry with what the customer sees;
+  there are five, and none stops a customer watching
   (the largest: with script switched off, Safari draws no player buttons, so
   the page offers a link that opens the video by itself).
 
