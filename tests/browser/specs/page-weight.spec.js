@@ -7,7 +7,7 @@ const { test, expect, waitForMetadata } = require('../lib/harness');
 // Bytes as sent with no compression.
 //                                              2026-11-13 a.m.   p.m. (fix round)   evening (second round)
 //   the watch page HTML (inline CSS included)        5,730            9,175            10,224     (a few bytes more or less with the address)
-//   /static/watch.js                                   611            5,728            10,238
+//   /static/watch.js                                   611            5,728            10,591
 //   /static/rubik.woff2                             35,324           35,324            35,324
 //   /static/logo.png                                11,921           11,921            11,921
 //   /static/favicon.png                              8,788            8,788             8,788
@@ -24,7 +24,7 @@ const { test, expect, waitForMetadata } = require('../lib/harness');
 // and brings its note into view; the note keeps the focus of a keyboard or a remote; a
 // dropped "played" message is sent again; a double tap is one press. Half the script's bytes
 // are its comments; it is served as written, with no build step, on purpose.
-const TODAY = { html: 10224, 'watch.js': 10238, 'rubik.woff2': 35324, 'logo.png': 11921, 'favicon.png': 8788 };
+const TODAY = { html: 10224, 'watch.js': 10591, 'rubik.woff2': 35324, 'logo.png': 11921, 'favicon.png': 8788 };
 const BUDGET = Object.fromEntries(Object.entries(TODAY).map(([name, bytes]) => [name, Math.round(bytes * 1.25)]));
 const TOTAL_BUDGET = Math.round(Object.values(TODAY).reduce((a, b) => a + b, 0) * 1.25);
 

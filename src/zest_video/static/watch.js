@@ -147,7 +147,13 @@
   video.addEventListener("seeking", overdue);
   video.addEventListener("timeupdate", function () {
     if (video.error) return;
-    if (stuck >= 0 && video.currentTime !== stuck) quiet();
+    if (stuck >= 0 && video.currentTime !== stuck) {
+      // Firefox now and then reports the wait a moment before the picture's last step. While
+      // the player still has nothing to show next, that step is where it stopped, not "it
+      // is moving again": keep counting the six seconds from there.
+      if (video.readyState < 3 && box && box.hidden) stuck = video.currentTime;
+      else quiet();
+    }
     if (run && video.currentTime > mark + 3) run = 0; // it really got going again
   });
   video.addEventListener("error", failed);

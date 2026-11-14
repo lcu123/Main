@@ -301,6 +301,42 @@ test.describe('a weak signal', () => {
     expect(await sourceReloads(page), 'a hiccup must not make the page fetch the video afresh').toBe(0);
   });
 
+  test('a browser that reports the wait a moment before the picture\'s last step still gets the note', async ({ page, clip }) => {
+    // Firefox does this now and then: "waiting" arrives, and after it one more "timeupdate"
+    // with the picture a frame further on. The page took that last step for "it is moving
+    // again" and dropped its six-second count: a frozen picture, and no word to the customer
+    // (seen in CI as a weak-signal test that failed about one run in three, in Firefox only).
+    // The order of events cannot be forced on a real player, so the player's own readings
+    // are stood in for here; the page's script is the real one.
+    await page.goto(clip.watch);
+    await waitForMetadata(page);
+    await page.evaluate(() => {
+      const v = document.getElementById('v');
+      const fake = { time: 2.48, ready: 2 };
+      window.__fake = fake;
+      Object.defineProperty(v, 'currentTime', { configurable: true, get: () => fake.time });
+      Object.defineProperty(v, 'readyState', { configurable: true, get: () => fake.ready });
+      Object.defineProperty(v, 'paused', { configurable: true, get: () => false });
+      v.dispatchEvent(new Event('waiting'));  // the player says it is starved...
+      fake.time = 2.52;
+      v.dispatchEvent(new Event('timeupdate')); // ...and then reports its last step
+    });
+    await page.waitForTimeout(4500);
+    await expect(note(page), 'the note came before six seconds were up').toBeHidden();
+    await expect(note(page), 'six seconds of a frozen picture and not a word to the customer').toHaveText(SLOW, { timeout: 4000 });
+    // And when the picture does move on with data in hand, the note goes.
+    await page.evaluate(() => { const v = document.getElementById('v'); window.__fake.ready = 4; window.__fake.time = 3.1; v.dispatchEvent(new Event('timeupdate')); });
+    await expect(note(page)).toBeHidden();
+    // A step with data in hand during the count means it really is playing: no note six seconds later.
+    await page.evaluate(() => {
+      const v = document.getElementById('v');
+      window.__fake.ready = 2; v.dispatchEvent(new Event('waiting'));
+      window.__fake.ready = 4; window.__fake.time = 3.6; v.dispatchEvent(new Event('timeupdate'));
+    });
+    await page.waitForTimeout(6600);
+    await expect(note(page), 'a video that is playing again was told its signal is weak').toBeHidden();
+  });
+
   test('pressing the weak-signal note only puts it away', async ({ page, server }, testInfo) => {
     const clip = await film(server);
     await playThenStall(page, server, clip, testInfo);

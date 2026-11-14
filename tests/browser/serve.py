@@ -53,6 +53,9 @@ default here, and it matters: Chromium will not hand a cross-origin XML answer t
 tries the same dead link again and again for about half a minute before it gives up.
 refusal=visible leaves the XML declaration off, which Chromium does pass on; the player then
 fails at once. It exists to tell the page's own recovery apart from the browser's waiting.
+(Checked against the production bucket on 2026-11-14 with a link whose signature was spoiled:
+403, Content-Type application/xml, and a body that begins with the XML declaration. The
+default here is what the real bucket sends.)
 
 The fixtures (tests/browser/fixtures):
 
