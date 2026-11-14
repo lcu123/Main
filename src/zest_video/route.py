@@ -34,7 +34,11 @@ LIVE_STATES = ("awaiting_upload", "held", "sent", "no_email", "unmatched")
 OFF_ROUTE = "off_route"  # FieldRoutes no longer has the visit on that day, or no work there for that tech
 SECOND = "second_video"  # another tech's video for the same visit already stands
 OVERDUE = "overdue"  # its email was due hours ago: the server was down, or a backup was put back
-HELD_BACK = (OFF_ROUTE, SECOND, OVERDUE)
+FR_MISSED = "fr_missed"  # its link was meant for FieldRoutes' own after-service email and is not in it, or nobody can tell
+HELD_BACK = (OFF_ROUTE, SECOND, OVERDUE, FR_MISSED)
+# The `email_skip` of a video whose link went into FieldRoutes' own after-service email (the
+# owner's "one email" setting). Not a hold: it went out, by that email instead of ours.
+FR_EMAIL = "fr_email"
 
 
 def held_back(video: Any) -> bool:
@@ -122,6 +126,31 @@ def tech_view(stop: Any, tech_id: int | None) -> StopView:
         done=done,
         done_seen_at=done_seen,
     )
+
+
+def filmed_appointments(stop: Any, tech_id: int, tied_to: Any) -> list[dict[str, Any]]:
+    """The appointments a tech's video at this stop is about, as the stop has them saved:
+    his own, when he has any there. A tech with none of his own (a helper riding along,
+    or one whose work the office has since given to someone else) filmed someone else's
+    work: then it is the appointments his video is tied to (`tied_to`), as far as the
+    stop still has them. Empty when the stop is gone or holds nothing of the kind."""
+    if stop is None or stop.gone:
+        return []
+    appts = [a for a in (stop.appointments or []) if isinstance(a, dict) and a.get("id")]
+    own = [a for a in appts if tech_id and (to_int(a.get("tech")) or 0) == tech_id]
+    if own:
+        return own
+    tied = set(tied_to or [])
+    return [a for a in appts if a["id"] in tied]
+
+
+def completed_at(appointment: dict[str, Any]) -> datetime | None:
+    """When FieldRoutes says this appointment was completed (its `dateCompleted`), as the
+    last read of the day saved it. None while it is not completed, or when FieldRoutes
+    gave no time for it."""
+    if (to_int(appointment.get("status")) or 0) != 1:
+        return None
+    return _when(appointment.get("completedAt"))
 
 
 IN_BUCKET = ("held", "sent", "no_email")  # the file is in the bucket: it will not get lost on a phone
@@ -292,6 +321,10 @@ async def _sync_day(ctx: Ctx, day: str) -> None:
                         open_check_in = True
                 appointment_id = to_int(a.get("appointmentID"))
                 status = to_int(a.get("status")) or 0
+                # When FieldRoutes says it was completed. FieldRoutes' own after-service email
+                # is timed from this moment, so a video link meant for that email has to be
+                # in FieldRoutes before then (`videos._into_fr_email`).
+                completed = local_time(a.get("dateCompleted"), tz) if status == 1 else None
                 # When we first saw this appointment finished: it starts the clock on the
                 # "finished with no video" flag for the tech who leads it.
                 done_seen_at = None
@@ -310,6 +343,7 @@ async def _sync_day(ctx: Ctx, day: str) -> None:
                         "checkIn": check_in.isoformat() if check_in else None,
                         "checkOut": check_out.isoformat() if check_out else None,
                         "doneSeenAt": done_seen_at,
+                        "completedAt": completed.isoformat() if completed else None,
                     }
                 )
             done = all(f["status"] == 1 for f in folded)

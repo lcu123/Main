@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, quote, urlsplit
@@ -21,13 +22,14 @@ from starlette.routing import Route
 
 from . import __version__, auth, db, security, videos
 from .core import (
-    DEFAULT_SETTINGS, FLAG_WORDS, SETTING_LIMITS, ApiError, Ctx, audit, clear_flags, get_settings, set_setting,
+    DEFAULT_SETTINGS, FLAG_WORDS, FR_EMAIL_TRIO, SETTING_CHOICES, SETTING_LIMITS, ApiError, Ctx, audit, clear_flags,
+    coerce_setting, fr_email_problem, get_settings, set_setting,
 )
 from .fr import FieldRoutesError, to_id
 from .http_api import client_ip
 from .jobs import techs_with_the_app
 from .render import render
-from .route import LIVE_STATES, covers, helper_techs, lead_techs, sync_day, tech_view
+from .route import FR_EMAIL, LIVE_STATES, covers, helper_techs, lead_techs, sync_day, tech_view
 
 COOKIE = "zv_office"
 OFFICE_HEADERS = {
@@ -52,7 +54,19 @@ EMAIL_SKIP_WORDS = {
     "off_route": "the stop is no longer on the route",
     "second_video": "a second video for this visit",
     "overdue": "its email was hours late, so it waits for the office",
+    "fr_missed": "it waits for the office, and its flag says what is known about FieldRoutes' email",
+    "fr_email": "the link is in FieldRoutes' email",
     "demo": "demo",
+}
+
+# FieldRoutes' delay, in minutes, when this deployment puts the video link into FieldRoutes'
+# own email (`videos.fr_email_on`), for the banner on every office page. Set once per request.
+_fr_email: ContextVar[int] = ContextVar("fr_email_minutes", default=0)
+
+FR_EMAIL_CHOICES = {
+    0: "Our own email (as it has always been)",
+    30: "FieldRoutes' own email, which FieldRoutes sends 30 minutes after a visit is completed",
+    60: "FieldRoutes' own email, which FieldRoutes sends 1 hour after a visit is completed",
 }
 
 SETTING_HELP = {
@@ -76,6 +90,18 @@ SETTING_HELP = {
     "more than this many hours late is not sent by itself. It waits for the office to press Send it anyway or "
     "Pull. The same for a video that waited for the route (its visit was off the day) and is this late by the "
     "time the visit is back. 0 switches this off, and late emails then go out the moment the server is back.",
+    "fr_email_minutes": "Which email brings the customer the video link. One email, not two. With FieldRoutes' own "
+    "email picked, this server adds one line with the link to the technician's comments on the completed visit. "
+    "FieldRoutes' after-service email carries it, and our own email is not sent. Three things must be true in "
+    "FieldRoutes first (Admin > Preferences > Customer Preferences > Customer Communication). One: Service "
+    "Followup Email is set to 30 Minutes After Completion or 1 Hour After Completion. Two: the choice here is the "
+    "same as that one. Three: the Service Follow-Up email body has {{techComments}} in it, or the link has "
+    "nowhere to show. A video that is ready too late for FieldRoutes' email waits for the office. No second "
+    "email goes by itself. The tech's hold (above) must be at least 10 minutes shorter than FieldRoutes' wait. "
+    "Overdue hours (above) cannot be 0: a video waits that long, at most, for its visit to be completed in "
+    "FieldRoutes. Do not pick this before the test in the go-live guide has passed on the test customer.",
+    "fr_email_line": "The one line added to the technician's comments. {link} becomes the video link and must be "
+    "in it once. One line, 200 characters at most.",
     "email_subject": "Email subject. {tech} becomes the tech's first name, {service} the service.",
     "email_intro": "First lines of the email. {tech}, {address} and {service} are filled in.",
     "prompts": "What the tech reads while recording, one per line. {name} becomes the customer's first name.",
@@ -99,8 +125,21 @@ async def tech_names(ctx: Ctx) -> dict[int, str]:
     return {r.id: f"{r.fname} {r.lname}".strip() or f"Tech {r.id}" for r in rows}
 
 
-def video_status(ctx: Ctx, video: Any) -> tuple[str, str]:
-    """(label, tone) for a video. Tones: good, wait, bad, off."""
+def video_status(ctx: Ctx, video: Any, line: Any | None = None) -> tuple[str, str]:
+    """(label, tone) for a video. Tones: good, wait, bad, off. `line` is the video's row in
+    the outbox for FieldRoutes' own email, when it has one (`videos.comment_rows`)."""
+    if video.state == "no_email" and video.email_skip == FR_EMAIL:
+        # Three stages, and each says only what the server knows (`videos.line_stage`).
+        stage = videos.line_stage(video, line)
+        if stage == "going":
+            return "Going into FieldRoutes' email", "wait"
+        added = videos.line_added_at(line)
+        when = f" · {ctx.local(added).strftime('%-I:%M %p')}" if added else ""
+        if stage == "added":
+            # In the technician's comments. FieldRoutes has not sent yet, and the server
+            # looks once more shortly before it does.
+            return f"Link added for FieldRoutes' email{when}", "wait"
+        return f"In FieldRoutes' email{when}", "good"
     if video.state == "awaiting_upload":
         return "Waiting on phone", "wait"
     if video.state == "held":
@@ -143,6 +182,8 @@ async def board(ctx: Ctx, day: str) -> dict[str, Any]:
         ).all()
     scores = {s.video_id: s for s in score_rows}
     notes = await row_notes(ctx, day)
+    lines = await videos.comment_rows(ctx, vids)
+    settings, now = await get_settings(ctx), db.now()
 
     # One video per tech per property. Prefer a tech's live video; fall back to his
     # pulled one so the row says so.
@@ -184,7 +225,10 @@ async def board(ctx: Ctx, day: str) -> dict[str, Any]:
             has_app = bool(equipped.intersection([tech_id, *helpers]))
             if video is not None:
                 seen_videos.add(video.id)
-                label, tone = video_status(ctx, video)
+                label, tone = video_status(ctx, video, lines.get(video.id))
+                if await videos.waits_for_completion(ctx, video, stop, settings, now):
+                    # "Sending at ..." would be wrong: nothing is sent until he completes it.
+                    label, tone = "Waiting for the tech to complete the visit", "wait"
             elif not has_app:
                 label, tone = "Tech has no app yet", "off"
             elif view.done:
@@ -205,8 +249,8 @@ async def board(ctx: Ctx, day: str) -> dict[str, Any]:
             )
 
     others = [
-        {"video": v, "label": video_status(ctx, v)[0], "tone": video_status(ctx, v)[1], "score": scores.get(v.id),
-         "note_key": f"v:{v.id}", "note": notes.get(f"v:{v.id}")}
+        {"video": v, "label": video_status(ctx, v, lines.get(v.id))[0], "tone": video_status(ctx, v, lines.get(v.id))[1],
+         "score": scores.get(v.id), "note_key": f"v:{v.id}", "note": notes.get(f"v:{v.id}")}
         for v in vids
         if v.id not in seen_videos
     ]
@@ -271,6 +315,7 @@ async def stats(ctx: Ctx, days: int) -> list[dict[str, Any]]:
         if v.customer_id is not None:
             filmed.setdefault((v.day, v.customer_id), []).append(v)
     stars = {s.video_id: s.stars for s in score_rows}
+    lines = await videos.comment_rows(ctx, vids)
     equipped = await techs_with_the_app(ctx)
 
     rows: dict[int, dict[str, Any]] = {}
@@ -298,7 +343,8 @@ async def stats(ctx: Ctx, days: int) -> list[dict[str, Any]]:
     for v in vids:
         r = row(v.tech_id)
         r["videos"] += 1
-        if v.state == "sent":
+        # Sent: our own email went, or the video's line is in FieldRoutes' own email.
+        if v.state == "sent" or videos.line_written(v, lines.get(v.id)):
             r["sent"] += 1
             r["watched"] += 1 if v.first_viewed_at else 0
         if v.id in stars:
@@ -330,6 +376,8 @@ def routes(ctx: Ctx) -> list[Route]:
                 mail_delivers=ctx.mailer.delivers,
                 email_test_to=ctx.cfg.email_test_to,
                 tz=ctx.cfg.tz,
+                fr_email_minutes=_fr_email.get(),
+                fr_email_only=sorted(ctx.cfg.fr_write_customer_ids) if ctx.cfg.fr_write_customer_ids is not None else None,
                 **context,
             ),
             status_code=status,
@@ -356,6 +404,7 @@ def routes(ctx: Ctx) -> list[Route]:
             user = await auth.office_user(ctx, request.cookies.get(COOKIE, ""))
             if user is None:
                 return RedirectResponse("/office/login", status_code=303)
+            _fr_email.set(videos.fr_email_on(ctx, await get_settings(ctx)))
             if owner and not user.owner:
                 return html("office_message.html", user, status=403, title="Owners only",
                             message="Ask the owner to do this, or to make you an owner.")
@@ -445,7 +494,12 @@ def routes(ctx: Ctx) -> list[Route]:
         if customer_id is None or customer_id <= 0:
             raise ApiError(400, "bad_request", "Pick a customer, or type the FieldRoutes customer number.")
         await videos.move(ctx, request.path_params["video_id"].lower(), customer_id, user.email)
-        return back(request, str(form.get("back") or "/office"), msg="Video moved. The right customer gets the email in a minute.")
+        if videos.fr_email_customer(ctx, customer_id, await get_settings(ctx)):
+            msg = ("Video moved. If FieldRoutes' email for that visit has not gone yet, the link goes into it. "
+                   "If it has, the video waits here for you. The day page will say.")
+        else:
+            msg = "Video moved. The right customer gets the email in a minute."
+        return back(request, str(form.get("back") or "/office"), msg=msg)
 
     async def send_video(request: Request, user: auth.OfficeUser) -> Response:
         form = await request.form()
@@ -528,14 +582,32 @@ def routes(ctx: Ctx) -> list[Route]:
         if request.method == "POST":
             form = await request.form()
             errors = []
+            # Three settings have to fit each other once the link goes into FieldRoutes' email
+            # (`core.fr_email_problem`). They are saved from one form, so they are judged as
+            # what they will be together, not one after the other.
+            together: dict[str, Any] = {}
+            for key in FR_EMAIL_TRIO:
+                if form.get(key) is not None:
+                    try:
+                        together[key] = coerce_setting(key, form.get(key))
+                    except ValueError:
+                        pass  # said below, when that setting is saved
+            now = await get_settings(ctx)
+            changed = {key for key in together if together[key] != now[key]}
+            skip: set[str] = set()
+            problem = fr_email_problem({**now, **together})
+            if problem and len(changed) > 1:
+                # More than one of them was changed and they do not fit: none is saved, said once.
+                skip = changed
+                errors.append(f"{problem} None of these was changed.")
             for key, default in DEFAULT_SETTINGS.items():
                 raw: Any = form.get(key)
                 if isinstance(default, bool):
                     raw = raw is not None
-                elif raw is None:
+                elif raw is None or key in skip:
                     continue
                 try:
-                    await set_setting(ctx, key, raw, user.email)
+                    await set_setting(ctx, key, raw, user.email, alongside=together)
                 except ValueError as exc:
                     errors.append(str(exc))
             if errors:
@@ -544,7 +616,7 @@ def routes(ctx: Ctx) -> list[Route]:
         return html(
             "office_settings.html", user, settings=await get_settings(ctx), defaults=DEFAULT_SETTINGS, help=SETTING_HELP,
             msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""), cfg=ctx.cfg,
-            limits=SETTING_LIMITS,
+            limits=SETTING_LIMITS, choices=SETTING_CHOICES, fr_email_choices=FR_EMAIL_CHOICES,
         )
 
     async def users_page(request: Request, user: auth.OfficeUser) -> Response:

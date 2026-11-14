@@ -103,7 +103,8 @@ stops = sa.Table(
     sa.Column("city_line", sa.String(120), nullable=False, default=""),
     sa.Column("lat", sa.Float),
     sa.Column("lng", sa.Float),
-    sa.Column("appointments", sa.JSON, nullable=False),  # [{id, tech, type, status, checkIn, checkOut}]
+    # [{id, tech, type, service, status, checkIn, checkOut, doneSeenAt, completedAt}]
+    sa.Column("appointments", sa.JSON, nullable=False),
     sa.Column("services", sa.JSON, nullable=False),
     sa.Column("position", sa.Integer, nullable=False, default=0),
     sa.Column("check_in", UTCDateTime),
@@ -151,7 +152,8 @@ videos = sa.Table(
     sa.Column("emailed_at", UTCDateTime),
     sa.Column("email_to", sa.String(254), nullable=False, default=""),
     sa.Column("email_id", sa.String(80), nullable=False, default=""),
-    sa.Column("email_skip", sa.String(30), nullable=False, default=""),  # why no email went
+    # Why no email of ours went. With `fr_email` the link went into FieldRoutes' own email instead.
+    sa.Column("email_skip", sa.String(30), nullable=False, default=""),
     sa.Column("first_viewed_at", UTCDateTime),
     sa.Column("view_count", sa.Integer, nullable=False, default=0),
     sa.Column("ended_at", UTCDateTime),  # pulled, deleted or replaced
@@ -231,13 +233,15 @@ office_sessions = sa.Table(
 )
 
 # FieldRoutes writes wait here and retry, so an API outage never loses a note,
-# a score or a task. `dedupe` keeps a retry from writing twice.
+# a score or a task. `dedupe` keeps a retry from writing twice. A `comment` is the video's
+# line for FieldRoutes' own after-service email: it has a deadline in its payload, and
+# past that it is not written at all.
 fr_outbox = sa.Table(
     "fr_outbox",
     metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("dedupe", sa.String(120), nullable=False, unique=True),
-    sa.Column("kind", sa.String(10), nullable=False),  # note | review | task
+    sa.Column("kind", sa.String(10), nullable=False),  # note | review | task | comment
     sa.Column("customer_id", sa.Integer, nullable=False),
     sa.Column("video_id", sa.String(36)),
     sa.Column("payload", sa.JSON, nullable=False),

@@ -30,7 +30,7 @@ import sqlalchemy as sa
 
 from conftest import _client_for
 from video_helpers import (
-    BASE, STAFF, Env, code_from, film, login, make_env, minutes_ago, office_login, seed, today, video_body,
+    BASE, STAFF, Env, code_from, film, fr_time, login, make_env, minutes_ago, office_login, seed, today, video_body,
 )
 
 from zest_video import app as video_app
@@ -2105,6 +2105,13 @@ async def test_two_servers_at_a_deploy_write_one_note_not_two(env: Env, clock: C
 # confirmed, emailed, filed in FieldRoutes and scored. After each kill the server is
 # started again, and whoever was waiting for an answer asks again, as the phone, the job
 # loop and a customer's second press do.
+#
+# It is lived twice. Once as it has always been, with our own email. And once with the
+# owner's "one email" setting on (`fr_email=True`): no email of ours goes, and the video's
+# line for FieldRoutes' own email is one more follow-up that must be queued with the
+# video's settling, written exactly once, and looked at once more before FieldRoutes
+# sends. Each of those has a claim and an answer of its own, and each is a save the
+# server is killed at.
 
 
 class Life:
@@ -2145,7 +2152,15 @@ class Life:
             self.clock.forward(minutes=11)
 
 
-async def live_one_life(env: Env, clock: Clock, *, at: int = 0, before: bool = False) -> tuple[Life, DyingDatabase, str]:
+async def live_one_life(
+    env: Env, clock: Clock, *, at: int = 0, before: bool = False, fr_email: bool = False
+) -> tuple[Life, DyingDatabase, str]:
+    if fr_email:
+        # The owner has FieldRoutes' own email carry the link, an hour after completion,
+        # and Pat completes Jane's visit in FieldRoutes just as he films it.
+        for appointment_id in (9001, 9002, 9003):
+            env.fake.data["appointment"][appointment_id].update(status="1", dateCompleted=fr_time(clock.now()))
+        await set_setting(env.ctx, "fr_email_minutes", "60", "owner@zest.test")
     headers = await ready(env)
     token = headers["Authorization"].removeprefix("Bearer ")
     life = Life(env, clock, MailService())
@@ -2164,7 +2179,10 @@ async def live_one_life(env: Env, clock: Clock, *, at: int = 0, before: bool = F
 
     assert (await life.asks(register))["id"] == body["id"]
     env.storage.objects[(await env.video(body["id"])).object_key] = b"v" * body["sizeBytes"]
-    assert (await life.asks(complete))["state"] in ("held", "sent"), "confirmed, whichever try got through"
+    # A try that was cut off is finished by the restart's own first pass, eleven minutes on:
+    # by then the video has gone out, as our email or (`fr_email`) towards FieldRoutes' own.
+    gone_out = "no_email" if fr_email else "sent"
+    assert (await life.asks(complete))["state"] in ("held", gone_out), "confirmed, whichever try got through"
     clock.forward(minutes=11)
     await life.minutes_go_by()
     await life.asks(score)
@@ -2172,19 +2190,38 @@ async def live_one_life(env: Env, clock: Clock, *, at: int = 0, before: bool = F
     return life, switch, body["id"]
 
 
-async def what_is_left_after(env: Env, life: Life, video_id: str) -> list[str]:
+async def what_is_left_after(env: Env, life: Life, video_id: str, *, fr_email: bool = False) -> list[str]:
     """Everything that must be true of the one video, however its life went. A list of
     what is wrong, in plain words; empty when nothing is."""
     wrong: list[str] = []
     video = await env.video(video_id)
     if len(await env.all(sa.select(db.videos))) != 1:
         wrong.append("there is not exactly one video")
-    if video.state != "sent" or not video.emailed_at:
-        wrong.append(f"the video is {video.state}, not sent")
-    if [m["to"] for m in life.service.inbox] != [["jane@example.com"]]:
-        wrong.append(f"the customer got {len(life.service.inbox)} emails")
     actions = await env.actions()
-    for once in ("video_registered", "video_uploaded", "email_sent"):
+    if fr_email:
+        # It went out in FieldRoutes' own email: no email of ours, and one line in the
+        # technician's comments on his completed appointment.
+        if (video.state, video.email_skip) != ("no_email", "fr_email") or video.emailed_at:
+            wrong.append(f"the video is {video.state} ({video.email_skip}), not in FieldRoutes' email")
+        if life.service.inbox:
+            wrong.append(f"the customer got {len(life.service.inbox)} emails of ours")
+        link = f"{BASE}/w/{video.token}"
+        if env.fake.comments(9001).count(link) != 1 or link in env.fake.comments(9002) + env.fake.comments(9003):
+            wrong.append("the line is not in the technician's comments exactly once, on one appointment")
+        if env.fake.completed_by_api or env.fake.invoices:
+            wrong.append("an appointment was completed by the server")
+        once_each = ("video_registered", "video_uploaded", "email_skipped", "fr_email_line")
+        if actions.count("email_sent"):
+            wrong.append("the audit trail says an email of ours was sent")
+    else:
+        if video.state != "sent" or not video.emailed_at:
+            wrong.append(f"the video is {video.state}, not sent")
+        if [m["to"] for m in life.service.inbox] != [["jane@example.com"]]:
+            wrong.append(f"the customer got {len(life.service.inbox)} emails")
+        if env.fake.completions:
+            wrong.append("appointment/complete was called with the setting off")
+        once_each = ("video_registered", "video_uploaded", "email_sent")
+    for once in once_each:
         if actions.count(once) != 1:
             wrong.append(f"the audit trail has {actions.count(once)} entries for {once}")
     saved = [e.detail for e in await env.all(sa.select(db.events).where(db.events.c.action == "score_saved"))]
@@ -2197,16 +2234,25 @@ async def what_is_left_after(env: Env, life: Life, video_id: str) -> list[str]:
     # Every FieldRoutes write is queued exactly once. Each was then either made, once, or
     # (if the server died in the middle of making it) left alone with the office told.
     rows = await env.all(sa.select(db.fr_outbox).order_by(db.fr_outbox.c.id))
-    if sorted(r.kind for r in rows) != ["note", "review", "task"]:
+    if sorted(r.kind for r in rows) != [*(["comment"] if fr_email else []), "note", "review", "task"]:
         wrong.append(f"queued for FieldRoutes: {sorted(r.kind for r in rows)}")
     flagged = {f.dedupe for f in await env.flags("fr_write_failed")}
     for row in rows:
-        made = len(fr_writes(env, row.kind))
+        made = len(env.fake.completions) if row.kind == "comment" else len(fr_writes(env, row.kind))
         if made > 1:
             wrong.append(f"the {row.kind} was written to FieldRoutes {made} times")
         if row.done_at is not None and made != 1:
             wrong.append(f"the {row.kind} is marked written and FieldRoutes has {made}")
-        if row.done_at is None and f"fr:{row.id}" not in flagged:
+        if row.kind == "comment":
+            # The line may be tried again after a kill (it reads before it writes), and
+            # the hour leaves time for it: so it is always written, never given up on.
+            # And it is not finished until the server has read the visit once more,
+            # shortly before FieldRoutes sends, and seen the line still there.
+            if not (row.payload.get("written_at") or row.payload.get("found_at")):
+                wrong.append("the line for FieldRoutes' email was not written")
+            elif row.done_at is None or not (row.payload.get("looked_at") or row.payload.get("found_at")):
+                wrong.append("the line was written and never looked at again before FieldRoutes' email was due")
+        elif row.done_at is None and f"fr:{row.id}" not in flagged:
             wrong.append(f"the {row.kind} was not written and the office was not told")
     if len(flagged) > life.kills:
         wrong.append("more writes were given up on than the server was killed")
@@ -2221,32 +2267,42 @@ async def what_is_left_after(env: Env, life: Life, video_id: str) -> list[str]:
 async def test_a_server_killed_at_any_save_in_a_videos_life_loses_nothing_and_doubles_nothing(
     tmp_path, clock: Clock
 ) -> None:
-    async def one_life(name: str, **how: Any) -> tuple[DyingDatabase, list[str]]:
+    async def one_life(name: str, *, fr_email: bool = False, **how: Any) -> tuple[DyingDatabase, list[str]]:
         folder = tmp_path / name
         folder.mkdir()
         clock.ahead = timedelta()
         env = await make_env(folder)
         try:
-            life, switch, video_id = await live_one_life(env, clock, **how)
-            wrong = await what_is_left_after(env, life, video_id)
+            life, switch, video_id = await live_one_life(env, clock, fr_email=fr_email, **how)
+            wrong = await what_is_left_after(env, life, video_id, fr_email=fr_email)
             assert life.kills == (1 if switch.dead else 0)
             return switch, wrong
         finally:
             await env.http.aclose()
             await env.ctx.engine.dispose()
 
-    # First with nobody killed: how many saves there are, and that the list above is right.
-    quiet, wrong = await one_life("quiet")
-    assert wrong == [] and not quiet.dead and quiet.saves >= 10
-    problems: list[str] = []
-    killed = 0
-    for at in range(1, quiet.saves + 1):
-        for before in (True, False):
-            switch, wrong = await one_life(f"{'before' if before else 'after'}-{at}", at=at, before=before)
-            killed += switch.dead
-            problems += [f"killed {'before' if before else 'after'} save {at}: {w}" for w in wrong]
-    assert problems == [], "\n" + "\n".join(problems)
-    assert killed >= 2 * quiet.saves - 4, "the server really was killed at (nearly) every one of them"
+    saves: dict[bool, int] = {}
+    for fr_email in (False, True):
+        way = "the link in FieldRoutes' email: " if fr_email else ""
+        mark = "fr-" if fr_email else ""
+        # First with nobody killed: how many saves there are, and that the list above is right.
+        quiet, wrong = await one_life(f"{mark}quiet", fr_email=fr_email)
+        assert wrong == [] and not quiet.dead and quiet.saves >= 10, way
+        saves[fr_email] = quiet.saves
+        problems: list[str] = []
+        killed = 0
+        for at in range(1, quiet.saves + 1):
+            for before in (True, False):
+                switch, wrong = await one_life(
+                    f"{mark}{'before' if before else 'after'}-{at}", fr_email=fr_email, at=at, before=before
+                )
+                killed += switch.dead
+                problems += [f"{way}killed {'before' if before else 'after'} save {at}: {w}" for w in wrong]
+        assert problems == [], "\n" + "\n".join(problems)
+        assert killed >= 2 * quiet.saves - 4, "the server really was killed at (nearly) every one of them"
+    assert saves[True] >= saves[False] + 4, (
+        "the line's own saves are in the list: the claim and the answer of its write, and of the last look"
+    )
 
 
 # == a repeat finishes what a killed first try left undone ===============================

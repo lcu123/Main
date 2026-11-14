@@ -24,5 +24,5 @@
   <tr><td colspan="7">Nothing in this window yet.</td></tr>
   {% endfor %}
 </table></div>
-<p class="muted">Only techs with the app on a phone are counted. Stops missed counts their finished stops with no video, leaving out services switched off in Settings. Watch rate is watched ÷ emailed.</p>
+<p class="muted">Only techs with the app on a phone are counted. Stops missed counts their finished stops with no video, leaving out services switched off in Settings. {% if fr_email_minutes %}Emailed counts our own emails, and videos whose link is in FieldRoutes' own email. {% endif %}Watch rate is watched ÷ emailed.</p>
 {% endblock %}

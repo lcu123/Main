@@ -15,6 +15,21 @@
     {% elif key == "skip_service_ids" %}
     <label for="{{ key }}">Services with no video</label><small>{{ help[key] }}</small>
     <input id="{{ key }}" type="text" name="{{ key }}" value="{{ settings[key] | join(' ') }}">
+    {% elif key == "fr_email_minutes" %}
+    <label for="{{ key }}">One email: which email carries the video link</label><small>{{ help[key] }}</small>
+    <select id="{{ key }}" name="{{ key }}">
+      {% for value in choices[key] %}
+      <option value="{{ value }}"{{ " selected" if settings[key] == value }}>{{ fr_email_choices[value] }}</option>
+      {% endfor %}
+    </select>
+    {% if settings[key] and not cfg.fr_writes %}
+    <small><b>This does nothing yet.</b> Writing to FieldRoutes is switched off on the server (see below), so videos go as they always did.</small>
+    {% elif settings[key] and cfg.fr_write_customer_ids is not none %}
+    <small><b>For the test customers only</b> ({{ cfg.fr_write_customer_ids | sort | join(", ") }}). Everybody else's video goes as it always did.</small>
+    {% endif %}
+    {% elif key == "fr_email_line" %}
+    <label for="{{ key }}">The line in FieldRoutes' email</label><small>{{ help[key] }}</small>
+    <input id="{{ key }}" type="text" name="{{ key }}" value="{{ settings[key] }}" maxlength="200">
     {% elif default is number %}
     <label for="{{ key }}">{{ key.replace("_", " ") | capitalize }}</label><small>{{ help[key] }}</small>
     {# The lowest and highest the server takes, so a wrong number is caught before Save. #}
@@ -41,6 +56,7 @@
   <tr><td data-l="Switch">Login codes by text</td><td data-l="Now">{{ "on" if cfg.quo_api_key and cfg.quo_from else "off (email only)" }}</td></tr>
   <tr><td data-l="Switch">Push nudges</td><td data-l="Now">{{ "on" if cfg.push_configured else "off (the phone still reminds itself)" }}</td></tr>
   <tr><td data-l="Switch">FieldRoutes writes (<code>FR_WRITES</code>)</td><td data-l="Now">{{ "on" if cfg.fr_writes else "off" }}{% if cfg.fr_write_customer_ids is not none %} · only customers {{ cfg.fr_write_customer_ids | sort | join(", ") }}{% endif %}</td></tr>
+  <tr><td data-l="Switch">Video link in FieldRoutes' email</td><td data-l="Now">{% if not settings.fr_email_minutes %}off: our own email carries the link{% elif not cfg.fr_writes %}picked above, but FieldRoutes writes are off, so it does nothing{% else %}on, {{ settings.fr_email_minutes }} minutes{% if cfg.fr_write_customer_ids is not none %} · only customers {{ cfg.fr_write_customer_ids | sort | join(", ") }}{% endif %}{% endif %}</td></tr>
   <tr><td data-l="Switch">Video storage</td><td data-l="Now">{{ "connected" if cfg.storage_configured else "NOT SET UP" }}</td></tr>
   <tr><td data-l="Switch">App Review demo sign-in</td><td data-l="Now">{{ "on" if cfg.demo_enabled else "off" }}</td></tr>
 </table>

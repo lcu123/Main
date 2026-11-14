@@ -4,10 +4,13 @@ States:
     awaiting_upload  registered by the phone, file not confirmed in the bucket
     held             in the bucket, inside the tech's undo window
     sent             the customer was emailed the link
-    no_email         link is live but no email went (reason in `email_skip`); with
-                     `off_route`, `second_video` or `overdue` it is waiting for the office
-                     (`held_back`): the visit left the day, another tech's video for it
-                     already stands, or its email was due hours ago
+    no_email         link is live but no email of ours went (reason in `email_skip`); with
+                     `off_route`, `second_video`, `overdue` or `fr_missed` it is waiting
+                     for the office (`held_back`): the visit left the day, another tech's
+                     video for it already stands, its email was due hours ago, or its link
+                     did not make it into FieldRoutes' own email (or nobody can tell).
+                     With `fr_email` it went out: its link is in, or on its way into,
+                     FieldRoutes' own after-service email (see "one email" below)
     unmatched        filmed as "not on my list"; waiting for the office to pick the customer
     pulled           office or customer killed the link (file kept so it can be moved)
     deleted          the tech deleted it inside the window
@@ -33,13 +36,17 @@ import sqlalchemy as sa
 
 from . import db, security
 from .auth import Device
-from .core import ApiError, Ctx, add_event, add_flag, audit, clear_flags, close_flags, get_settings, raise_flag
-from .fr import FieldRoutesError, clean, to_id, to_int
+from .core import (
+    FR_EMAIL_LOOK_MINUTES, FR_EMAIL_MARGIN_MINUTES, SETTING_CHOICES, ApiError, Ctx, add_event, add_flag, audit,
+    clear_flags, close_flags, fr_email_line, get_settings, raise_flag,
+)
+from .fr import FieldRoutesError, LineWrite, WriteBlocked, WriteRefused, clean, to_id, to_int
 from .notify import AlreadyTaken, DeliveryError, Email
 from .render import render
 from .route import (
-    HELD_BACK, IN_BUCKET, LIVE_STATES, OFF_ROUTE, OVERDUE, SECOND, covers, demo_stops, held_back, iso, lead_techs,
-    missing_key, public_state, sync_day, tech_view, time_check,
+    FR_EMAIL, FR_MISSED, HELD_BACK, IN_BUCKET, LIVE_STATES, OFF_ROUTE, OVERDUE, SECOND, completed_at, covers,
+    demo_stops, filmed_appointments, held_back, iso, lead_techs, missing_key, public_state, sync_day, tech_view,
+    time_check,
 )
 from .storage import MISSING, UNKNOWN, plain_etag, words_not_a_file
 
@@ -49,11 +56,23 @@ LOCKED_STATES = ("sent", "no_email")  # already went to the customer: the tech c
 EMAIL_RETRY = timedelta(minutes=5)
 EMAIL_MAX_ATTEMPTS = 6
 PULLED_KEEP_DAYS = 30
-# OFF_ROUTE, SECOND and OVERDUE (from route.py) are each a flag kind and the `email_skip`
-# of a video waiting on the office for that reason; HELD_BACK is the three together.
+# OFF_ROUTE, SECOND, OVERDUE and FR_MISSED (from route.py) are each a flag kind and the
+# `email_skip` of a video waiting on the office for that reason; HELD_BACK is the four together.
 ROUTE_HELD = (OFF_ROUTE, SECOND)  # held back by the route: let go by itself when the route says so
 STILL_WAITING = "video_waiting"  # flag kind: held back, the reason is over, and it still waits
-ROUTE_FLAGS = (OFF_ROUTE, SECOND, STILL_WAITING, OVERDUE)  # the flag kinds `review_route` keeps
+ROUTE_FLAGS = (OFF_ROUTE, SECOND, STILL_WAITING, OVERDUE, FR_MISSED)  # the flag kinds `review_route` keeps
+COMMENT = "comment"  # outbox kind: a video's one line for FieldRoutes' own after-service email
+FR_EMAIL_MARGIN = timedelta(minutes=FR_EMAIL_MARGIN_MINUTES)
+FR_EMAIL_LOOK = timedelta(minutes=FR_EMAIL_LOOK_MINUTES)  # the look-again: this long before a line's deadline
+FR_CHANGED = "fr_changed"  # flag kind: more than the comments changed on a visit when a line was added
+# Minutes between tries of a line while FieldRoutes does not answer, then the last one over
+# and over. A line has minutes, not a day: the notes' 1, 5, 15, 60 would give it two tries.
+COMMENT_RETRY = (1, 2, 2, 3, 5)
+COMMENT_LAST_TRY = timedelta(minutes=1)  # the last try is this long before the deadline, never on it
+# A video the office was told "this server cannot tell" about (FieldRoutes could not be read):
+# the visit is read again this often, for this long, so that the flag ends up saying what is so.
+UNSURE_LOOK = timedelta(minutes=5)
+UNSURE_FOR = timedelta(hours=6)
 FILE_DOUBT = "file_doubt"  # flag kind: the storage will not say whether a video's file is there
 DOUBT_FLAG_AFTER = timedelta(minutes=30)  # how long an email waits on that before the office is told
 FILED = ":was:"  # in a route flag's key once the thing it was about is over (see `_file_flags`)
@@ -600,7 +619,13 @@ async def send_due(ctx: Ctx) -> int:
     # is shared with everything else that touches the office, and a busy afternoon can
     # have dozens of videos due at once.
     known: dict[int, dict[str, Any]] | None = None
-    ids = sorted({v.customer_id for v in due if v.customer_id and v.customer_id > 0 and not v.demo})
+    # A video that only waits for its visit to be completed in FieldRoutes ("one email")
+    # needs no customer record yet, and may wait for hours: it is left out of the read.
+    # With that setting off nothing waits that way and this is the read it always was.
+    apart = await _waiting_for_completion(ctx, due) if len(due) > 1 else set()
+    ids = sorted(
+        {v.customer_id for v in due if v.customer_id and v.customer_id > 0 and not v.demo and v.id not in apart}
+    )
     if len(ids) > 1 and ctx.cfg.email_mode != "off" and ctx.mailer.delivers:
         try:
             known = await ctx.fr.customers(ids)
@@ -628,11 +653,13 @@ async def send_due(ctx: Ctx) -> int:
 
 async def _finish(
     ctx: Ctx, video: Any, state: str, action: str, detail: dict[str, Any], *,
-    flag: tuple[str, str, str] | None = None, link: str = "", show_customer: bool = False, **values: Any,
+    flag: tuple[str, str, str] | None = None, link: str = "", show_customer: bool = False,
+    comment: dict[str, Any] | None = None, **values: Any,
 ) -> bool:
     """Write down what was decided for a held video, and everything that follows from it,
     in one save: the audit entry (`action`, `detail`), a flag for the office (kind, key,
-    words), and with `link` the FieldRoutes note and the follow-up task (`_follow_up`).
+    words), with `link` the FieldRoutes note and the follow-up task (`_follow_up`), and
+    with `comment` the line for FieldRoutes' own email (`_queue_comment`).
 
     One save, so a server killed at any moment leaves all of it or none of it. Never a
     video marked sent with no note queued, or "no email" with no flag. With none of it the
@@ -652,6 +679,8 @@ async def _finish(
                            video_id=video.id, detail=words)
         if link:
             await _follow_up(conn, ctx, video, link, show_customer=show_customer)
+        if comment is not None:
+            await _queue_comment(conn, video, comment)
     return True
 
 
@@ -798,8 +827,14 @@ async def _deliver(ctx: Ctx, video: Any, known: dict[int, dict[str, Any]] | None
             ctx, video, "no_email", "email_skipped", {"reason": OVERDUE, "hours_late": round(late.total_seconds() / 3600, 1)},
             email_skip=OVERDUE,
             flag=(OVERDUE, f"{OFF_ROUTE}:{video.id}:{what}",
-                  _overdue_words(ctx, video, late, stop=stop, where=where, rival=rival)),
+                  _overdue_words(ctx, video, late, stop=stop, where=where, rival=rival,
+                                 waits_for_fr=bool(fr_email_customer(ctx, video.customer_id, settings)))),
         )
+        return False
+
+    if await _still_waiting(ctx, video, settings):
+        # "One email": he has not completed the visit in FieldRoutes, by a list read
+        # only a few minutes ago. Nothing is asked of FieldRoutes or the bucket for it.
         return False
 
     checked = await file_check(ctx, video)
@@ -883,19 +918,41 @@ async def _deliver(ctx: Ctx, video: Any, known: dict[int, dict[str, Any]] | None
             detail=f"Recorded at {ctx.local(video.recorded_at):%-I:%M %p}, outside the check-in time for this stop.",
         )
 
-    if cfg.email_mode == "off" or not ctx.mailer.delivers:
-        # Off by choice, or no real sender is set up (the log mailer prints, it does not
-        # deliver): either way the customer was not emailed, and the record must say so.
-        return await no_email("email_off")
-    if cfg.email_customer_ids is not None and video.customer_id not in cfg.email_customer_ids:
-        return await no_email("not_in_test_list")
+    # Which email carries the link: our own, or FieldRoutes' own after-service email (the
+    # owner's "one email" setting, see `fr_email_for`). 0 is ours, and everything from
+    # here on is then exactly what it always was.
+    fr_minutes = await fr_email_for(ctx, video, settings)
+    if not fr_minutes:
+        if cfg.email_mode == "off" or not ctx.mailer.delivers:
+            # Off by choice, or no real sender is set up (the log mailer prints, it does not
+            # deliver): either way the customer was not emailed, and the record must say so.
+            return await no_email("email_off")
+        if cfg.email_customer_ids is not None and video.customer_id not in cfg.email_customer_ids:
+            return await no_email("not_in_test_list")
 
     async with ctx.engine.connect() as conn:
         opted_out = (
             await conn.execute(sa.select(db.email_optouts).where(db.email_optouts.c.customer_id == video.customer_id))
         ).first()
     if opted_out:
-        return await no_email("opted_out")
+        return await no_email("opted_out")  # the customer stopped video emails: no email, and no line either
+
+    picked: tuple[str, Any, datetime | None] | None = None
+    about: list[dict[str, Any]] = []
+    if fr_minutes:
+        # The appointments this video is about: his own at the stop, or, for a helper and
+        # for a tech whose work was given away, the ones the video is tied to (as just
+        # brought up to date above, when the stop is still his).
+        tied = mine_now if where == "ok" and mine_now else video.appointment_ids
+        about = filmed_appointments(stop, video.tech_id, tied)
+        picked = fr_email_pick(about, fr_minutes, db.now())
+        if picked[0] == "wait":
+            # He has not completed the visit in FieldRoutes yet, so FieldRoutes has no email
+            # on the way for the link to ride in. Not due yet: the lease brings this video
+            # back in a few minutes, as when FieldRoutes cannot be read. No customer is
+            # read for it meanwhile, and the day's list only now and then (`_still_waiting`).
+            # How long it may wait is the overdue rule's to say.
+            return False
 
     if known is not None:
         customer = known.get(video.customer_id)
@@ -912,8 +969,15 @@ async def _deliver(ctx: Ctx, video: Any, known: dict[int, dict[str, Any]] | None
     if settings["respect_fr_email_reminders"] and to_int(customer.get("emailReminders")) == 0:
         return await no_email(
             "fr_reminders_off",
-            flag="Email reminders are off for this customer in FieldRoutes, so no email was sent.",
+            flag="Email reminders are off for this customer in FieldRoutes, so no email was sent."
+            if not fr_minutes else
+            # Only what this server did: whether FieldRoutes' own email heeds that switch is not known.
+            "Email reminders are off for this customer in FieldRoutes, so the video link was not added to the "
+            "visit and this server sent no email. FieldRoutes may still have sent its own email, without the link.",
         )
+
+    if picked is not None:
+        return await _into_fr_email(ctx, video, settings, fr_minutes, picked, link, about=about, off_route=off_route)
 
     to = address
     def fill(text: str) -> str:
@@ -1020,6 +1084,541 @@ async def _deliver(ctx: Ctx, video: Any, known: dict[int, dict[str, Any]] | None
     return True
 
 
+# -- one email: the link inside FieldRoutes' own after-service email ---------------
+#
+# The owner's setting `fr_email_minutes` (0, 30 or 60; 0 is off and is how this ships).
+# With 30 or 60 the customer gets one email after a visit, FieldRoutes' own, with the
+# video link in it, and this server sends none. FieldRoutes sends that email so many
+# minutes after the appointment is completed, and prints the technician's comments in
+# it. So when a video is let go and the tech's appointment at that stop is completed
+# and its email has not gone yet, one line with the link is added to those comments
+# (`fr.add_to_tech_comments`, through the outbox). A video that cannot make it into
+# that email waits for the office (`FR_MISSED`): no second email goes by itself.
+#
+# The life of a line, all of it in the video's one outbox row (`_write_comment`):
+#
+#   going   queued with the video's settling; written at the next pass, before its
+#           deadline (FieldRoutes' send time less the margin) or not at all
+#   added   FieldRoutes took it and the visit, read again, shows it. Not the end: the
+#           comments can be saved again by a phone or a person, without the line
+#   in      looked at once more, two minutes before the deadline, and still there (or
+#           put back). After that look nobody can do more, and the page says so
+#
+# Two things the server never says on its own word alone. "The link is in": only after
+# reading the visit back. "The link is not in": only after reading the visit and not
+# finding it. Where it could not read, the office is told that it does not know.
+
+
+def fr_email_on(ctx: Ctx, settings: dict[str, Any]) -> int:
+    """FieldRoutes' delay in minutes when this deployment puts the link into FieldRoutes'
+    email at all: the setting is 30 or 60 and FieldRoutes writes are on. 0 otherwise."""
+    minutes = to_int(settings.get("fr_email_minutes")) or 0
+    if minutes <= 0 or minutes not in SETTING_CHOICES["fr_email_minutes"] or not ctx.cfg.fr_writes:
+        return 0
+    return minutes
+
+
+def fr_email_customer(ctx: Ctx, customer_id: int | None, settings: dict[str, Any]) -> int:
+    """The same, for one customer: also 0 when writes are limited to a test list
+    (FR_WRITE_CUSTOMER_IDS) that this customer is not on. That is how the owner tries the
+    setting on the test customer alone: everybody else's video goes as it always did."""
+    minutes = fr_email_on(ctx, settings)
+    if not minutes or customer_id is None or customer_id <= 0:
+        return 0
+    try:
+        ctx.fr.check_write(customer_id)
+    except WriteBlocked:
+        return 0
+    return minutes
+
+
+async def fr_email_for(ctx: Ctx, video: Any, settings: dict[str, Any]) -> int:
+    """Is this video's link to go into FieldRoutes' own email, and after how many minutes
+    does FieldRoutes send it? 0 means no: the video goes exactly as it always did.
+
+    No for a demo video, with the setting off, with FieldRoutes writes off, and for a
+    customer outside the write list. And no once a person at the office has pressed Send
+    it anyway on this video: they were told that sends our own email, so that is what it
+    does. A move to another customer starts afresh."""
+    minutes = 0 if video.demo else fr_email_customer(ctx, video.customer_id, settings)
+    if not minutes:
+        return 0
+    async with ctx.engine.connect() as conn:
+        last = (
+            await conn.execute(
+                sa.select(db.events.c.action)
+                .where(db.events.c.video_id == video.id, db.events.c.action.in_(PLACED_BY_OFFICE))
+                .order_by(db.events.c.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    return 0 if last == "video_send_anyway" else minutes
+
+
+def fr_email_pick(
+    appointments: list[dict[str, Any]], minutes: int, now: datetime, passed: Iterable[Any] = ()
+) -> tuple[str, Any, datetime | None]:
+    """Which appointment's FieldRoutes email can still take a video's line. `appointments`
+    are the ones the video is about (`route.filmed_appointments`), as last saved. `passed`
+    are ones already given up on for this video: never looked at again.
+
+    ("open", appointment, deadline)  This one: the first completed whose email has not
+        gone. The line has to be in FieldRoutes by `deadline`: when FieldRoutes sends
+        (completed + `minutes`), less the margin.
+    ("wait", None, None)  None of them is completed yet. No email is on the way.
+    ("none", None, None)  There is no appointment for an email to belong to.
+    ("shut", appointment, completed)  Completed, and too late for every one of them.
+    ("no_time", appointment, None)  Completed, but FieldRoutes gave no time for it.
+    ("clock", appointment, completed)  Completed at a time that is still ahead of this
+        server's clock. The two clocks do not agree (a wrong time zone), so when
+        FieldRoutes sends cannot be worked out, and nothing is written on a guess."""
+    passed = set(passed)
+    appointments = [a for a in appointments if a.get("id") not in passed]
+    if not appointments:
+        return "none", None, None
+    done = [a for a in appointments if (to_int(a.get("status")) or 0) == 1]
+    if not done:
+        return "wait", None, None
+    timed = sorted(
+        ((when, to_int(a.get("id")) or 0, a) for a in done if (when := completed_at(a)) is not None),
+        key=lambda item: item[:2],
+    )
+    if not timed:
+        return "no_time", done[0], None
+    believed = [item for item in timed if item[0] - now <= FR_EMAIL_MARGIN]
+    for when, _, appointment in believed:
+        deadline = when + timedelta(minutes=minutes) - FR_EMAIL_MARGIN
+        if now < deadline:
+            return "open", appointment, deadline
+    if not believed:
+        return "clock", timed[0][2], timed[0][0]
+    return "shut", believed[-1][2], believed[-1][0]
+
+
+def comment_key(video: Any) -> str:
+    """The once-only key of a video's line: one per video and link, so never two lines for
+    one video. (A video the office moves gets a new link, and with it a new line.)"""
+    return f"{COMMENT}:{video.id}:{video.token[:8]}"
+
+
+def missed_key(video: Any) -> str:
+    """The key of the office's flag for a video that missed FieldRoutes' email. Shaped like
+    the other holds' flags, so Send it anyway, Pull and a move answer it the same way."""
+    return f"{OFF_ROUTE}:{video.id}:{FR_MISSED}"
+
+
+def _line_in(payload: Any) -> bool:
+    """Does this outbox row say its line is in the technician's comments? `written_at`:
+    FieldRoutes took it from this server. `found_at`: this server read the visit and the
+    link was there already. Only this code sets either mark, so a row closed by anything
+    else (a server from before this was built knows no such row) does not count."""
+    return isinstance(payload, dict) and bool(payload.get("written_at") or payload.get("found_at"))
+
+
+async def _saved_stop(ctx: Ctx, video: Any) -> Any | None:
+    async with ctx.engine.connect() as conn:
+        return (
+            await conn.execute(
+                sa.select(db.stops).where(db.stops.c.day == video.day, db.stops.c.customer_id == video.customer_id)
+            )
+        ).first()
+
+
+async def _saved_list_says_wait(ctx: Ctx, video: Any, settings: dict[str, Any]) -> tuple[Any, int] | None:
+    """The saved stop and FieldRoutes' delay, when by that stop this video is waiting only
+    for its tech to complete the visit in FieldRoutes. None in every other case. Reads
+    nothing from FieldRoutes."""
+    if video.demo or video.state != "held" or video.customer_id is None:
+        return None
+    minutes = await fr_email_for(ctx, video, settings)
+    if not minutes:
+        return None
+    stop = await _saved_stop(ctx, video)
+    if stop is None or stop.gone:
+        return None
+    about = filmed_appointments(stop, video.tech_id, video.appointment_ids)
+    return (stop, minutes) if fr_email_pick(about, minutes, db.now())[0] == "wait" else None
+
+
+async def _waiting_for_completion(ctx: Ctx, videos: Iterable[Any]) -> set[str]:
+    """Which of these videos wait only for their visit to be completed, by the saved list.
+    Always none with "one email" off, and then nothing is looked up at all."""
+    settings = await get_settings(ctx)
+    if not fr_email_on(ctx, settings):
+        return set()
+    return {v.id for v in videos if await _saved_list_says_wait(ctx, v, settings) is not None}
+
+
+def wait_read(minutes: int) -> timedelta:
+    """How old a day's saved list may get, while a video waits for a visit on it to be
+    completed, before FieldRoutes is read for that video again: half of FieldRoutes' own
+    delay (15 or 30 minutes). A completion is then seen with the other half still left to
+    add the line in. It is what keeps a video that waits all night from costing a read
+    every five minutes: during work hours today's list is read anyway."""
+    return timedelta(minutes=max(minutes // 2, 5))
+
+
+async def _still_waiting(ctx: Ctx, video: Any, settings: dict[str, Any]) -> bool:
+    """Is this video waiting for its visit to be completed, by a saved list that is new
+    enough to believe? Then nothing more is done for it in this pass: no read of
+    FieldRoutes, of the bucket or of the customer. False when the list is due for a new
+    read, or says anything else: then the whole look runs, from the top."""
+    found = await _saved_list_says_wait(ctx, video, settings)
+    if found is None:
+        return False
+    stop, minutes = found
+    now = db.now()
+    stale_at = stop.synced_at + wait_read(minutes)
+    if now >= stale_at:
+        return False
+    # Come back when the list is due for its next read, if that is sooner than the lease.
+    back = max(stale_at, now + timedelta(minutes=1))
+    async with ctx.engine.begin() as conn:
+        await conn.execute(
+            sa.update(db.videos)
+            .where(db.videos.c.id == video.id, db.videos.c.state == "held", db.videos.c.email_due_at > back)
+            .values(email_due_at=back)
+        )
+    return True
+
+
+async def _queue_comment(conn: Any, video: Any, payload: dict[str, Any]) -> None:
+    """Queue a video's line for FieldRoutes' email, inside the save that settles the video.
+    A row under the same key that was closed without writing anything is put back in
+    line, so a video can never read "going into FieldRoutes' email" with nothing queued.
+    A line that was found already there (`found_at`) is written down as that: closed."""
+    key = comment_key(video)
+    now = db.now()
+    found = bool(payload.get("found_at"))
+    if await db.insert_once(
+        conn, db.fr_outbox,
+        dict(dedupe=key, kind=COMMENT, customer_id=video.customer_id, video_id=video.id, payload=payload,
+             attempts=0, next_try_at=now, last_error="", created_at=now, done_at=now if found else None),
+    ):
+        return
+    again = sa.update(db.fr_outbox).where(db.fr_outbox.c.dedupe == key)
+    if not found:
+        again = again.where(sa.or_(db.fr_outbox.c.failed_at.is_not(None), db.fr_outbox.c.last_error.like("skipped:%")))
+    await conn.execute(
+        again.values(payload=payload, attempts=0, next_try_at=now, done_at=now if found else None, failed_at=None,
+                     last_error="")
+    )
+
+
+async def _line_went_before(ctx: Ctx, video: Any) -> bool:
+    """Has a line for this video already gone into this customer's FieldRoutes comments,
+    under an earlier link? That is so after the office pulled the video (or moved it
+    away) and then put it back on the same customer: the old line is still there, with a
+    link that is dead now. A second line would show the customer two."""
+    async with ctx.engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                sa.select(db.fr_outbox.c.payload).where(
+                    db.fr_outbox.c.kind == COMMENT, db.fr_outbox.c.video_id == video.id,
+                    db.fr_outbox.c.customer_id == video.customer_id, db.fr_outbox.c.dedupe != comment_key(video),
+                )
+            )
+        ).all()
+    return any(_line_in(r.payload) for r in rows)
+
+
+async def _into_fr_email(
+    ctx: Ctx, video: Any, settings: dict[str, Any], minutes: int, picked: tuple[str, Any, datetime | None], link: str,
+    *, about: list[dict[str, Any]], off_route: bool,
+) -> bool:
+    """Settle a video whose link is meant for FieldRoutes' own email. Every check that lets
+    a video go out has passed by now. Always False: no email of ours is sent here."""
+    what, appointment, when = picked
+    against = {"off_route": True} if off_route else {}
+    looked: datetime | None = None
+    if what == "open" and await _line_went_before(ctx, video):
+        what = "again"
+    elif what in ("shut", "no_time", "clock"):
+        # By the clock it cannot make any of his FieldRoutes emails. Before the office is
+        # told so, look at the visit: after a backup was put back the server no longer
+        # knows that it added this very link days ago, and a flag that said "it is not
+        # there" would have the office send a second email.
+        ids = [i for i in (to_int(a.get("id")) for a in about) if i]
+        try:
+            found = await ctx.fr.line_on(video.customer_id, ids, link)
+        except FieldRoutesError:
+            return False  # cannot look right now: the lease brings this video back in a few minutes
+        if found is not None:
+            settled = await _finish(
+                ctx, video, "no_email", "email_skipped",
+                {"reason": FR_EMAIL, "appointment": found, "already_there": True, **against},
+                email_skip=FR_EMAIL, link=link,
+                comment={"appointment_id": found, "line": fr_email_line(settings, link), "link": link,
+                         "deadline": None, "completed": None, "minutes": minutes, "found_at": db.now().isoformat()},
+            )
+            if settled and off_route:
+                await review_route(ctx, [video.id])
+            return False
+        looked = db.now()
+    if what == "open":
+        assert when is not None
+        appointment_id = to_int(appointment.get("id")) or 0
+        completed = completed_at(appointment)
+        # One save: the video is settled as gone out through FieldRoutes' email, the audit
+        # trail says so, the usual internal note is queued, and so is the one line for the
+        # technician's comments. A server killed here leaves all of it or none of it.
+        settled = await _finish(
+            ctx, video, "no_email", "email_skipped",
+            {"reason": FR_EMAIL, "appointment": appointment_id, "deadline": iso(when), **against},
+            email_skip=FR_EMAIL, link=link,
+            comment={
+                "appointment_id": appointment_id, "line": fr_email_line(settings, link), "link": link,
+                "deadline": when.isoformat(), "completed": completed.isoformat() if completed else None,
+                "minutes": minutes,
+            },
+        )
+    else:
+        # It cannot make it into FieldRoutes' email. No second email goes by itself: it
+        # waits for the office, like any other held video, and nothing is written to
+        # FieldRoutes while it waits. The flag is saved with the hold.
+        settled = await _finish(
+            ctx, video, "no_email", "email_skipped", {"reason": FR_MISSED, "why": what, **against},
+            email_skip=FR_MISSED,
+            flag=(FR_MISSED, missed_key(video),
+                  _missed_words(ctx, video, what, minutes=minutes, when=when, looked=looked)),
+        )
+    if settled and off_route:
+        await review_route(ctx, [video.id])
+    return False
+
+
+def _clock(ctx: Ctx, when: datetime) -> str:
+    return ctx.local(when).strftime("%-I:%M %p")
+
+
+def _missed_words(
+    ctx: Ctx, video: Any, why: str, *, minutes: int = 0, when: datetime | None = None, said: str = "",
+    looked: datetime | None = None, added: datetime | None = None,
+) -> str:
+    """What the office reads on the flag of a video that waits because of FieldRoutes'
+    email. Every sentence says only what this server knows.
+
+    `looked` is when this server read the visit in FieldRoutes and did not find the link
+    in the technician's comments. Only then does the flag say the link is not there.
+    Without it the server has not looked, or could not, and after a backup was put back
+    or a write that was cut off the link may be there all the same; the flag then says
+    that, and to look before sending. A second email on the word of a flag that guessed
+    is exactly what this setting exists to prevent."""
+    name = video.customer_name or "a stop not on the list"
+    where_at = f", {video.address}" if video.address else ""
+    who = f"{video.tech_first_name}'s video for {name}{where_at}"
+    unsure = looked is None  # nobody read the visit to see
+    if why == "shut":
+        done = f" at {_clock(ctx, when)}" if when is not None else ""
+        words = (
+            f"{who} was too late for FieldRoutes' email. The visit was completed{done} and FieldRoutes sends its "
+            f"email {minutes} minutes after that. The video was ready at {_clock(ctx, db.now())}, too late for "
+            "the link to be added. "
+        )
+    elif why == "none":
+        unsure = False  # there is no visit of his to look at
+        words = (
+            f"{who} has no FieldRoutes email to go in. FieldRoutes has no visit of {video.tech_first_name}'s at "
+            "that stop on this day, so this server did not add the link anywhere. "
+        )
+    elif why == "no_time":
+        words = (
+            f"{who}: this server did not add its link to FieldRoutes' email. FieldRoutes shows the visit as "
+            "completed but gives no time for it, so this server cannot tell when FieldRoutes' email goes. "
+        )
+    elif why == "clock":
+        done = f" at {_clock(ctx, when)}" if when is not None else ""
+        words = (
+            f"{who}: this server did not add its link to FieldRoutes' email. FieldRoutes says the visit was "
+            f"completed{done}, and that is later than this server's own clock. So this server cannot tell when "
+            "FieldRoutes' email goes. Tell the owner: the server's time zone may be set wrong. "
+        )
+    elif why == "late":
+        due = f" (by {_clock(ctx, when)})" if when is not None else ""
+        words = f"{who} was too late for FieldRoutes' email. The link was not added before that email was due{due}. "
+    elif why == "unknown":
+        words = (
+            f"{who}: this server cannot tell whether its link is in FieldRoutes' email. It has no record of adding "
+            "the link, and FieldRoutes did not answer when this server tried to look. "
+        )
+    elif why == "gone":
+        unsure = False
+        at = f" at {_clock(ctx, added)}" if added is not None else ""
+        then = f" at {_clock(ctx, looked)}" if looked is not None else ""
+        no_more = f"It could not be added again ({said.rstrip('.')})" if said else "It was too late to add it again"
+        words = (
+            f"{who}: its link was added to the technician's comments on the visit{at}. When this server looked "
+            f"again{then} the link was gone: the comments were saved again in FieldRoutes without it. {no_more}, "
+            "so FieldRoutes' email most likely goes without the link. "
+        )
+    elif why == "not_taken":
+        unsure = False
+        words = (
+            f"{who}: FieldRoutes answered twice that it saved the technician's comments with the link, and both "
+            "times the link was not in them when this server looked. It stopped trying. "
+        )
+    elif why == "again":
+        unsure = False
+        words = (
+            f"{who}: its link was already added to FieldRoutes' email for this customer once, before the video "
+            "was pulled or moved and then put back. That first link is dead now. A second line would show the "
+            "customer two links, so none was added. "
+        )
+    elif why == "off":
+        words = (
+            f"{who}: this server did not add its link to FieldRoutes' email. The setting that puts the link "
+            "there was switched off first. "
+        )
+    elif why == "blocked":
+        words = (
+            f"{who}: this server did not add its link to FieldRoutes' email. Writing to FieldRoutes was switched "
+            "off, or limited to other customers, first. "
+        )
+    else:  # refused: FieldRoutes' own record said no
+        reason = (said[:1].upper() + said[1:]).rstrip(".") if said else "FieldRoutes' record of the visit has changed"
+        words = f"{who}: this server did not add its link to FieldRoutes' email. {reason}. "
+    if looked is not None and why in ("shut", "late", "no_time", "clock"):
+        words += (
+            f"This server looked at the visit in FieldRoutes at {_clock(ctx, looked)}: the link is not in the "
+            "technician's comments. "
+        )
+    elif unsure:
+        words += (
+            "This server has not seen the visit's comments. If it was stopped in the middle of adding the link, or "
+            "a backup was put back, the link may be there all the same: look at the technician's comments on the "
+            "visit in FieldRoutes before you send anything. "
+        )
+    if ctx.cfg.email_mode != "off" and ctx.mailer.delivers:
+        return words + (
+            "No second email was sent. Press Send it anyway to send our own email with the link, or Pull."
+        )
+    # Customer emails are off: letting it go emails nobody. It keeps the link on file.
+    return words + (
+        "No second email was sent, and customer emails are off, so none can be. Press Keep it to keep the link "
+        "on file, or Pull."
+    )
+
+
+async def _miss(conn: Any, ctx: Ctx, video: Any, why: str, **told: Any) -> bool:
+    """Inside a save that is already open: a video that was going into FieldRoutes' email
+    is not, after all, or nobody can tell. From here it waits for the office. The hold,
+    its audit entry and the office's flag are written together with whatever closed its
+    outbox row. `told` is what `_missed_words` is to say."""
+    result = await conn.execute(
+        sa.update(db.videos)
+        .where(db.videos.c.id == video.id, db.videos.c.state == "no_email", db.videos.c.email_skip == FR_EMAIL)
+        .values(email_skip=FR_MISSED)
+    )
+    if not result.rowcount:
+        return False
+    await add_event(conn, "system", "fieldroutes", "email_skipped", video_id=video.id, customer_id=video.customer_id,
+                    detail={"reason": FR_MISSED, "why": why, "was": FR_EMAIL})
+    await add_flag(conn, FR_MISSED, missed_key(video), day=video.day, tech_id=video.tech_id,
+                   customer_id=video.customer_id, video_id=video.id, detail=_missed_words(ctx, video, why, **told))
+    return True
+
+
+FIELD_WORDS = {
+    "status": "its status", "customerID": "the customer it belongs to", "dateCompleted": "its completion time",
+    "completedBy": "who completed it", "servicedBy": "who serviced it", "timeIn": "the time in",
+    "timeOut": "the time out", "checkIn": "the check-in time", "checkOut": "the check-out time",
+    "ticketID": "its invoice number", "amountCollected": "the amount collected",
+    "paymentMethod": "the payment method", "appointmentID": "the visit itself (FieldRoutes no longer shows it)",
+}
+
+
+def _changed_words(ctx: Ctx, video: Any, result: LineWrite) -> str:
+    """What the office reads when a visit did not read the same after a line was added to
+    it as before. The write is the FieldRoutes call that completes and invoices a visit
+    when it goes wrong, so this is said at once and in full. It says what was seen, not
+    what caused it: a person may have changed the visit in the same second."""
+    name = video.customer_name or "a stop not on the list"
+    where_at = f", {video.address}" if video.address else ""
+    words = (
+        f"{video.tech_first_name}'s video for {name}{where_at}: this server added the video link to the "
+        "technician's comments on the visit, then looked at the visit again. "
+    )
+    if result.changed:
+        what = _join_words([FIELD_WORDS.get(k, k) for k in result.changed])
+        words += (
+            f"More than the comments read differently: {what}. This server sent the comments and nothing else. "
+            "Look at the visit and its invoice in FieldRoutes now, and at QuickBooks. If nobody at the office "
+            "changed the visit in that minute, set \"One email\" on the Settings page back to \"Our own email\" "
+            "and tell the owner. "
+        )
+    if not result.words_kept:
+        words += (
+            "The technician's own words read differently than before. "
+            f"Before: \"{result.words_before[:300]}\". Now: \"{result.words_after[:400]}\". "
+            "Put his words right in FieldRoutes if something was lost. "
+        )
+    return words.strip()
+
+
+async def comment_rows(ctx: Ctx, videos: Iterable[Any]) -> dict[str, Any]:
+    """For the office page: each of these videos' own line for FieldRoutes' email, as the
+    outbox has it (video ID -> row). A video with none is left out."""
+    keys = {comment_key(v): v.id for v in videos if v.state == "no_email" and v.email_skip == FR_EMAIL}
+    if not keys:
+        return {}
+    async with ctx.engine.connect() as conn:
+        rows = (
+            await conn.execute(sa.select(db.fr_outbox).where(db.fr_outbox.c.dedupe.in_(sorted(keys))))
+        ).all()
+    return {keys[r.dedupe]: r for r in rows}
+
+
+async def waits_for_completion(ctx: Ctx, video: Any, stop: Any, settings: dict[str, Any], now: datetime) -> bool:
+    """For the office page: is this video, its tech's hold over, waiting only for him to
+    complete the visit in FieldRoutes? (Its link is meant for FieldRoutes' email, and
+    there is no such email on the way until he does.) The same questions `_deliver` asks."""
+    if video.state != "held" or stop is None or not fr_email_customer(ctx, video.customer_id, settings):
+        return False
+    if now < email_due(video.recorded_at, video.uploaded_at or video.created_at, settings["hold_minutes"]):
+        return False
+    minutes = await fr_email_for(ctx, video, settings)
+    about = filmed_appointments(stop, video.tech_id, video.appointment_ids)
+    return bool(minutes) and fr_email_pick(about, minutes, now)[0] == "wait"
+
+
+def line_stage(video: Any, row: Any | None) -> str:
+    """Where a video's line for FieldRoutes' email stands, by its outbox row:
+
+    ""       this video is not going out through FieldRoutes' email
+    "going"  the line is waiting to be written
+    "added"  it is in the technician's comments, and the server will look once more
+             shortly before FieldRoutes sends (or could not, right at the end)
+    "in"     it was still there at that last look, or was found there
+
+    A row that is closed with neither mark of `_line_in` on it was closed by something
+    that wrote nothing (a server from before this was built marks every row it does not
+    know as done). That is "going": `_put_back_lost_lines` puts it back in line. A video
+    whose row has been tidied away (after 90 days) went out long ago."""
+    if video.state != "no_email" or video.email_skip != FR_EMAIL:
+        return ""
+    if row is None:
+        return "in"
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    if not _line_in(payload):
+        return "going"
+    if row.done_at is None or payload.get("unchecked"):
+        return "added"
+    return "in"
+
+
+def line_added_at(row: Any | None) -> datetime | None:
+    """When this server's write of the line was taken by FieldRoutes. None for a line that
+    was found there already: when that one went in, this server does not know."""
+    payload = row.payload if row is not None and isinstance(row.payload, dict) else {}
+    return _parse_time(payload.get("written_at")) if payload.get("written_at") else None
+
+
+def line_written(video: Any, row: Any | None) -> bool:
+    """Is this video's line in FieldRoutes' email, as far as this server can ever know:
+    added, and still there at the last look? Only then is it counted as sent."""
+    return line_stage(video, row) == "in"
+
+
 def _late_what(where: str, rival: Any) -> str:
     """The last part of the key of an overdue video's flag: that its email was late, and
     what the route says on top of that. A flag is told once for each thing it says, so
@@ -1032,13 +1631,18 @@ def _late_what(where: str, rival: Any) -> str:
 
 
 def _overdue_words(
-    ctx: Ctx, video: Any, late: timedelta, *, stop: Any = None, where: str = "ok", rival: Any = None
+    ctx: Ctx, video: Any, late: timedelta, *, stop: Any = None, where: str = "ok", rival: Any = None,
+    waits_for_fr: bool = False,
 ) -> str:
     """What the office reads on the flag of a video held because its email was long overdue.
 
     Every sentence has to be true whatever made it late. After a backup was put back the
     server no longer knows that a video was emailed days ago, so it never says that
-    nobody was emailed: it says it has no record of an email, and where to look."""
+    nobody was emailed: it says it has no record of an email, and where to look.
+
+    `waits_for_fr`: this customer's link goes into FieldRoutes' own email. Then there is
+    one more way to be this late, and the likeliest: the visit was never completed in
+    FieldRoutes, and the video waited for that."""
     name = video.customer_name or "a stop not on the list"
     where_at = f", {video.address}" if video.address else ""
     emails_on = ctx.cfg.email_mode != "off" and ctx.mailer.delivers
@@ -1046,6 +1650,11 @@ def _overdue_words(
         f"{video.tech_first_name}'s video for {name}{where_at}. Its email was {_ago(late)} late, so it was not sent "
         "by itself. That happens when the server, FieldRoutes or the storage was down, or when a backup was put back. "
     )
+    if waits_for_fr:
+        words += (
+            "It also happens when the visit was not completed in FieldRoutes: the video waits for that, so that "
+            "its link can go into FieldRoutes' own email. "
+        )
     if where == "gone":
         if stop is None or stop.gone:
             words += "FieldRoutes no longer has that visit on this day (cancelled, a no-show, or moved to another day). "
@@ -1056,8 +1665,7 @@ def _overdue_words(
             )
     elif rival is not None:
         other = rival.tech_first_name or "another tech"
-        has = "the customer already has it" if rival.state == "sent" else "it is on file"
-        words += f"{other} filmed the same visit too, and {has}. "
+        words += f"{other} filmed the same visit too, and {_where_it_is(rival, 'it', 'the customer already has it')}. "
     if emails_on:
         return words + (
             "This server has no record of an email for it. If a backup was put back, the customer may already have "
@@ -1069,6 +1677,17 @@ def _overdue_words(
         "This server has no record of an email or a saved link for it. If a backup was put back, the link may "
         "already be on the customer's account in FieldRoutes: look before you keep it. Press Keep it, or Pull."
     )
+
+
+def _where_it_is(video: Any, it: str, emailed: str) -> str:
+    """Half a sentence for a flag about another video: has the customer got it? `emailed`
+    are the words when our own email went. One whose link went into FieldRoutes' own
+    email is not just "on file" either: the customer is being sent it."""
+    if video.state == "sent":
+        return emailed
+    if video.state == "no_email" and video.email_skip == FR_EMAIL:
+        return f"{it} went into FieldRoutes' email for the customer"
+    return f"{it} is on file"
 
 
 def _join_words(items: list[str]) -> str:
@@ -1135,10 +1754,14 @@ async def placed_by_office(ctx: Ctx, video_ids: Iterable[str]) -> set[str]:
 
 
 def _answers_only_lateness(event: Any) -> bool:
-    """Was this 'send it anyway' pressed on a video held only for a late email, with no
-    word on its flag about the route? (`send_anyway` writes down what was being answered.)"""
+    """Was this 'send it anyway' pressed on a video held only for a late email, or only for
+    missing FieldRoutes' email, with no word on its flag about the route? (`send_anyway`
+    writes down what was being answered.)"""
     detail = event.detail if isinstance(event.detail, dict) else {}
-    return event.action == "video_send_anyway" and detail.get("held") == OVERDUE and not detail.get("route_told")
+    return (
+        event.action == "video_send_anyway" and detail.get("held") in (OVERDUE, FR_MISSED)
+        and not detail.get("route_told")
+    )
 
 
 async def flag_again(ctx: Ctx, kind: str, dedupe: str, *, detail: str, **who: Any) -> bool:
@@ -1260,10 +1883,10 @@ def _route_words(
             return f"{who}, and {other}'s video for the same visit went out too. Pull one if that is wrong."
         if where == "other_tech":
             return f"{who}, but FieldRoutes now has that stop under {other}, and {other} filmed it too. {press}"
-        first = f"the customer already has {other}'s video" if rival.state == "sent" else f"{other}'s video is on file"
+        first = _where_it_is(rival, f"{other}'s video", f"the customer already has {other}'s video")
         return f"{who}, but {other} filmed the same visit before the stop was moved to {tech}, and {first}. {press}"
     if kind == "day":
-        has = "the customer has the video" if video.state == "sent" else "its link is on file"
+        has = _where_it_is(video, "its link", "the customer has the video")
         return (
             f"{who} on {short_day(video.day)}, and {has}. FieldRoutes now has that same visit on "
             f"{short_day(moved_to or '')}, so the app asks for it to be filmed again. "
@@ -1283,6 +1906,8 @@ def _route_words(
         )
     if video.state == "sent":
         return f"{who}, and the customer has the video. {gone}. Pull it if the visit did not happen."
+    if video.state == "no_email" and video.email_skip == FR_EMAIL:
+        return f"{who}, and its link went into FieldRoutes' email. {gone}. Pull it if the visit did not happen."
     return f"{who}, but {gone}. Pull it if the visit did not happen."
 
 
@@ -1385,6 +2010,11 @@ async def review_route(
             continue
         if video.state not in ("sent", "no_email"):
             continue  # its email is not decided yet; the emailer looks at the route when it is
+        if held_back(video) and video.email_skip == FR_MISSED:
+            # It missed FieldRoutes' email. Nothing on the route ends that hold, only the
+            # office does, and its flag was saved with the hold itself. If the office says
+            # Send it anyway, the route is looked at again before that email goes.
+            continue
         stop = stops.get((video.day, video.customer_id))
         where, rival, moved_to = "ok", None, None
         if video.id not in placed:  # the office put it there itself: the route has no more say
@@ -1455,7 +2085,8 @@ async def review_route(
             if same is None:
                 if late is None:
                     late = db.now() - await _due_since(ctx, video, settings)
-                detail = _overdue_words(ctx, video, late, stop=stop, where=where, rival=rival)
+                detail = _overdue_words(ctx, video, late, stop=stop, where=where, rival=rival,
+                                        waits_for_fr=bool(fr_email_customer(ctx, video.customer_id, settings)))
                 if await raise_flag(ctx, OVERDUE, key, day=video.day, tech_id=video.tech_id,
                                     customer_id=video.customer_id, video_id=video.id, detail=detail):
                     changed += 1
@@ -1507,8 +2138,9 @@ async def _hold_as_late(ctx: Ctx, video: Any, late: timedelta) -> bool:
 
 async def send_anyway(ctx: Ctx, video_id: str, by: str) -> None:
     """The office looked at a video that was held back (its stop left the day, it is a
-    second video for one visit, or its email was long overdue) and wants the customer to
-    have it. It goes on the next pass, like any other."""
+    second video for one visit, its email was long overdue, or it missed FieldRoutes'
+    own email) and wants the customer to have it. It goes on the next pass, like any
+    other, and as our own email: that is what the button says (`fr_email_for`)."""
     video = await get_video(ctx, video_id) if UUID_RE.match(video_id) else None
     if video is None:
         raise ApiError(404, "bad_request", "No such video.")
@@ -1815,9 +2447,11 @@ async def run_outbox(ctx: Ctx) -> int:
       update that only one of them can win, and the loser leaves the row alone.
     - A server stopped in the middle of a write. FieldRoutes may have taken the write, or
       not; nobody can say. The claim marks the row as being written, and a row found still
-      marked that way is not tried again. The office is told to look instead."""
-    from .fr import WriteBlocked
+      marked that way is not tried again. The office is told to look instead.
 
+    A video's line for FieldRoutes' own email (`COMMENT`) goes first and has rules of its
+    own: see `_write_comment`."""
+    await _put_back_lost_lines(ctx)
     now = db.now()
     async with ctx.engine.connect() as conn:
         rows = (
@@ -1825,7 +2459,8 @@ async def run_outbox(ctx: Ctx) -> int:
                 sa.select(db.fr_outbox)
                 .where(db.fr_outbox.c.done_at.is_(None), db.fr_outbox.c.failed_at.is_(None))
                 .where(db.fr_outbox.c.next_try_at <= now)
-                .order_by(db.fr_outbox.c.id)
+                # A line for FieldRoutes' email has a deadline, so it goes ahead of the rest.
+                .order_by(sa.case((db.fr_outbox.c.kind == COMMENT, 0), else_=1), db.fr_outbox.c.id)
                 .limit(25)
             )
         ).all()
@@ -1842,6 +2477,9 @@ async def run_outbox(ctx: Ctx) -> int:
             db.fr_outbox.c.id == row.id, db.fr_outbox.c.done_at.is_(None), db.fr_outbox.c.failed_at.is_(None),
             db.fr_outbox.c.next_try_at <= at,
         )
+        if row.kind == COMMENT:
+            done += await _write_comment(ctx, row, at, waiting)
+            continue
         flag = ""
         async with ctx.engine.begin() as conn:
             claimed = await conn.execute(
@@ -1908,6 +2546,457 @@ async def run_outbox(ctx: Ctx) -> int:
                 await add_flag(conn, "fr_write_failed", f"fr:{row.id}", day=ctx.today(), customer_id=row.customer_id,
                                video_id=row.video_id, detail=flag)
     return done
+
+
+class _NotNow(Exception):
+    """Raised between reading a visit and writing a video's line to it (`go` in
+    `fr.add_to_tech_comments`). `gone`: the line is not wanted any more, the video was
+    pulled or moved while FieldRoutes was being read. `again`: not now, look at the row
+    again from the top (its time ran out during the read)."""
+
+    def __init__(self, why: str):
+        super().__init__(why)
+        self.why = why
+
+
+def _next_try(now: datetime, attempts: int, deadline: datetime) -> datetime:
+    """When a line that FieldRoutes did not take is tried again: after a minute, then two,
+    two, three, and every five from there. Never on the deadline itself, where the rule
+    is "too late, do not write": the last try is a minute before it. When no try fits
+    any more, the next look is at the deadline and closes the row."""
+    wait = timedelta(minutes=COMMENT_RETRY[min(max(attempts, 1), len(COMMENT_RETRY)) - 1])
+    last = deadline - COMMENT_LAST_TRY
+    if now + wait <= last:
+        return now + wait
+    return last if now + timedelta(seconds=20) < last else deadline
+
+
+async def _pick_again(ctx: Ctx, video: Any, payload: dict[str, Any]) -> tuple[int, datetime, datetime | None] | None:
+    """Another of this tech's completed appointments at the stop whose FieldRoutes email
+    has not gone yet, for a line that was too late for the one it was queued for. (A
+    third of customers have two or three appointments in one visit, completed minutes
+    apart, and FieldRoutes sends an email for each.) By the saved stop; None when there
+    is none. The caller has read the first appointment and seen that the link is not on
+    it, so the same video's line never lands on two."""
+    minutes = fr_email_customer(ctx, video.customer_id, await get_settings(ctx))
+    if not minutes:
+        return None
+    stop = await _saved_stop(ctx, video)
+    passed = {*(payload.get("passed") or []), payload.get("appointment_id")}
+    about = filmed_appointments(stop, video.tech_id, video.appointment_ids)
+    what, appointment, deadline = fr_email_pick(about, minutes, db.now(), passed)
+    appointment_id = to_int(appointment.get("id")) if what == "open" else None
+    if not appointment_id or deadline is None:
+        return None
+    return appointment_id, deadline, completed_at(appointment)
+
+
+async def _put_back_lost_lines(ctx: Ctx) -> None:
+    """A video that reads "going into FieldRoutes' email" must have a line on its way.
+
+    Every close of a line's row that this code makes either marks the line as in
+    (`_line_in`) or takes the video out of that state in the same save. A row that is
+    closed with no mark, for a video still in that state, was closed by something else:
+    a deploy rolled back to the server from before this was built, whose outbox marks a
+    kind it does not know as done without writing anything. Such a row is put back in
+    line. From there it is written if there is still time, or read and told to the
+    office if there is not."""
+    since = db.now() - timedelta(days=3)
+    async with ctx.engine.connect() as conn:
+        closed = (
+            await conn.execute(
+                sa.select(db.fr_outbox)
+                .where(db.fr_outbox.c.kind == COMMENT, db.fr_outbox.c.created_at >= since)
+                .where(sa.or_(db.fr_outbox.c.done_at.is_not(None), db.fr_outbox.c.failed_at.is_not(None)))
+                .order_by(db.fr_outbox.c.id.desc())
+                .limit(500)
+            )
+        ).all()
+        unmarked = [r for r in closed if r.video_id and not _line_in(r.payload)]
+        if not unmarked:
+            return
+        videos = {
+            v.id: v
+            for v in (
+                await conn.execute(
+                    sa.select(db.videos).where(
+                        db.videos.c.id.in_(sorted({r.video_id for r in unmarked})),
+                        db.videos.c.state == "no_email", db.videos.c.email_skip == FR_EMAIL,
+                    )
+                )
+            ).all()
+        }
+    for row in unmarked:
+        video = videos.get(row.video_id)
+        if video is None or row.dedupe != comment_key(video):
+            continue  # its video moved on (pulled, moved, held for the office): the row is closed for good
+        async with ctx.engine.begin() as conn:
+            await conn.execute(
+                sa.update(db.fr_outbox)
+                .where(db.fr_outbox.c.id == row.id)
+                .where(sa.or_(db.fr_outbox.c.done_at.is_not(None), db.fr_outbox.c.failed_at.is_not(None)))
+                .values(done_at=None, failed_at=None, attempts=0, next_try_at=db.now(), last_error="")
+            )
+
+
+async def _write_comment(ctx: Ctx, row: Any, at: datetime, waiting: Any) -> int:
+    """One outbox row of the kind `COMMENT`: a video's line in the technician's comments,
+    so that FieldRoutes' own after-service email carries the link. 1 when this pass put
+    the line in.
+
+    The row is looked at more than once in its life, and each look is one of three:
+
+    - Writing (the line is not in yet, and there is time). `fr.add_to_tech_comments`
+      reads the visit, writes once, and reads it again. The line counts as in only when
+      that second read shows it (`written_at`). When FieldRoutes does not answer, it is
+      tried again within minutes (`_next_try`), never later than the deadline.
+    - Too late (the deadline in the payload has passed, judged here with the time of
+      this moment). Nothing is written to that appointment any more: a line FieldRoutes'
+      email no longer shows helps nobody. But the visit is READ, because "this server
+      did not add it" is not known without looking: an earlier try may have landed and
+      its answer been lost, the server may have been stopped mid-write, a backup may
+      have been put back. Link there: it is in. Not there: another of the tech's
+      appointments at the stop whose email has not gone gets the line (`_pick_again`),
+      or the video becomes a hold for the office in the same save that closes the row
+      (`_miss`). Could not read: tried again until FieldRoutes' own send time, then the
+      office is told that nobody knows.
+    - Looking again (the line is in; two minutes before the deadline). The comments can
+      be saved again in FieldRoutes after the line went in, by a phone that was offline
+      or a person fixing a note, and that save has no line of ours in it. So the visit is
+      read once more. Still there: done. Gone and time left: added again. Gone and too
+      late: a hold for the office, which is told what happened.
+
+    Also:
+    - With the setting switched off since, or writing to FieldRoutes switched off or
+      limited, nothing is asked of FieldRoutes and the video waits for the office. A
+      video is never left reading "going into FieldRoutes' email" with nothing going.
+    - A row is claimed before FieldRoutes is asked anything, as every outbox row is. A
+      row found cut off in the middle of a write MAY be taken again once its claim has
+      run out, which a note may not: this write reads first and adds nothing when the
+      link is there.
+    - A video that was pulled or moved before its line was written gets no line (the
+      link would be dead by the time the customer taps it), and so does a customer who
+      stopped video emails in the meantime. Both are looked at again after the read,
+      just before the write (`go`)."""
+    p: dict[str, Any] = dict(row.payload) if isinstance(row.payload, dict) else {}
+    video = await get_video(ctx, row.video_id) if row.video_id else None
+    line, link = str(p.get("line") or ""), str(p.get("link") or "")
+    added = _line_in(p)
+    if p.get("unsure"):
+        return await _settle_unsure(ctx, row, p, video, at, waiting)
+    if (
+        video is None or video.state != "no_email" or video.email_skip != FR_EMAIL
+        or not link.endswith(f"/w/{video.token}")
+    ):
+        async with ctx.engine.begin() as conn:
+            await conn.execute(
+                sa.update(db.fr_outbox).where(waiting)
+                .values(done_at=at, last_error="" if added else "skipped: the video is no longer waiting for this line")
+            )
+        return 0
+    appointment_id, deadline = to_int(p.get("appointment_id")), _parse_time(p.get("deadline"))
+
+    if not added:
+        if await has_opted_out(ctx, video):
+            # The customer pressed "stop these video emails" after the video was let go.
+            # Settled as it would have been a minute earlier: no line, no email, no flag.
+            async with ctx.engine.begin() as conn:
+                closed = await conn.execute(
+                    sa.update(db.fr_outbox).where(waiting)
+                    .values(done_at=at, last_error="skipped: the customer stopped video emails")
+                )
+                if closed.rowcount:
+                    settled = await conn.execute(
+                        sa.update(db.videos)
+                        .where(db.videos.c.id == video.id, db.videos.c.state == "no_email",
+                               db.videos.c.email_skip == FR_EMAIL)
+                        .values(email_skip="opted_out")
+                    )
+                    if settled.rowcount:
+                        await add_event(conn, "system", "fieldroutes", "email_skipped", video_id=video.id,
+                                        customer_id=video.customer_id, detail={"reason": "opted_out", "was": FR_EMAIL})
+            return 0
+        why = ""
+        if (to_int((await get_settings(ctx)).get("fr_email_minutes")) or 0) <= 0:
+            why = "off"  # the owner switched the setting off since: off means nothing more is written
+        else:
+            try:
+                ctx.fr.check_write(row.customer_id)
+            except WriteBlocked:
+                why = "blocked"
+        if not why and (appointment_id is None or deadline is None or not line):
+            why = "late"  # a row that does not say where or until when: nothing can be written for it
+        if why:
+            async with ctx.engine.begin() as conn:
+                closed = await conn.execute(
+                    sa.update(db.fr_outbox).where(waiting).values(failed_at=at, last_error=f"not written ({why})")
+                )
+                if closed.rowcount:
+                    await _miss(conn, ctx, video, why, when=deadline)
+            return 0
+    if appointment_id is None:
+        return 0
+
+    # Claimed before FieldRoutes is asked anything. Only one server can win this update.
+    async with ctx.engine.begin() as conn:
+        claimed = await conn.execute(
+            sa.update(db.fr_outbox).where(waiting).values(next_try_at=at + OUTBOX_CLAIM, last_error=WRITING)
+        )
+    if not claimed.rowcount:
+        return 0  # another server has it right now
+
+    async def write(to: int, until: datetime) -> LineWrite:
+        async def go() -> None:
+            # Between the read of the visit and the write to it: one look at one row and
+            # no more, because every moment spent here is a moment the visit can change in.
+            fresh = await get_video(ctx, video.id)
+            if (
+                fresh is None or fresh.state != "no_email" or fresh.email_skip != FR_EMAIL
+                or fresh.token != video.token
+            ):
+                raise _NotNow("gone")
+            if db.now() >= until:
+                # FieldRoutes took its time over the read. Not written; the next pass
+                # finds it too late, and looks.
+                raise _NotNow("again")
+
+        return await ctx.fr.add_to_tech_comments(row.customer_id, to, line, link, go=go)
+
+    def done() -> dict[str, Any]:
+        return {"done_at": db.now(), "last_error": ""}
+
+    values: dict[str, Any] = {}
+    miss: dict[str, Any] | None = None
+    open_still: dict[str, Any] | None = None  # with `miss`: the row is not closed, FieldRoutes is asked again
+    event: tuple[str, dict[str, Any]] | None = None
+    flag: tuple[str, str, str] | None = None
+    result: LineWrite | None = None
+    doing = "look" if added else "write"
+    try:
+        if added:
+            if await ctx.fr.line_on(row.customer_id, [appointment_id], link) is not None:
+                look_at = (deadline - FR_EMAIL_LOOK) if deadline is not None else None
+                if look_at is not None and db.now() < look_at - timedelta(seconds=30):
+                    # Seen there, but this was not the last look yet (it came early because
+                    # FieldRoutes could not be read right after the write). That one is still due.
+                    values = {"attempts": 0, "last_error": "", "next_try_at": look_at}
+                else:
+                    p["looked_at"] = db.now().isoformat()
+                    values, event = done(), ("fr_email_looked", {"appointment": appointment_id})
+            elif await has_opted_out(ctx, video):
+                values = done()  # gone, and the customer has since stopped video emails: left as it is
+            elif not fr_email_on(ctx, await get_settings(ctx)):
+                # Gone, and the owner has switched the setting off since. Off means nothing
+                # more is written to any visit, so it is not put back. The office is told.
+                miss = {"why": "gone", "when": deadline, "looked": db.now(), "added": line_added_at(row),
+                        "said": "the setting that puts the link into FieldRoutes' email was switched off since"}
+            elif deadline is not None and db.now() < deadline:
+                doing = "write"
+                result = await write(appointment_id, deadline)
+            else:
+                miss = {"why": "gone", "when": deadline, "looked": db.now(), "added": line_added_at(row)}
+        elif deadline is not None and db.now() < deadline:
+            result = await write(appointment_id, deadline)
+        else:
+            doing = "late"
+            if await ctx.fr.line_on(row.customer_id, [appointment_id], link) is not None:
+                # An earlier try reached FieldRoutes after all (or this is a database from
+                # before the line was written, put back). It is in, and nobody is told otherwise.
+                p["found_at"] = db.now().isoformat()
+                values, event = done(), ("fr_email_line", {"appointment": appointment_id, "already_there": True})
+            else:
+                looked = db.now()
+                other = await _pick_again(ctx, video, p)
+                if other is None:
+                    miss = {"why": "late", "when": deadline, "looked": looked}
+                else:
+                    # Saved before it is written to, so that a server stopped right here
+                    # carries on with this appointment and never goes back to the first.
+                    p["passed"] = sorted({*(p.get("passed") or []), appointment_id})
+                    appointment_id, deadline = other[0], other[1]
+                    p.update(appointment_id=appointment_id, deadline=deadline.isoformat(),
+                             completed=other[2].isoformat() if other[2] else None)
+                    async with ctx.engine.begin() as conn:
+                        await conn.execute(sa.update(db.fr_outbox).where(db.fr_outbox.c.id == row.id).values(payload=p))
+                    doing = "write"
+                    result = await write(appointment_id, deadline)
+    except _NotNow as stop:
+        if stop.why == "gone":
+            values = {"done_at": db.now(),
+                      "last_error": "" if added else "skipped: the video is no longer waiting for this line"}
+        else:
+            values = {"next_try_at": db.now(), "last_error": ""}  # the next pass finds it too late, and looks
+    except (WriteBlocked, WriteRefused) as exc:
+        if added:
+            # It was in, it is gone, and it may not be put back. Told as that, with the reason.
+            said = str(exc) if isinstance(exc, WriteRefused) else "writing to FieldRoutes was switched off or limited since"
+            miss = {"why": "gone", "when": deadline, "looked": db.now(), "added": line_added_at(row), "said": said}
+        elif isinstance(exc, WriteBlocked):
+            miss = {"why": "blocked", "when": deadline}
+        else:
+            miss = {"why": "refused", "when": deadline, "said": str(exc)}
+    except FieldRoutesError as exc:
+        # FieldRoutes is down, or said no for now. The row itself is asked how often it has
+        # been tried: another server may have tried it since this pass read it.
+        async with ctx.engine.connect() as conn:
+            tried = (
+                await conn.execute(sa.select(db.fr_outbox.c.attempts).where(db.fr_outbox.c.id == row.id))
+            ).scalar_one_or_none()
+        attempts = (tried if tried is not None else row.attempts) + 1
+        now = db.now()
+        values = {"attempts": attempts, "last_error": str(exc)[:500]}
+        if doing == "write" and deadline is not None:
+            values["next_try_at"] = _next_try(now, attempts, deadline)
+        elif deadline is not None and (
+            now < deadline + FR_EMAIL_MARGIN or (doing == "late" and await _pick_again(ctx, video, p) is not None)
+        ):
+            # Only a read was wanted, and reading costs nothing but a call: asked again
+            # every minute for as long as the answer could still change anything.
+            values["next_try_at"] = now + timedelta(minutes=1)
+        elif added:
+            # The line was added and FieldRoutes showed it at the time. It could not be
+            # looked at again before FieldRoutes sent. The page says only that much.
+            p["unchecked"] = True
+            values = done()
+        else:
+            # Its time is over and FieldRoutes still cannot be read. The office is told now
+            # that nobody knows, and the row stays open: once FieldRoutes answers, the
+            # video and its flag are put right by what the visit shows (`_settle_unsure`).
+            miss = {"why": "unknown", "when": deadline}
+            p["unsure"] = True
+            open_still = {"attempts": attempts, "next_try_at": now + UNSURE_LOOK, "last_error": str(exc)[:500]}
+
+    if result is not None:
+        detail: dict[str, Any] = {"appointment": appointment_id}
+        if not result.wrote:
+            detail["already_there"] = True
+        if result.said:
+            detail["fieldroutes_said"] = list(result.said)
+        if result.changed:
+            detail["changed"] = list(result.changed)
+        if result.also_changed:
+            detail["also_changed"] = list(result.also_changed)[:20]
+        if not result.words_kept:
+            detail["words_changed"] = True
+        if result.changed or not result.words_kept:
+            flag = (FR_CHANGED, f"{FR_CHANGED}:{video.id}:{appointment_id}", _changed_words(ctx, video, result))
+        now = db.now()
+        if result.there is False:
+            # FieldRoutes answered "saved", and the visit read right after does not show the
+            # link. Once more, with a fresh read; after a second time it is not asked again.
+            p["lost"] = (to_int(p.get("lost")) or 0) + 1
+            event = ("fr_email_not_taken", detail)
+            if p["lost"] >= 2 or deadline is None or now + timedelta(minutes=1) >= deadline:
+                miss = {"why": "not_taken", "when": deadline, "looked": now}
+            else:
+                values = {"next_try_at": now + timedelta(minutes=1),
+                          "last_error": "FieldRoutes answered that it saved the comments, and the link is not in them"}
+        else:
+            if added:
+                p["added_again_at"] = now.isoformat()
+                event = ("fr_email_line_again", detail)
+            else:
+                p["written_at"] = now.isoformat()
+                event = ("fr_email_line", detail)
+            look_at = (deadline - FR_EMAIL_LOOK) if deadline is not None else now
+            if result.there and (added or now >= look_at):
+                # Read back just now, and this late that read is the last look.
+                p["looked_at"] = now.isoformat()
+                values = done()
+            else:
+                # In. Looked at once more shortly before the deadline (or in a minute, when
+                # FieldRoutes took the write and then could not be read).
+                values = {"attempts": 0, "last_error": "",
+                          "next_try_at": max(look_at, now + timedelta(minutes=1)) if result.there
+                          else now + timedelta(minutes=1)}
+
+    # The answer and what follows from it, in one save.
+    if miss is not None:
+        note = f"refused: {miss.get('said', '')}" if miss["why"] == "refused" else f"not written ({miss['why']})"
+        if miss["why"] == "gone":
+            note = "the line was in, and was gone again at the last look"
+        values = open_still or {
+            **{k: v for k, v in values.items() if k == "attempts"}, "failed_at": db.now(), "last_error": note[:500],
+        }
+    async with ctx.engine.begin() as conn:
+        await conn.execute(sa.update(db.fr_outbox).where(db.fr_outbox.c.id == row.id).values(payload=p, **values))
+        if event is not None:
+            await add_event(conn, "system", "fieldroutes", event[0], video_id=video.id, customer_id=row.customer_id,
+                            detail=event[1])
+        if flag is not None:
+            await add_flag(conn, flag[0], flag[1], day=video.day, tech_id=video.tech_id, customer_id=video.customer_id,
+                           video_id=video.id, detail=flag[2])
+        if miss is not None:
+            await _miss(conn, ctx, video, **miss)
+    return 1 if event is not None and event[0] == "fr_email_line" else 0
+
+
+async def _settle_unsure(ctx: Ctx, row: Any, p: dict[str, Any], video: Any, at: datetime, waiting: Any) -> int:
+    """A video's time for FieldRoutes' email ran out while FieldRoutes could not be read,
+    and the office was told that this server cannot tell whether the link is there. Now
+    FieldRoutes is asked again. The link is there: the video goes back to "in FieldRoutes'
+    email" and its flag is closed, so nobody sends a second email for it. Not there: the
+    flag is rewritten to say so. Nothing is written to FieldRoutes either way. If the
+    office has dealt with the video meanwhile, or hours have passed, the row is closed."""
+    link = str(p.get("link") or "")
+    appointment_id, deadline = to_int(p.get("appointment_id")), _parse_time(p.get("deadline"))
+    waiting_still = (
+        video is not None and video.state == "no_email" and video.email_skip == FR_MISSED
+        and link.endswith(f"/w/{video.token}") and appointment_id is not None
+    )
+    if not waiting_still or at - row.created_at > UNSURE_FOR:
+        p.pop("unsure", None)
+        async with ctx.engine.begin() as conn:
+            await conn.execute(
+                sa.update(db.fr_outbox).where(waiting).values(payload=p, failed_at=at, last_error="not written (unknown)")
+            )
+        return 0
+    async with ctx.engine.begin() as conn:
+        claimed = await conn.execute(
+            sa.update(db.fr_outbox).where(waiting).values(next_try_at=at + OUTBOX_CLAIM, last_error=WRITING)
+        )
+    if not claimed.rowcount:
+        return 0
+    try:
+        found = await ctx.fr.line_on(row.customer_id, [appointment_id, *(p.get("passed") or [])], link)
+    except FieldRoutesError as exc:
+        async with ctx.engine.begin() as conn:
+            await conn.execute(
+                sa.update(db.fr_outbox).where(db.fr_outbox.c.id == row.id)
+                .values(next_try_at=db.now() + UNSURE_LOOK, last_error=str(exc)[:500])
+            )
+        return 0
+    now = db.now()
+    p.pop("unsure", None)
+    mine = db.flags.c.dedupe == missed_key(video)
+    async with ctx.engine.begin() as conn:
+        if found is None:
+            await conn.execute(
+                sa.update(db.fr_outbox).where(db.fr_outbox.c.id == row.id)
+                .values(payload=p, failed_at=now, last_error="not written (late)")
+            )
+            await conn.execute(  # still open: now it can say what is so
+                sa.update(db.flags).where(mine, db.flags.c.cleared_at.is_(None))
+                .values(detail=_missed_words(ctx, video, "late", when=deadline, looked=now)[:1000])
+            )
+            return 0
+        p.update(appointment_id=found, found_at=now.isoformat())
+        await conn.execute(
+            sa.update(db.fr_outbox).where(db.fr_outbox.c.id == row.id).values(payload=p, done_at=now, last_error="")
+        )
+        back = await conn.execute(
+            sa.update(db.videos)
+            .where(db.videos.c.id == video.id, db.videos.c.state == "no_email", db.videos.c.email_skip == FR_MISSED)
+            .values(email_skip=FR_EMAIL)
+        )
+        if back.rowcount:
+            await add_event(conn, "system", "fieldroutes", "fr_email_line", video_id=video.id,
+                            customer_id=row.customer_id, detail={"appointment": found, "already_there": True})
+            flags = (await conn.execute(sa.select(db.flags.c.id, db.flags.c.dedupe).where(mine))).all()
+            await close_flags(conn, mine, "system", "the link is in the technician's comments after all")
+            for flag in flags:
+                await _put_away(conn, flag)
+    return 1
 
 
 def _by_hand(row: Any) -> str:

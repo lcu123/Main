@@ -59,6 +59,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # late emails would otherwise all go out at once, whatever the hour, and some of them
     # for a second time. 0 switches the rule off.
     "overdue_hours": 6,
+    # Which email carries the video link. 0 is our own email, as it always was. 30 or 60:
+    # FieldRoutes' own after-service email carries it, and the office has FieldRoutes set to
+    # send that email this many minutes after a visit is completed. The server then adds
+    # one line with the link to the technician's comments on the completed appointment
+    # (the email prints them where its template says {{techComments}}) and sends no email
+    # of its own. A video that cannot make it into that email waits for the office.
+    "fr_email_minutes": 0,
+    "fr_email_line": "Watch the video of today's visit: {link}",
     "email_subject": "Your service video from {tech}",
     "email_intro": "{tech} just finished at {address} and recorded a short video for you: "
     "what was done and what is recommended.",
@@ -75,6 +83,32 @@ SETTING_LIMITS: dict[str, tuple[int, int]] = {
     "retention_months": (1, 60),
     "overdue_hours": (0, 168),
 }
+
+# Settings that take one of a few values, not a range.
+SETTING_CHOICES: dict[str, tuple[int, ...]] = {"fr_email_minutes": (0, 30, 60)}
+
+# The one margin of the "link in FieldRoutes' email" setting, in minutes. The line has to
+# be in FieldRoutes this long before FieldRoutes' email is due, or it is not written.
+FR_EMAIL_MARGIN_MINUTES = 5
+# Once the line is in, the server looks at the visit one more time this many minutes
+# before that last moment, and adds the line again if it has gone (see `videos`).
+FR_EMAIL_LOOK_MINUTES = 2
+FR_EMAIL_LINE_MAX = 200
+
+
+def longest_hold(fr_email_minutes: int) -> int:
+    """The longest tech's hold that still fits inside FieldRoutes' delay. The video is let
+    go when the hold ends; after that the server needs the margin, and as much again for
+    its own rounds (it reads the route every five minutes and writes once a minute)."""
+    return fr_email_minutes - 2 * FR_EMAIL_MARGIN_MINUTES
+
+
+def fr_email_line(settings: dict[str, Any], link: str) -> str:
+    """The one line that goes into the technician's comments, with the link in it."""
+    words = str(settings.get("fr_email_line") or "")
+    if words.count("{link}") != 1:  # a saved value always has it; this is for one that was never checked
+        words = DEFAULT_SETTINGS["fr_email_line"]
+    return words.replace("{link}", link)
 
 
 @dataclass
@@ -130,6 +164,14 @@ def coerce_setting(key: str, raw: Any) -> Any:
             value = int(str(raw).strip())
         except ValueError as exc:
             raise ValueError(f"{key} must be a whole number") from exc
+        if key in SETTING_CHOICES:
+            if value not in SETTING_CHOICES[key]:
+                # The one such setting today is which email carries the video link.
+                raise ValueError(
+                    f"{key} must be {' or '.join(str(c) for c in SETTING_CHOICES[key])}: our own email (0), or "
+                    "FieldRoutes' own email 30 or 60 minutes after a visit."
+                )
+            return value
         low, high = SETTING_LIMITS.get(key, (0, 10**9))
         if not low <= value <= high:
             raise ValueError(f"{key} must be between {low} and {high}")
@@ -149,16 +191,78 @@ def coerce_setting(key: str, raw: Any) -> Any:
     text = str(raw).replace("\x00", "").strip()
     if not text:
         raise ValueError(f"{key} cannot be empty")
+    if key == "fr_email_line":
+        # It is printed inside FieldRoutes' email, in the middle of the technician's own words.
+        if "\n" in text or "\r" in text:
+            raise ValueError("The line for FieldRoutes' email must be one line.")
+        if len(text) > FR_EMAIL_LINE_MAX:
+            raise ValueError(f"The line for FieldRoutes' email can be {FR_EMAIL_LINE_MAX} characters at most.")
+        if text.count("{link}") != 1:
+            raise ValueError("The line for FieldRoutes' email must have {link} in it, once: that is where the link goes.")
+        return text
     return text[:500]
 
 
-async def set_setting(ctx: Ctx, key: str, raw: Any, by: str) -> None:
+FR_EMAIL_TRIO = ("hold_minutes", "fr_email_minutes", "overdue_hours")
+
+
+def fr_email_problem(settings: dict[str, Any], changing: str = "") -> str:
+    """Why these settings cannot stand together, in one plain sentence. "" when they can.
+
+    With the video link going into FieldRoutes' email (`fr_email_minutes` 30 or 60), two
+    other settings have to fit it:
+    - the tech's hold must end early enough for the line to be written before FieldRoutes
+      sends (`longest_hold`), or every video would be let go too late;
+    - "Overdue hours" must not be 0. A video then waits for its visit to be completed in
+      FieldRoutes, and that number is the only limit on the wait. With no limit a visit
+      that is never completed would keep a video waiting, and FieldRoutes being read
+      for it, without end.
+    `changing` is the one setting being saved, so the sentence can speak about that one."""
+    hold, minutes, overdue = (int(settings[key]) for key in FR_EMAIL_TRIO)
+    if minutes == 0:
+        return ""
+    most = longest_hold(minutes)
+    if hold > most:
+        if changing == "hold_minutes":
+            return (
+                f"The tech's hold cannot be {hold} minutes while the video link goes into FieldRoutes' email "
+                f"{minutes} minutes after a visit: {most} minutes is the most."
+            )
+        if changing == "fr_email_minutes":
+            return (
+                f"FieldRoutes' email cannot carry the video link at {minutes} minutes while the tech's hold is "
+                f"{hold} minutes: make the hold {most} minutes or less first."
+            )
+        return f"A hold of {hold} minutes does not fit inside FieldRoutes' {minutes} minutes: {most} minutes is the most."
+    if overdue == 0:
+        if changing == "fr_email_minutes":
+            return (
+                "FieldRoutes' email cannot carry the video link while Overdue hours is 0: a video waits for its "
+                "visit to be completed in FieldRoutes, and that number is the only limit on the wait. Set it to 1 "
+                "or more first."
+            )
+        return (
+            "Overdue hours cannot be 0 while the video link goes into FieldRoutes' email: a video waits for its "
+            "visit to be completed in FieldRoutes, and this number is the only limit on that wait."
+        )
+    return ""
+
+
+async def set_setting(ctx: Ctx, key: str, raw: Any, by: str, *, alongside: dict[str, Any] | None = None) -> None:
+    """Save one setting. `alongside` holds other settings that are being saved in the same
+    go (the office page saves a whole form), so two that depend on each other are judged
+    as the pair they will be."""
     if key not in DEFAULT_SETTINGS:
         raise ValueError(f"unknown setting {key}")
     value = coerce_setting(key, raw)
-    current = (await get_settings(ctx)).get(key)
+    settings = await get_settings(ctx)
+    current = settings.get(key)
     if current == value:
         return
+    if key in FR_EMAIL_TRIO:
+        problem = fr_email_problem({**settings, **(alongside or {}), key: value}, changing=key)
+        if problem:
+            raise ValueError(problem)
     now = db.now()
     async with ctx.engine.begin() as conn:
         updated = await conn.execute(
@@ -232,6 +336,8 @@ FLAG_WORDS = {
     "second_video": "Two videos for one visit",
     "video_waiting": "Video still waiting for the office",
     "overdue": "Video held: its email was long overdue",
+    "fr_missed": "Video not in FieldRoutes' email: the office decides",
+    "fr_changed": "A visit changed in FieldRoutes when a video link was added: check it",
     "file_doubt": "Cannot tell whether a video's file is there",
     "email_failed": "Email could not be sent",
     "email_bounced": "Email bounced",

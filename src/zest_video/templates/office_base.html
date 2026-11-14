@@ -106,10 +106,16 @@ input[type=checkbox]{width:20px;height:20px;vertical-align:-4px;margin-right:6px
 {% endif %}
 <main>
 {% if user %}
-  {% if email_mode == "off" %}
+  {# With the link going into FieldRoutes' own email, a video is not "unsent" because ours is off. #}
+  {% set fr_only %}{% if fr_email_only is not none %} for the test customers only ({{ fr_email_only | join(", ") }}){% endif %}{% endset %}
+  {% if email_mode == "off" and fr_email_minutes %}
+  <div class="banner warn">Our own customer emails are OFF{% if not mail_delivers %} (no email sender is set up yet){% endif %}. The video link goes into FieldRoutes' own after-service email{{ fr_only }}. A video that misses that email waits for the office.{% if fr_email_only is not none %} For everybody else videos are saved and links work, but no customer is emailed.{% endif %}</div>
+  {% elif email_mode == "off" %}
   <div class="banner warn">Customer emails are OFF{% if not mail_delivers %} (no email sender is set up yet){% endif %}. Videos are saved and links work, but no customer is emailed.</div>
   {% elif email_mode == "test" %}
-  <div class="banner warn">TEST MODE. Every customer email goes to {{ email_test_to or "nobody (no test address set)" }} instead of the customer.</div>
+  <div class="banner warn">TEST MODE. Every customer email goes to {{ email_test_to or "nobody (no test address set)" }} instead of the customer.{% if fr_email_minutes %} The video link itself goes into FieldRoutes' own after-service email{{ fr_only }}, and that email goes to the real customer.{% endif %}</div>
+  {% elif fr_email_minutes %}
+  <div class="banner info">One email: the video link goes into FieldRoutes' own after-service email{{ fr_only }}. Our own email goes only when the office presses Send it anyway.{% if fr_email_only is not none %} Everybody else gets our own email, as before.{% endif %}</div>
   {% endif %}
 {% endif %}
 {% if msg %}<div class="banner ok">{{ msg }}</div>{% endif %}

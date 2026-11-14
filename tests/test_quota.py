@@ -155,3 +155,70 @@ async def test_rate_limiter_never_exceeds_limit_in_any_window() -> None:
     # No 3 consecutive acquisitions may land within a single window.
     for i in range(len(timestamps) - 3):
         assert timestamps[i + 3] - timestamps[i] >= 0.29, "more than `limit` calls landed inside one window"
+
+
+# -- a write that must not be sent twice, and must not be kept waiting ---------------------
+#
+# The video server reads an appointment and then makes the one call that would complete
+# and invoice a visit if FieldRoutes' record had changed in between. Two things in this
+# client would widen that moment from a fraction of a second to minutes: sending the same
+# request again after a timeout, and waiting for room under the per-minute limit.
+
+
+async def test_a_call_with_one_attempt_is_not_sent_again_after_a_timeout() -> None:
+    fake = FakeFR()
+    sends: list[str] = []
+
+    def drops(request: httpx.Request) -> httpx.Response:
+        sends.append(request.url.path)
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    client = FieldRoutesClient(
+        subdomain="zest", auth_key="key", auth_token="token", transport=httpx.MockTransport(drops),
+        rate_limiter=RateLimiter(limit=100000),
+    )
+    async with client:
+        with pytest.raises(client_module.FieldRoutesError, match="transport error"):
+            await client.call("appointment", "complete", {"appointmentID": 1}, attempts=1)
+    assert sends == ["/api/appointment/complete"], "sent once, and the failure was raised to the caller"
+
+    # The default is what it always was: three sends.
+    sends.clear()
+    client = FieldRoutesClient(
+        subdomain="zest", auth_key="key", auth_token="token", transport=httpx.MockTransport(drops),
+        rate_limiter=RateLimiter(limit=100000),
+    )
+    async with client:
+        with pytest.raises(client_module.FieldRoutesError):
+            await client.call("office", "search")
+    assert len(sends) == 3 and fake.requests == []
+
+
+async def test_a_call_with_one_attempt_is_not_sent_again_after_a_server_error() -> None:
+    fake = FakeFR()
+    fake.next_status = 502
+    client = FieldRoutesClient(
+        subdomain="zest", auth_key="key", auth_token="token", transport=httpx.MockTransport(fake.handler),
+        rate_limiter=RateLimiter(limit=100000),
+    )
+    async with client:
+        with pytest.raises(client_module.FieldRoutesError, match="non-JSON response"):
+            await client.call("appointment", "complete", {"appointmentID": 1}, attempts=1)
+    assert len(fake.requests) == 1, "the 502 was the answer; nothing was sent a second time"
+
+
+async def test_the_limiter_says_how_many_calls_would_go_out_without_waiting() -> None:
+    limiter = RateLimiter(limit=3, window=0.3)
+    assert limiter.free_slots() == 3
+    await limiter.acquire()
+    await limiter.acquire()
+    assert limiter.free_slots() == 1
+    await limiter.acquire()
+    assert limiter.free_slots() == 0
+    # While a call is waiting for its turn, a new one would wait behind it.
+    waiting = asyncio.create_task(limiter.acquire())
+    await asyncio.sleep(0.05)
+    assert limiter.free_slots() == 0 and not waiting.done()
+    await waiting
+    await asyncio.sleep(0.35)
+    assert limiter.free_slots() == 3, "old calls drop out of the window"

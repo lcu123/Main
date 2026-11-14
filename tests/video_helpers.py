@@ -4,6 +4,9 @@ Everything outside the server is faked: FieldRoutes is the same `FakeFR` the MCP
 tests use (real wire dialect), the bucket, mail, text and push are in-memory
 recorders, and the database is a throwaway SQLite file (or Postgres when
 `VIDEO_TEST_DATABASE_URL` is set, which is how CI proves both).
+
+`VideoFR` adds the one FieldRoutes write the MCP tests never needed modelled:
+`appointment/complete`, as FieldRoutes' own help page describes it.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from conftest import FakeFR, _client_for
 from zest_video import auth, config, db
 from zest_video.app import build_app, build_ctx
 from zest_video.core import Ctx
+from zest_video.fr import local_time
 from zest_video.notify import MemoryMailer, MemoryPusher, MemoryTexter
 from zest_video.storage import MemoryStorage
 
@@ -51,7 +55,10 @@ def minutes_ago(minutes: float) -> str:
 def seed() -> dict[str, dict[int, dict[str, Any]]]:
     """A small day shaped like Zest's real one: string-valued fields, a customer with
     three appointments in one visit, two techs, a business with no person on it, a
-    customer with no email, and an appointment whose tech lives only on the route."""
+    customer with no email, and an appointment whose tech lives only on the route.
+    A completed appointment carries its completion time (`dateCompleted`) and the
+    technician's comments for the customer (`notes`), which were empty on every one of
+    the 50 appointments of the live day that was looked at."""
     day = today()
     return {
         "office": {7: {"officeID": 7, "officeName": "Zest Lawn & Pest"}},
@@ -92,13 +99,16 @@ def seed() -> dict[str, dict[int, dict[str, Any]]]:
             # Jane: three appointments in one visit, all finished.
             9001: {"appointmentID": "9001", "officeID": "7", "customerID": "501", "routeID": "70", "type": "89",
                    "status": "1", "assignedTech": "20", "servicedBy": "20", "employeeID": "22", "date": day,
-                   "start": "08:00:00", "sequence": "1", "checkIn": minutes_ago(50), "checkOut": minutes_ago(20)},
+                   "start": "08:00:00", "sequence": "1", "checkIn": minutes_ago(50), "checkOut": minutes_ago(20),
+                   "dateCompleted": minutes_ago(20), "notes": ""},
             9002: {"appointmentID": "9002", "officeID": "7", "customerID": "501", "routeID": "70", "type": "95",
                    "status": "1", "assignedTech": "20", "servicedBy": "20", "employeeID": "22", "date": day,
-                   "start": "08:00:00", "sequence": "1", "checkIn": minutes_ago(49), "checkOut": minutes_ago(21)},
+                   "start": "08:00:00", "sequence": "1", "checkIn": minutes_ago(49), "checkOut": minutes_ago(21),
+                   "dateCompleted": minutes_ago(21), "notes": ""},
             9003: {"appointmentID": "9003", "officeID": "7", "customerID": "501", "routeID": "70", "type": "89",
                    "status": "1", "assignedTech": "20", "servicedBy": "20", "employeeID": "22", "date": day,
-                   "start": "08:00:00", "sequence": "1", "checkIn": minutes_ago(48), "checkOut": minutes_ago(22)},
+                   "start": "08:00:00", "sequence": "1", "checkIn": minutes_ago(48), "checkOut": minutes_ago(22),
+                   "dateCompleted": minutes_ago(22), "notes": ""},
             # Bob: next door, checked in right now and not out yet.
             9004: {"appointmentID": "9004", "officeID": "7", "customerID": "502", "routeID": "70", "type": "89",
                    "status": "0", "assignedTech": "20", "employeeID": "22", "date": day, "start": "09:00:00",
@@ -128,10 +138,121 @@ def seed() -> dict[str, dict[int, dict[str, Any]]]:
     }
 
 
+NEVER = "0000-00-00 00:00:00"  # how FieldRoutes writes "no time"
+
+
+def fr_time(when: datetime) -> str:
+    """A moment as FieldRoutes writes it: office-local, no zone."""
+    return when.astimezone(TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+class VideoFR(FakeFR):
+    """The shared fake FieldRoutes, plus `appointment/complete` the way FieldRoutes' help
+    centre documents it ("Idempotent Re-completion"). It has never been run against the
+    live account, so this is the documentation's word, modelled as written:
+
+    - On an appointment that is already completed, the call updates its completion data
+      and keeps every field that was not sent. `completionNotes` lands in the record's
+      `notes`: the technician's comments, which FieldRoutes' after-service email prints
+      where its template says {{techComments}}.
+    - `status` defaults to Completed. So the very same call on a PENDING appointment
+      completes it, stamps the time and runs the invoicing logic. `completed_by_api` and
+      `invoices` record that, so a test can prove the server never does it.
+
+    Every call is kept in `completions` with its exact parameters (the two
+    authentication fields left out).
+
+    Three knobs model a FieldRoutes that does NOT do what its help page says, so that a
+    test can prove the server notices: `recompletion_changes` (fields the call changes on
+    an appointment that was completed already), `drops_comments` (it answers "done" and
+    keeps the old comments) and `stores_comments_as` (it stores them differently from
+    how they were sent). `complete_says` are the "system messages" its answer carries."""
+
+    def __init__(self, data: dict[str, dict[int, dict[str, Any]]] | None = None):
+        super().__init__(data)
+        self.completions: list[dict[str, str]] = []
+        self.completed_by_api: list[int] = []  # appointments this call turned from not completed into completed
+        self.invoices: list[int] = []  # one for each of those: the invoicing logic ran
+        self.recompletion_changes: dict[str, str] = {}
+        self.drops_comments = False
+        self.stores_comments_as: Any = None  # a function of the text sent
+        self.complete_says: list[str] = []
+        self._comments_before: dict[int, str] = {}
+        self._comments_written: dict[int, list[tuple[datetime, str]]] = {}
+
+    def _write(self, entity: str, action: str, form: dict[str, list[str]]) -> dict[str, Any]:
+        if (entity, action) != ("appointment", "complete"):
+            return super()._write(entity, action, form)
+        if self.fail_write_after is not None and self.writes_today == self.fail_write_after:
+            self.fail_write_after = None
+            return {"success": False, "errorMessage": self.fail_write_message}
+        params = {k: v[0] for k, v in form.items() if k not in ("authenticationKey", "authenticationToken")}
+        self.completions.append(params)
+        try:
+            appointment_id = int(params.get("appointmentID", ""))
+        except ValueError:
+            return {"success": False, "errorMessage": "appointmentID is required"}
+        record = self.data.get("appointment", {}).get(appointment_id)
+        if record is None:
+            return {"success": False, "errorMessage": "Invalid appointmentID"}
+        sent = {k.rstrip("[]") for k in params} - self.ignore_params  # an ignored parameter changes nothing
+        now = db.now()
+        if "completionNotes" in sent and not self.drops_comments:
+            words = params["completionNotes"]
+            if self.stores_comments_as is not None:
+                words = self.stores_comments_as(words)
+            self._save_comments(appointment_id, words)
+        if "officeNotes" in sent:
+            record["officeNotes"] = params["officeNotes"]
+        was = str(record.get("status", "0"))
+        status = params["status"] if "status" in sent else "1"  # FieldRoutes' default: Completed
+        if status == "1" and was != "1":
+            record.update(status="1", dateCompleted=fr_time(now))
+            self.completed_by_api.append(appointment_id)
+            self.invoices.append(appointment_id)
+        elif status != was:
+            record["status"] = status
+        else:
+            record.update(self.recompletion_changes)
+        result: Any = {str(appointment_id): list(self.complete_says)} if self.complete_says else appointment_id
+        return {"success": True, "count": 1, "result": result, "propertyName": "result"}
+
+    def _save_comments(self, appointment_id: int, words: str) -> None:
+        record = self.data["appointment"][appointment_id]
+        self._comments_before.setdefault(appointment_id, str(record.get("notes") or ""))
+        self._comments_written.setdefault(appointment_id, []).append((db.now(), words))
+        record["notes"] = words
+
+    def saved_again(self, appointment_id: int, words: str) -> None:
+        """Somebody else saves the technician's comments on a completed visit: the tech
+        opens it in FieldRoutes' app and fixes his note, a phone that was offline hands
+        in its own copy late, the office edits it. Their copy has no line of ours in it.
+        Not one of the server's calls, so it is not in `completions`."""
+        self._save_comments(appointment_id, words)
+
+    def comments(self, appointment_id: int) -> str:
+        """The technician's comments on an appointment, as FieldRoutes has them now."""
+        return str(self.data["appointment"][appointment_id].get("notes") or "")
+
+    def comments_in_the_email(self, appointment_id: int, minutes: int) -> str:
+        """What FieldRoutes' own after-service email prints for {{techComments}} when the
+        office has it set to go `minutes` after completion: the comments as they stood at
+        that moment. A line written later than that is in FieldRoutes and not in the email."""
+        record = self.data["appointment"][appointment_id]
+        completed = local_time(record.get("dateCompleted"), TZ)
+        assert completed is not None, f"appointment {appointment_id} is not completed, so FieldRoutes sends no email"
+        goes_at = completed + timedelta(minutes=minutes)
+        text = self._comments_before.get(appointment_id, str(record.get("notes") or ""))
+        for when, written in self._comments_written.get(appointment_id, []):
+            if when <= goes_at:
+                text = written
+        return text
+
+
 @dataclass
 class Env:
     ctx: Ctx
-    fake: FakeFR
+    fake: VideoFR
     app: Any
     http: httpx.AsyncClient
     storage: MemoryStorage
@@ -250,7 +371,7 @@ async def make_env(tmp_path: Any, **cfg_changes: Any) -> Env:
         # That makes it a real deployment in the server's eyes, and it starts only with the
         # same loud override a demo needs, set by the person running it.
         cfg = replace(cfg, allow_throwaway_storage=base.allow_throwaway_storage)
-    fake = FakeFR(data=seed())
+    fake = VideoFR(data=seed())
     storage, mailer, texter, pusher = MemoryStorage(), MemoryMailer(), MemoryTexter(), MemoryPusher()
     ctx = build_ctx(cfg, fr_client=_client_for(fake), storage=storage, mailer=mailer, texter=texter, pusher=pusher)
     if not url.startswith("sqlite"):

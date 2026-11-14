@@ -12,6 +12,13 @@
     {# With customer emails off nothing can be sent: the button keeps the video and files its link. #}
     <button type="submit">{{ "Keep it" if email_mode == "off" else "Send it anyway" }}</button>
   </form>
+  {% if video.email_skip == "fr_missed" %}
+  {# It was meant for FieldRoutes' own email. Its flag says what the server knows about that. Nothing more goes by itself. #}
+  <div class="muted">This video was meant for FieldRoutes' email. Read its flag above first: it says whether the link is there. {% if email_mode == "off" %}Customer emails are off, so no email can go: Keep it keeps the link on file.{% else %}Send it anyway sends our own email with the link. FieldRoutes sends its own email for the visit too, so that is a second email for the customer.{% endif %}</div>
+  {% elif fr_email_minutes and email_mode != "off" %}
+  {# With one email switched on, FieldRoutes' own email is the one the customer expects. #}
+  <div class="muted">Send it anyway sends our own email with the link, beside the email FieldRoutes sends for the visit.</div>
+  {% endif %}
   {% if video.email_skip == "overdue" %}
   {# After a backup was put back the server cannot know that this one was already emailed. #}
   <div class="muted">Its email was hours late. If a backup was put back, the customer may already have it:
@@ -43,7 +50,11 @@
       <input name="customer_id_other" inputmode="numeric" placeholder="FieldRoutes customer #" size="20">
       <button type="submit">Move it there</button>
     </form>
+    {% if fr_email_minutes %}
+    <div class="muted">The old link dies. The new link goes into FieldRoutes' email for the right customer, if that email has not gone yet. If it has, the video waits here for you.</div>
+    {% else %}
     <div class="muted">The old link dies. The right customer gets the email in about a minute.</div>
+    {% endif %}
   </details>
   {% endif %}
 {% endmacro %}

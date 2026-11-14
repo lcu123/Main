@@ -24,7 +24,7 @@ and the shared daily API quota are handled once.
 ```
 phone:   record → SAVE → on disk → register → upload to bucket → confirm → delete local file
 server:  awaiting_upload → held (tech's 10-minute undo) → sent → watched
-                                                        ↘ no_email (link live, no email: reason kept)
+                                                        ↘ no_email (link live, no email of ours: reason kept)
          unmatched (filmed as "not on my list", office picks the customer)
          pulled / deleted / replaced (link dead)
 ```
@@ -43,6 +43,117 @@ server:  awaiting_upload → held (tech's 10-minute undo) → sent → watched
   property each send their own video, tied to their own appointments; the customer gets
   one email per video, naming the tech and the service. A missing video is flagged for
   the tech who owes it. A helper's video covers the stop for the lead.
+- The owner can have FieldRoutes' own after-service email carry the link instead of
+  ours: one email, not two. It is switched off. See "One email" below.
+
+## One email: the link inside FieldRoutes' own email
+
+The owner's decision of Nov 14, 2026: after a visit the customer gets one email, not
+two, with the video one tap away inside it. So the link rides in the email FieldRoutes
+already sends. Built, tested on the fake FieldRoutes, and **switched off**: the setting
+`fr_email_minutes` on the office's Settings page is 0, and at 0 the server does exactly
+what it did before. The write it rests on has **never been run on the live account**;
+[`GO-LIVE.md`](GO-LIVE.md) has the test the owner runs on the test customer first.
+
+How it works:
+
+1. In FieldRoutes the office sets the after-service email ("Service Followup Email") to
+   go 30 minutes or 1 hour after a visit is completed, and puts `{{techComments}}` in
+   its body. FieldRoutes prints the technician's comments there. Nothing in the API
+   reaches either setting.
+2. On our Settings page the owner picks the same number (30 or 60). The page refuses a
+   tech's hold that does not fit inside it (the hold has to be 10 minutes shorter), and
+   refuses it while "Overdue hours" is 0, because that number is the only limit on how
+   long a video waits for its visit to be completed.
+3. When a video is let go (the tech's hold is over, and every check that lets a video
+   go out today has passed: the route, the overdue rule, a customer who stopped video
+   emails, no email address on file), the server looks at the tech's own appointments
+   at that stop:
+   - **None completed yet**: nothing is due. The video is still `held` meanwhile, so
+     the tech can still delete it or record again. During work hours the day's list
+     is read every five minutes anyway and the video works from that. After hours,
+     and for a day that is over, the list is read for it every 15 minutes (with 30
+     picked) or every 30 (with 60): half of FieldRoutes' delay, so a completion is
+     seen with the other half left to add the line in (`videos.wait_read`). No
+     customer and no bucket is read for a waiting video. The existing overdue rule is
+     the only limit on the wait.
+   - **One is completed and its email has not gone**: the first such one is picked. "Not
+     gone" means now is at least 5 minutes before completion time + the 30 or 60. In
+     one save the video is settled (`no_email` with `email_skip = fr_email`: it went
+     out, and the tech's stop locks as for any sent video), the usual internal note is
+     queued, and one outbox row of the kind `comment` is queued with the appointment,
+     the line, and its deadline.
+   - **Completed, and too late for every one**: before it says so the server reads
+     those appointments once. If the link is already in the comments (a database
+     backup was put back, and the line went in before it), the video is settled as in
+     FieldRoutes' email. If not, it is held for the office (`email_skip = fr_missed`,
+     flag "Video not in FieldRoutes' email: the office decides"), like the other
+     holds: Send it anyway (our own email) or Pull. No second email goes by itself.
+4. The outbox works on the line, comment rows first. A row is looked at more than
+   once (`videos._write_comment`):
+   - **Writing.** `fr.add_to_tech_comments` reads the appointment fresh, refuses for
+     good unless it is that customer's, its status is exactly "1" and the read carries
+     the technician's comments, keeps his own words, and adds a blank line and our
+     line: `appointment/complete` with exactly `appointmentID` and `completionNotes`.
+     The write follows the read at once and is sent one time: the shared client's own
+     retry is switched off for it, and the line does not start unless there is room
+     under the per-minute limit for all its calls, because a retry or a wait for room
+     would put up to minutes between the read and the send. Then the appointment is
+     read again. The line counts as in only when that read shows it.
+     If anything else on the visit reads differently (status, completion time, who
+     serviced or completed it, the times, the invoice number) or his words did not
+     come back as they were, the office gets the flag "A visit changed in FieldRoutes
+     when a video link was added: check it". If the link is already in the comments
+     nothing is written, so a try cut off by a restart, or one whose answer was lost,
+     is simply tried again. When FieldRoutes does not answer, the next try is a minute
+     later, then two, two, three and every five, the last one a minute before the
+     deadline.
+   - **Too late.** Past the deadline nothing is written to that appointment. The
+     server reads it first: an earlier try may have got through. Link there: it is
+     in. Not there: the tech's next completed appointment at the stop whose email has
+     not gone gets the line, or, when there is none, the row is closed and the video
+     becomes the same hold in one save. Could not read: the flag says the server
+     cannot tell, and to look in FieldRoutes before sending anything; the server
+     reads again every five minutes for up to six hours and then puts the flag
+     right (`videos._settle_unsure`), or closes it if the link is there after all.
+   - **The last look.** Two minutes before the deadline the appointment is read once
+     more. The comments can be saved again after the line went in (the tech fixes his
+     note in FieldRoutes' app, a phone that was offline hands in its copy late), and
+     that save has no line of ours. Still there: done. Gone: the line is added again
+     under the new words. Gone and too late: the hold, with a flag that says what
+     happened.
+
+What decides whether a video goes this way: the setting is 30 or 60, `FR_WRITES` is on,
+and the customer is inside `FR_WRITE_CUSTOMER_IDS` when that list is set. That list is
+how the owner tries it on the test customer alone; everybody else's video then goes as
+before. Once a person presses Send it anyway on a video, it goes as our own email.
+
+Why the write is fenced in: `appointment/complete` is the call the mobile app uses to
+complete a visit. Its `status` defaults to Completed and it runs FieldRoutes' invoicing
+logic, so on a pending appointment it would complete it and make a real invoice.
+FieldRoutes documents that on an already-completed appointment it only updates what is
+sent. The server never sends a status, reads immediately before every write, and
+`tests/test_video_fr_email.py` proves on the fake that it never calls it on anything
+but that customer's completed appointment. What stays open is the fraction of a second
+between FieldRoutes answering the read and taking the write: a visit set back to
+pending in exactly that moment would be completed by the call. Nothing outside
+FieldRoutes can close that. The read after the write sees it and the office is told.
+
+What the office sees: "Waiting for the tech to complete the visit" until he does,
+"Going into FieldRoutes' email" while the line waits to be written, "Link added for
+FieldRoutes' email · 2:36 PM" once it is in, and "In FieldRoutes' email · 2:36 PM"
+after the last look (only then is it counted as sent in the stats). The server cannot
+see what happens in the last minutes before FieldRoutes sends, or whether it sent.
+The line stays in FieldRoutes whatever happens to the video later: after a pull, a
+"not my home" or the keep time, the link in an old email or report opens the page
+that says the video is no longer available. A video that is pulled and put back on
+the same customer gets no second line; it waits for the office.
+
+A deploy rolled back to a server from before this was built: that server marks an
+outbox row of a kind it does not know as done and writes nothing. The new server does
+not take such a row for a line that went in (only its own marks count,
+`videos._line_in`) and puts it back in line. The old server also does not know the
+setting, so set it back to "Our own email" before rolling back.
 
 ## What the server checks by itself
 
@@ -55,6 +166,9 @@ server:  awaiting_upload → held (tech's 10-minute undo) → sent → watched
 | Customer has no usable email | When the email would go | Link saved as a FieldRoutes note, office flag. |
 | The visit left the route, or it is a second video for one visit | When the email would go | The video waits for the office: no email, nothing written, an office flag, "Send it anyway" and "Pull". See "When the route changes during the day". |
 | The email is hours late | When the email would go, and when the route would let a waiting video go | The same: it waits for the office. Its flag also says what the route says about the visit. See "What survives a restart". |
+| The video is too late for FieldRoutes' own email (only with "One email" switched on) | When the video is let go, and again just before its line is written | The server reads the visit first. Link already there: it is in. If not: it waits for the office, with the flag "Video not in FieldRoutes' email: the office decides". No second email goes by itself. |
+| The line is still in the technician's comments (only with "One email") | Right after it is written, and once more two minutes before the last moment it can be added | Gone at the last look: added again. Gone and too late: it waits for the office, with a flag. |
+| Nothing but the comments changed on the visit when the line was added (only with "One email") | Right after every write | Office flag at once: "A visit changed in FieldRoutes when a video link was added: check it". |
 | The file is in the bucket and is the one that was confirmed | Before an email goes and each time a customer presses play | A file with another ETag, or one the bucket itself says is gone, is pulled and flagged. On an unclear answer (a bare "not found", a page of words, no ETag) nothing is pulled. |
 | FieldRoutes write failed | After 8 tries over a day | Office flag. Writes wait in an outbox meanwhile. |
 | FieldRoutes write cut off by a restart | When the server is back | Not tried again, so nothing is written twice. Office flag, with what to add by hand. |
@@ -154,8 +268,13 @@ Nothing reaches a customer or FieldRoutes until someone turns it on.
 server. Every other variable is listed in [`.env.example`](../../.env.example).
 Things the owner can change without a deploy (video length, hold time, alert
 timing, email wording, which services need a video, whether a video for a visit
-that left the route waits for the office, and how many hours late an email may
-be before it waits too) live on the office page under Settings.
+that left the route waits for the office, how many hours late an email may
+be before it waits too, and which email carries the link) live on the office
+page under Settings.
+
+"One email" (`fr_email_minutes`, off) is a setting and not a variable, so the
+owner can switch it off in a second. It does nothing while `FR_WRITES` is off,
+and with `FR_WRITE_CUSTOMER_IDS` set it reaches only those customers.
 
 ## What survives a restart
 
@@ -354,6 +473,16 @@ Writes, all through an outbox that retries: `note/create` (the link),
 `review/create` (the score), `task/create` (tech recommended something). A row
 is claimed before it is written, so two servers never write the same one.
 
+With "One email" switched on, each video costs three `appointment/get` and one
+`appointment/complete` more (read, write, read back, and the last look), and
+one `customer/get` as an email would. A video that is too late costs one
+`appointment/get`. While a video waits for its visit to be completed, no
+customer is read. During work hours it reads nothing of its own. After hours,
+and for a day that is over, that day's list is read 4 times an hour with 30
+minutes picked and 2 times with 60 (`appointment/search`, plus `route/search`
+on a day where an appointment has no tech of its own). With "Overdue hours"
+raised to 24 that is at most about 190 reads for one day's waiting videos.
+
 Checked against a real day (Nov 12, 2026, 44 completed appointments, 4 techs):
 `assignedTech` on the appointment matched the route's tech and `servicedBy` on
 every one, so stops are grouped by `assignedTech` with the route as fallback.
@@ -500,7 +629,43 @@ Proven:
   stop's window about half the time. A time mismatch means something; a time
   match says little.
 
+- "One email" on the fake FieldRoutes (`tests/test_video_fr_email.py`, on SQLite
+  and on Postgres). The fake models `appointment/complete` as FieldRoutes'
+  help page describes it, including that the same call completes a pending
+  appointment, and can be told to do what the help page says it does not (move
+  the completion time, drop the comments, store them differently). Covered:
+  off is the old server and never calls it; one call with two parameters and
+  the technician's words kept as typed; the write sent once and never again
+  without a fresh read; nothing waiting between read and write; a visit
+  changed in that moment, or by the call itself, told to the office; a read
+  without the comments refused; filmed first and completed later; 30 and 60;
+  too late at release; FieldRoutes down for minutes, and until after the
+  deadline; a write whose answer was lost; a line saved over before the email
+  goes; Send it anyway, Keep it and Pull; never on a pending, cancelled,
+  no-show, deleted or another customer's appointment; a line already there;
+  the server killed before and after every save; two servers side by side; a
+  backup put back; a row closed by the server from before this build; the
+  test-customer list; several appointments, two techs, a helper; what a wait
+  costs in reads.
+
 Not proven until it runs on real phones with real accounts:
+
+- **"One email" against the live account. None of it has run there.** Not
+  proven: that `appointment/complete` on a completed appointment only updates
+  the comments (no second invoice, nothing new in QuickBooks, no second email
+  or text, the completion time, the technician, the times and the products
+  left alone); that `appointment/get` returns a technician's typed comments
+  in `notes` (all 50 that were read live were empty; the server refuses to
+  write on a read without the field); that FieldRoutes stores the comments as
+  they are sent (an apostrophe, an "&", line breaks, a long comment); what
+  FieldRoutes' answer to the call carries; that FieldRoutes' email shows
+  `{{techComments}}` with a link a thumb can tap; that the email is timed
+  from the `dateCompleted` the server reads, also for a visit completed with
+  no signal; what FieldRoutes' own app does to the line when a tech saves his
+  comments again; that FieldRoutes sends one email per appointment; and
+  whether its email goes to a customer whose email reminders are off. The
+  owner's test in [`GO-LIVE.md`](GO-LIVE.md) covers all but the last two, and
+  the server itself raises a flag on the first, third and fourth.
 
 - Recording, background upload and speech-to-text on a physical iPhone. The
   simulator has no camera, so the UI tests use a stand-in recorder that writes
