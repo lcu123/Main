@@ -198,8 +198,10 @@ Proven:
   the page offers a link that opens the video by itself).
 
   Running the page in Firefox found one fault no other browser showed: now and
-  then a frozen video got no "your signal is weak" note. It is fixed, with a
-  test that sends the player's events in Firefox's order.
+  then a frozen video got no "your signal is weak" note, because Firefox sends
+  the player's events in an order the page did not expect. The page no longer
+  leans on those events: while a video is playing it looks at the picture once
+  a second, and says so when it has not moved for six.
 
   What a customer gets on each kind of screen:
 

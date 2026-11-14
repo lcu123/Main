@@ -23,7 +23,9 @@
   var mark = 0;       // where the picture was at the last error
   var place = 0;      // where the picture was at the last reload (a failed load forgets it)
   var born = now();   // when the link the player holds was signed
-  var stuck = -1;     // where the picture was when it began to wait
+  var stuck = -1;     // where the picture was when it was last seen to move (-1: not looking)
+  var since = 0;      // when that was
+  var shut = false;   // the customer put the weak-signal note away; it stays away until the picture moves
   var slow = 0;
   var late = 0;
 
@@ -54,16 +56,42 @@
     below();
     setTimeout(below, 400); // and once more when full screen has let go
   }
-  function quiet(keep) {
-    clearTimeout(slow);
-    clearTimeout(late);
-    stuck = -1;
-    if (!box || keep || box.hidden) return;
+  function hide() {
+    if (!box || box.hidden) return;
     // Hiding the note while it holds the focus would drop a keyboard or a TV remote back to
     // the top of the page: hand the focus to the player.
     var held = document.activeElement === box;
     box.hidden = true;
     if (held) { try { video.focus(); } catch (e) {} }
+  }
+  function quiet(keep) {
+    clearTimeout(slow);
+    clearTimeout(late);
+    stuck = -1;
+    if (!keep) hide();
+  }
+
+  // A weak signal. While the video is meant to be playing the page looks at it once a second.
+  // If the picture has not moved for six seconds it says so; when it moves again the note
+  // goes. It does not lean on the browser's own events for this: Firefox sends "waiting" and
+  // the picture's last step in orders that left a frozen video with no word at all.
+  function look() {
+    clearTimeout(slow);
+    if (video.error || video.paused || video.ended) { stuck = -1; return; }
+    if (video.currentTime !== stuck) {
+      stuck = video.currentTime;
+      since = now();
+      shut = false;
+      if (box && !box.hidden && box.textContent === SLOW) hide();
+    } else if (!shut && now() - since >= 6000 && box && (box.hidden || box.textContent !== SLOW)) {
+      say(SLOW);
+    }
+    slow = setTimeout(look, 1000);
+  }
+  function watch() {
+    if (stuck < 0) { stuck = video.currentTime; since = now(); shut = false; }
+    clearTimeout(slow);
+    slow = setTimeout(look, 1000);
   }
   function start() { var p = video.play(); if (p && p["catch"]) p["catch"](function () {}); }
 
@@ -122,38 +150,34 @@
     if (video.error) return; // a tap on a dead player is not a viewing
     wanted = true;
     if (video.readyState > 0) tell(); // nor is a press on a player with nothing loaded
+    watch();
   });
   video.addEventListener("playing", function () {
     if (video.error) return;
-    quiet();
+    clearTimeout(late);
+    if (box && box.textContent !== SLOW) hide(); // the weak-signal note goes when the picture is seen to move
     presses = 0;
     tell();
+    watch();
   });
   video.addEventListener("loadeddata", function () {
     // A try by hand that loaded but was not allowed to start: the player is ready, one tap plays.
-    if (!video.error && box && !box.hidden && TRYING && box.textContent === TRYING) quiet();
+    if (!video.error && box && TRYING && box.textContent === TRYING) hide();
   });
-  video.addEventListener("pause", function () { clearTimeout(slow); if (!video.error) wanted = false; });
+  video.addEventListener("pause", function () {
+    clearTimeout(slow);
+    stuck = -1;
+    if (box && box.textContent === SLOW) hide(); // paused, it will not "carry on by itself"
+    if (!video.error) wanted = false;
+  });
   video.addEventListener("ended", function () { wanted = false; run = 0; });
   video.addEventListener("waiting", function () {
-    // A weak signal: say so only if the picture has not moved for six seconds.
-    clearTimeout(slow);
-    stuck = video.currentTime;
-    slow = setTimeout(function () {
-      if (!video.error && !video.paused && video.currentTime === stuck) say(SLOW);
-    }, 6000);
+    watch();
     overdue();
   });
   video.addEventListener("seeking", overdue);
   video.addEventListener("timeupdate", function () {
     if (video.error) return;
-    if (stuck >= 0 && video.currentTime !== stuck) {
-      // Firefox now and then reports the wait a moment before the picture's last step. While
-      // the player still has nothing to show next, that step is where it stopped, not "it
-      // is moving again": keep counting the six seconds from there.
-      if (video.readyState < 3 && box && box.hidden) stuck = video.currentTime;
-      else quiet();
-    }
     if (run && video.currentTime > mark + 3) run = 0; // it really got going again
   });
   video.addEventListener("error", failed);
@@ -166,7 +190,7 @@
     var t = now();
     if (t - pressed < 1000) return; // a double tap is one press
     pressed = t;
-    if (!video.error) { quiet(); return; }
+    if (!video.error) { shut = true; hide(); return; } // the weak-signal note: put away, nothing else
     presses += 1;
     // A second press in a row opens the page again: if the video was taken down, that page
     // says so. Not while the device says it is offline: that would swap this page for the

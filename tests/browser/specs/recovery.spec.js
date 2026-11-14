@@ -308,40 +308,41 @@ test.describe('a weak signal', () => {
     expect(await sourceReloads(page), 'a hiccup must not make the page fetch the video afresh').toBe(0);
   });
 
-  test('a browser that reports the wait a moment before the picture\'s last step still gets the note', async ({ page, clip }) => {
-    // Firefox does this now and then: "waiting" arrives, and after it one more "timeupdate"
-    // with the picture a frame further on. The page took that last step for "it is moving
-    // again" and dropped its six-second count: a frozen picture, and no word to the customer
-    // (seen in CI as a weak-signal test that failed about one run in three, in Firefox only).
-    // The order of events cannot be forced on a real player, so the player's own readings
-    // are stood in for here; the page's script is the real one.
+  test('whatever order the browser sends its events in, a frozen picture gets the note and a moving one does not', async ({ page, clip }) => {
+    // Firefox now and then sends "waiting" and then one more "timeupdate" with the picture a
+    // frame further on, or "playing" with nothing to play. The page used to count its six
+    // seconds from those events, and such an order stopped the count for good: a frozen
+    // picture, and no word to the customer (seen in CI as a weak-signal test that failed
+    // about one run in three, in Firefox only). The page now looks at the picture itself,
+    // once a second. The order of events cannot be forced on a real player, so the player's
+    // own readings are stood in for here; the page's script is the real one.
     await page.goto(clip.watch);
     await waitForMetadata(page);
     await page.evaluate(() => {
       const v = document.getElementById('v');
-      const fake = { time: 2.48, ready: 2 };
+      const fake = { time: 2.48, ready: 2, moving: 0 };
       window.__fake = fake;
       Object.defineProperty(v, 'currentTime', { configurable: true, get: () => fake.time });
       Object.defineProperty(v, 'readyState', { configurable: true, get: () => fake.ready });
       Object.defineProperty(v, 'paused', { configurable: true, get: () => false });
-      v.dispatchEvent(new Event('waiting'));  // the player says it is starved...
+      v.dispatchEvent(new Event('play'));
+      v.dispatchEvent(new Event('waiting'));    // the player says it is starved...
       fake.time = 2.52;
-      v.dispatchEvent(new Event('timeupdate')); // ...and then reports its last step
+      v.dispatchEvent(new Event('timeupdate')); // ...then reports its last step...
+      fake.ready = 4;
+      v.dispatchEvent(new Event('playing'));    // ...and even says it is playing, with the picture still
     });
     await page.waitForTimeout(4500);
     await expect(note(page), 'the note came before six seconds were up').toBeHidden();
-    await expect(note(page), 'six seconds of a frozen picture and not a word to the customer').toHaveText(SLOW, { timeout: 4000 });
-    // And when the picture does move on with data in hand, the note goes.
-    await page.evaluate(() => { const v = document.getElementById('v'); window.__fake.ready = 4; window.__fake.time = 3.1; v.dispatchEvent(new Event('timeupdate')); });
-    await expect(note(page)).toBeHidden();
-    // A step with data in hand during the count means it really is playing: no note six seconds later.
-    await page.evaluate(() => {
-      const v = document.getElementById('v');
-      window.__fake.ready = 2; v.dispatchEvent(new Event('waiting'));
-      window.__fake.ready = 4; window.__fake.time = 3.6; v.dispatchEvent(new Event('timeupdate'));
-    });
-    await page.waitForTimeout(6600);
-    await expect(note(page), 'a video that is playing again was told its signal is weak').toBeHidden();
+    await expect(note(page), 'six seconds of a frozen picture and not a word to the customer').toHaveText(SLOW, { timeout: 5000 });
+    // The picture moves again: the note goes, and stays away while it keeps moving.
+    await page.evaluate(() => { window.__fake.moving = setInterval(() => { window.__fake.time += 0.25; }, 250); });
+    await expect(note(page), 'the picture is moving again but the note still says the signal is weak').toBeHidden({ timeout: 4000 });
+    await page.waitForTimeout(7000);
+    await expect(note(page), 'a video that is playing was told its signal is weak').toBeHidden();
+    // It freezes again, with no event at all this time: the note comes back by itself.
+    await page.evaluate(() => clearInterval(window.__fake.moving));
+    await expect(note(page), 'a second freeze, with no event from the browser, got no note').toHaveText(SLOW, { timeout: 9000 });
   });
 
   test('pressing the weak-signal note only puts it away', async ({ page, server }, testInfo) => {
