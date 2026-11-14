@@ -332,11 +332,10 @@ Still not closed, and small:
 - A FieldRoutes write that was waiting in the outbox at the very moment a
   backup was taken is waiting again after that backup is put back, and is made
   again. The safe steps in `GO-LIVE.md` (FieldRoutes writes off first) cover it.
-- Whether the live bucket words a missing file the standard way (`NoSuchKey`)
-  has not been checked against it. If it does not, a file that really is gone
-  is never pulled by the server: the customer's player fails, the email for it
-  waits, and the office gets the "cannot tell whether a video's file is there"
-  flag after half an hour.
+- The live bucket words a missing file the standard way (`NoSuchKey`): seen
+  on Nov 14, 2026, when the live server's start-up check asked it about a file
+  that is not there and logged "the bucket answers". Whether it answers the
+  list call (asked only of a database with no video at all) has not been seen.
 
 ## FieldRoutes use
 
