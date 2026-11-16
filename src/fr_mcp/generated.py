@@ -1,8 +1,8 @@
 """Optional: one typed MCP tool per FieldRoutes endpoint, built from the spec at startup.
 
 Off by default. The 25 curated tools in `server.py` cost roughly 2k tokens of
-context; exposing all 187 generated ones (`fr_{entity}_{action}`) costs
-roughly 70k. Turn generation on with:
+context; exposing all 234 generated ones (`fr_{entity}_{action}`) costs
+roughly 60k. Turn generation on with:
 
 - `FR_EXPOSE_ALL=1` -- every entity.
 - `FR_EXPOSE_ENTITIES=customer,appointment,task` -- just those entities.

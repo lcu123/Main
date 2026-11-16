@@ -263,9 +263,147 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Filter to contacts last updated on or after this date (`YYYY-MM-DD`). Useful for incremental sync.",
+     "name": "dateUpdated",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Filter to contacts created on or after this date (`YYYY-MM-DD`).",
+     "name": "dateCreated",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "search"
+  },
+  "additionalContact/update": {
+   "action": "update",
+   "description": "Updates an existing additional contact record. Only the fields supplied are modified; omitted fields are left unchanged. Returns the updated `additionalContactID`.",
+   "entity": "additionalContact",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the additional contact to update.",
+     "name": "additionalContactID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "First name of the contact.",
+     "name": "fname",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Last name of the contact.",
+     "name": "lname",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Company or business name.",
+     "name": "companyName",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Street address.",
+     "name": "address",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "City.",
+     "name": "city",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Two-letter state code (e.g. `TX`).",
+     "name": "state",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Zip / postal code.",
+     "name": "zip",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Primary phone number. Non-numeric characters and leading `1` are stripped automatically.",
+     "name": "phone",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Extension for the primary phone number. Non-numeric characters are stripped.",
+     "name": "phoneExt",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Secondary phone number. Non-numeric characters and leading `1` are stripped automatically.",
+     "name": "phone2",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Extension for the secondary phone number. Non-numeric characters are stripped.",
+     "name": "phone2Ext",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Email address for the contact. Must be a valid email format.",
+     "name": "email",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Set to `1` to opt the contact in for SMS reminders.",
+     "name": "smsReminders",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Set to `1` to opt the contact in for phone call reminders.",
+     "name": "phoneReminders",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Set to `1` to opt the contact in for email reminders.",
+     "name": "emailReminders",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Role of the contact. Valid values: `SERVICE`, `BILLING`, `SERVICE_BILLING`, `BUSINESS`, `TERMITE`.",
+     "name": "contactType",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "The type of additional contact, referencing the configured contact types (Admin > Preferences > Customer Preferences > Additional Contact Types).",
+     "name": "additionalContactTypeID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Reference to a business contact record, if applicable.",
+     "name": "businessContactID",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Update"
   },
   "applicationMethod/get": {
    "action": "get",
@@ -773,6 +911,27 @@
      "name": "sequence",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Lock or unlock the appointment after creation. `1` = lock, `0` = unlock.",
+     "name": "lock",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Employee ID to attribute the lock to. If set without `lock`, the appointment is automatically locked by this employee.",
+     "name": "lockedBy",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Override the scheduling group. Normally auto-derived from `spotID` or `routeID`.",
+     "name": "groupID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "create"
@@ -806,9 +965,129 @@
      "name": "includeCustomFields",
      "required": false,
      "type": "int"
+    },
+    {
+     "description": "Send as `1` to include the `commissionSplit` array of technician commission data.",
+     "name": "includeCommissionSplit",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Send as `1` to include an array of generic flag assignments associated with each appointment.",
+     "name": "includeGenericFlagAssignments",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "getBulk"
+  },
+  "appointment/reschedule": {
+   "action": "reschedule",
+   "description": "Reschedules an existing appointment to a new spot or time. Internally this **creates a new appointment** and marks the original as rescheduled (`status = -2`), preserving an audit link via the new appointment's `originalAppointmentID`. Use this in preference to `/update` when moving an appointment, because it carries forward the reschedule reason and keeps the original record intact for reporting.\n\n**Field Defaulting** Every field other than `appointmentID` and `spotID` is optional. Any field you omit is copied from the original appointment. Send only the values that should actually change. **Status Restrictions** Only appointments in `Pending` status (`0`) can be rescheduled. Attempting to reschedule an appointment that is already **Rescheduled** (`-2`), **Cancelled** (`-1`), **Completed** (`1`), or **No Show** (`2`) returns a validation error.",
+   "entity": "appointment",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The appointment to reschedule. Must belong to the authenticated office and be in `Pending` status.",
+     "name": "appointmentID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "The route spot that the new appointment will occupy. The spot's route must allow API scheduling (or you must supply `bypassSchedulePermission`).",
+     "name": "spotID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "Subscription the new appointment belongs to. Defaults to the original appointment's value.",
+     "name": "subscriptionID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Service type ID (`typeID`) for the new appointment. Defaults to the original appointment's value.",
+     "name": "type",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Start of the appointment time window. Defaults to the original appointment's value.",
+     "name": "start",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "End of the appointment time window. Defaults to the original appointment's value.",
+     "name": "end",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Length of the appointment in minutes. Defaults to the original appointment's value.",
+     "name": "duration",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Employee that the appointment is recorded against. Defaults to the original appointment's value.",
+     "name": "employeeID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Appointment notes. Defaults to the original appointment's notes when omitted or empty.",
+     "name": "notes",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Employee ID of the technician assigned to the appointment. Defaults to the original appointment's value.",
+     "name": "assignedTech",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Minutes ahead of the start time to call the customer. Defaults to the original appointment's value.",
+     "name": "callAhead",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Interior service flag. Allowed values: `0` (unspecified), `1` (Exterior only), `2` (Interior needed). Defaults to the original appointment's value.",
+     "name": "doInterior",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "ID from the `appointmentRescheduleReasons` table. Must belong to the authenticated office when provided.",
+     "name": "rescheduleReasonID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Free-text notes accompanying the reschedule reason.",
+     "name": "rescheduleReasonNotes",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Set to `1` to schedule onto a locked route. Defaults to `0`.",
+     "name": "bypassLockedRoute",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Set to `1` to bypass the route's `canSchedule` API permission. Defaults to `0`.",
+     "name": "bypassSchedulePermission",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Reschedule"
   },
   "appointment/search": {
    "action": "search",
@@ -980,6 +1259,34 @@
      "description": "{0,1} Sends the resolved objects for the first 1000 IDs. If there are more than 1000 items an additional property appointmentIDsNoDataExported will specify the items that are not included in the resolved appointment array.",
      "name": "includeData",
      "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Filter by the employee ID who owns the appointment.",
+     "name": "employeeIDs",
+     "required": false,
+     "source": "docs",
+     "type": "array"
+    },
+    {
+     "description": "Filter to find rescheduled appointments created from a specific original appointment.",
+     "name": "originalAppointmentID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Filter for appointments whose Welcome Checklist completion percentage is greater than or equal to this value (`0`\u2013`100`). Pair with `welcomeChecklistCompletionMax` to bound a range.",
+     "name": "welcomeChecklistCompletionMin",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Filter for appointments whose Welcome Checklist completion percentage is less than or equal to this value (`0`\u2013`100`). Pair with `welcomeChecklistCompletionMin` to bound a range.",
+     "name": "welcomeChecklistCompletionMax",
+     "required": false,
+     "source": "docs",
      "type": "integer"
     }
    ],
@@ -1163,6 +1470,27 @@
      "description": "employeeID of employee that cancelled the appointment, if setting to status No Show",
      "name": "cancelledBy",
      "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Wind speed in MPH. Must be a numeric value.",
+     "name": "windSpeed",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Wind direction. Must be one of: `N`, `NW`, `NE`, `S`, `SW`, `SE`, `W`, `E`.",
+     "name": "windDirection",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Temperature in degrees Fahrenheit. Must be numeric. Send empty string to clear.",
+     "name": "temperature",
+     "required": false,
+     "source": "docs",
      "type": "integer"
     }
    ],
@@ -1576,6 +1904,202 @@
    ],
    "summary": "search"
   },
+  "bundleSubscription/create": {
+   "action": "create",
+   "description": "Creates a new bundle subscription linking a subscription to a bundle template. Returns the newly created `bundleSubscriptionID`.\n\n**One Bundle per Subscription** A subscription can only belong to one bundle at a time. Attempting to create a bundle subscription for a subscription that is already associated with a bundle will return an error.",
+   "entity": "bundleSubscription",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Subscription ID to associate with the bundle. Must belong to an office authorized by your API credentials.",
+     "name": "subscriptionID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "Template ID for the bundle. Must belong to an office authorized by your API credentials.",
+     "name": "serviceBundleTemplateID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "default": "null",
+     "description": "Parent bundle ID to create a child bundle entry. Omit or set to `null`/`0` for root bundles. When provided, the parent must exist and belong to an authorized office.",
+     "name": "parentBundleID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "default": "0",
+     "description": "Bundle billing enabled. Allowed values: `0` (per-service billing) or `1` (consolidated bundle billing).",
+     "name": "isBundleBilling",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Create"
+  },
+  "bundleSubscription/delete": {
+   "action": "delete",
+   "description": "Permanently removes a bundle subscription record. The deletion is performed by looking up the underlying `subscriptionID` and removing the bundle link row.\n\n**Irreversible** Delete operations cannot be undone. Verify the target record before calling this endpoint.",
+   "entity": "bundleSubscription",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the bundle subscription to delete. Must exist and belong to an office authorized by your API credentials.",
+     "name": "bundleSubscriptionID",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Delete"
+  },
+  "bundleSubscription/get": {
+   "action": "get",
+   "description": "Retrieves full bundle subscription records for the given IDs. Returns the fields described in [Data Model](/apidocs/bundle-subscriptions-get#data-model). Results are limited to 1,000 records per request and ordered by `bundleSubscriptionID ASC`.",
+   "entity": "bundleSubscription",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Array of bundle subscription IDs to retrieve. Records must belong to an office authorized by your API credentials.",
+     "name": "bundleSubscriptionIDs",
+     "required": true,
+     "type": "array"
+    }
+   ],
+   "source": "docs",
+   "summary": "Get"
+  },
+  "bundleSubscription/search": {
+   "action": "search",
+   "description": "Returns a list of bundle subscription IDs (and optionally full records) matching the supplied filters. All filters are combined with AND logic. Results are ordered by `bundleSubscriptionID ASC` and limited to 50,000 IDs per request.",
+   "entity": "bundleSubscription",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Filter to bundles managed by the specified office(s). Accepts a single ID or a comma-separated list.",
+     "name": "officeIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter to specific bundle subscription IDs.",
+     "name": "bundleSubscriptionIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter to bundles created from the specified template(s).",
+     "name": "serviceBundleTemplateIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter to bundles linked to the specified subscription(s).",
+     "name": "subscriptionIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter to child bundles of the specified parent bundle(s).",
+     "name": "parentBundleIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter to bundles belonging to the specified customer(s).",
+     "name": "customerIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter by bundle billing mode: `0` = per-service billing, `1` = consolidated bundle billing.",
+     "name": "isBundleBilling",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Exact date filter on creation date.",
+     "name": "dateCreated",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Return bundles created on or after this date (`YYYY-MM-DD`).",
+     "name": "dateCreatedStart",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Return bundles created on or before this date (`YYYY-MM-DD`).",
+     "name": "dateCreatedEnd",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Exact date filter on last-updated date.",
+     "name": "dateUpdated",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Return bundles updated on or after this date (`YYYY-MM-DD`).",
+     "name": "dateUpdatedStart",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Return bundles updated on or before this date (`YYYY-MM-DD`).",
+     "name": "dateUpdatedEnd",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "If `1`, return full records in addition to IDs. **Limited to 1,000 rows per request.**",
+     "name": "includeData",
+     "required": false,
+     "type": "boolean"
+    }
+   ],
+   "source": "docs",
+   "summary": "Search / List"
+  },
+  "bundleSubscription/update": {
+   "action": "update",
+   "description": "Modifies an existing bundle subscription. Pass only the fields you wish to change along with the required `bundleSubscriptionID`. Fields not included in the request are left unchanged.",
+   "entity": "bundleSubscription",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the bundle subscription to update. Must exist and belong to an office authorized by your API credentials.",
+     "name": "bundleSubscriptionID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "New template ID for the bundle. Must belong to an authorized office.",
+     "name": "serviceBundleTemplateID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "New parent bundle ID. Pass `0` to clear the parent (make this a root bundle). When setting a parent, the parent bundle must exist and belong to an authorized office.",
+     "name": "parentBundleID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Updated bundle billing mode. Allowed values: `0` or `1`.",
+     "name": "isBundleBilling",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Update"
+  },
   "cancellationReason/get": {
    "action": "get",
    "description": "Get Bulk data for cancellationReason. Accepts an array of reasonIDs. Returns a max of 1000 records.",
@@ -1647,6 +2171,13 @@
      "name": "changeIDs",
      "required": false,
      "type": "array"
+    },
+    {
+     "description": "If `1`, merge additional linked data into the response.",
+     "name": "dataLink",
+     "required": false,
+     "source": "docs",
+     "type": "boolean"
     }
    ],
    "summary": "getBulk"
@@ -1698,6 +2229,27 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Filter by the employee(s) who made the change.",
+     "name": "employeeIDs",
+     "required": false,
+     "source": "docs",
+     "type": "array"
+    },
+    {
+     "description": "Start of date range for when changes were made (inclusive, `>=`).",
+     "name": "dateChangedStart",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "End of date range for when changes were made (inclusive, `<=`).",
+     "name": "dateChangedEnd",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "search"
@@ -1906,6 +2458,84 @@
    ],
    "summary": "search"
   },
+  "collectionStage/get": {
+   "action": "get",
+   "description": "Retrieves one or more full collection stage records by their IDs. Records are filtered to the offices associated with the current API session. Only stages with `stageType = 'COLLECTION'` are returned.",
+   "entity": "collectionStage",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The primary key of the collection stage to retrieve.",
+     "name": "stageID",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Get (getData)"
+  },
+  "collectionStage/search": {
+   "action": "search",
+   "description": "Returns a list of collection stage IDs (and optionally full records) matching the supplied filters. All filters are combined with AND logic. Results are ordered by `stageID ASC` and limited to 50,000 rows.",
+   "entity": "collectionStage",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Filter by one or more stage IDs. Pass as a comma-separated list or array.",
+     "name": "stageIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter by the owning office ID. When omitted, results include stages from all offices accessible to your API credentials.",
+     "name": "officeID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "If `1`, return full records in addition to IDs. **Limited to 1,000 rows per request when data is included.**",
+     "name": "includeData",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Search / List"
+  },
+  "collectionStage/update": {
+   "action": "update",
+   "description": "Modifies an existing collection stage record. Only the fields you include in the request body will be updated; omitted fields retain their current values. The update is scoped to stages with `stageType = 'COLLECTION'`.",
+   "entity": "collectionStage",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the collection stage to update.",
+     "name": "stageID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "Updated display label for the collection stage.",
+     "name": "description",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Updated sequence number controlling display order. Lower values appear first.",
+     "name": "sequence",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Set to `1` to make the stage visible in the UI, or `0` to hide it.",
+     "name": "visible",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Update"
+  },
   "compassCustomer/get": {
    "action": "get",
    "description": "Get Bulk data for compassCustomer. Accepts an array of customerIDs. Returns a max of 1000 records.",
@@ -1917,6 +2547,13 @@
      "name": "customerIDs",
      "required": false,
      "type": "array"
+    },
+    {
+     "description": "If `1`, merge additional linked data into the response.",
+     "name": "dataLink",
+     "required": false,
+     "source": "docs",
+     "type": "boolean"
     }
    ],
    "summary": "getBulk"
@@ -1932,9 +2569,609 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Filter by office ID(s). Defaults to offices associated with your API key.",
+     "name": "officeIDs",
+     "required": false,
+     "source": "docs",
+     "type": "array"
+    },
+    {
+     "description": "Filter by specific customer ID(s).",
+     "name": "customerIDs",
+     "required": false,
+     "source": "docs",
+     "type": "array"
+    },
+    {
+     "description": "Filter by customer creation date. Supports operators: `=`, `!=`, `>=`, `<=`, `>`, `<`, `BETWEEN`, `IN`.",
+     "name": "dateAdded",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "search"
+  },
+  "condition/create": {
+   "action": "create",
+   "description": "Creates a new condition for a customer. The condition is stamped with the current server time as `dateFound` and begins in the open state (`resolved=0`).",
+   "entity": "condition",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The customer this condition is tied to. Must belong to an office associated with your API credentials.",
+     "name": "customerID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "Short description of the condition.",
+     "name": "description",
+     "required": true,
+     "type": "string"
+    },
+    {
+     "description": "Appointment ID during which the condition was observed.",
+     "name": "appointmentAdded",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "Type of condition. Must belong to your office. Defaults to `1`.",
+     "name": "conditionTypeID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Structure where the condition was found. When provided, the structure's `customerID` must match the `customerID` parameter.",
+     "name": "structureID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Specific location (room/area) within the structure.",
+     "name": "locationID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "`0` = Low, `1` = Medium, `2` = High. Defaults to `0`. Allowed values: `0`, `1`, `2`.",
+     "name": "severity",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Recommended remedial action.",
+     "name": "recommendation",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "`-1` = None, `0` = Customer, `1` = Company. Defaults to `0`. Allowed values: `-1`, `0`, `1`.",
+     "name": "responsibleParty",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Extended details or observation notes.",
+     "name": "details",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Action taken leading to resolution. Typically set later via `update` when the condition is resolved.",
+     "name": "correctiveAction",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Internal note.",
+     "name": "note",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Reusable condition template. When provided, the template's `conditionTypeID`, `description`, `severity`, `recommendation`, and `responsibleParty` pre-fill the new condition, and the template's recommended services are linked automatically. Any of those fields that you pass explicitly override the template value.",
+     "name": "conditionTemplateID",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Create"
+  },
+  "condition/createEncodedImage": {
+   "action": "createEncodedImage",
+   "description": "Uploads an image using a Base64-encoded payload submitted through standard POST parameters \u2014 an alternative to the multipart `createImage` endpoint for integrations that cannot produce multipart requests.",
+   "entity": "condition",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the condition to attach the image to.",
+     "name": "conditionID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "Full Base64 representation of the image file. The server decodes and validates this value; if decoding fails the request is rejected.",
+     "name": "encodedFile",
+     "required": true,
+     "type": "string"
+    },
+    {
+     "description": "Desired filename for the upload, including the file extension (e.g., `photo.jpg`). **Only alphanumeric characters and dots are retained** \u2014 all other characters are stripped for security.",
+     "name": "filename",
+     "required": true,
+     "type": "string"
+    },
+    {
+     "description": "Description for the image.",
+     "name": "description",
+     "required": false,
+     "type": "string"
+    }
+   ],
+   "source": "docs",
+   "summary": "Upload Image (Base64)"
+  },
+  "condition/createImage": {
+   "action": "createImage",
+   "description": "Uploads an image file for a condition using `multipart/form-data`. The file must be sent under the form field name `uploadFile`.",
+   "entity": "condition",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the condition to attach the image to.",
+     "name": "conditionID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "The image file itself, sent as a multipart form field named `uploadFile`.",
+     "name": "uploadFile",
+     "required": true,
+     "type": "file"
+    },
+    {
+     "description": "Description for the image.",
+     "name": "description",
+     "required": false,
+     "type": "string"
+    }
+   ],
+   "source": "docs",
+   "summary": "Upload Image (Multipart)"
+  },
+  "condition/createRecommendedService": {
+   "action": "createRecommendedService",
+   "description": "Links an existing service type to a condition. Both the condition and the service must belong to an office associated with your API credentials.",
+   "entity": "condition",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the condition.",
+     "name": "conditionID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "Foreign key to `serviceTypes`. Must belong to your office.",
+     "name": "serviceID",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Add a Recommended Service"
+  },
+  "condition/delete": {
+   "action": "delete",
+   "description": "Permanently removes a condition.",
+   "entity": "condition",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the condition to delete.",
+     "name": "conditionID",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Delete"
+  },
+  "condition/deleteRecommendedService": {
+   "action": "deleteRecommendedService",
+   "description": "Removes a recommended-service link from a condition. The `conditionServiceID` you pass must belong to the supplied `conditionID` \u2014 the API verifies this to prevent cross-condition deletions.",
+   "entity": "condition",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the condition.",
+     "name": "conditionID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "Primary key of the condition-service link to remove. Must belong to `conditionID`.",
+     "name": "conditionServiceID",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Remove a Recommended Service"
+  },
+  "condition/get": {
+   "action": "get",
+   "description": "Retrieves a single condition record by ID.",
+   "entity": "condition",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the condition to retrieve. Must belong to an office associated with your API credentials.",
+     "name": "conditionID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "If `1`, nest the condition's list of recommended services as `recommendedServices`. Unlike on `search`, this works directly here \u2014 no `includeData` flag needed.",
+     "name": "includeRecommendedServices",
+     "required": false,
+     "type": "boolean"
+    }
+   ],
+   "source": "docs",
+   "summary": "Get"
+  },
+  "condition/getRecommendedServices": {
+   "action": "getRecommendedServices",
+   "description": "Returns the list of recommended services linked to a single condition.",
+   "entity": "condition",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the condition.",
+     "name": "conditionID",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Get Recommended Services"
+  },
+  "condition/search": {
+   "action": "search",
+   "description": "Returns a list of condition IDs (and optionally full records) that match the supplied filters. All filters are combined with AND logic. Results are ordered by `conditionID` ascending and limited to 50,000 IDs per request.",
+   "entity": "condition",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Filter to specific condition IDs.",
+     "name": "conditionIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter by office (resolved via the owning customer's `officeID`).",
+     "name": "officeIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter to conditions belonging to specific customers.",
+     "name": "customerIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter to conditions tied to specific structures.",
+     "name": "structureIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter by condition type (e.g., termites, rodents, moisture).",
+     "name": "conditionTypeIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "`0` = Open, `1` = Resolved. Defaults to returning both `[0, 1]`.",
+     "name": "resolved",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "`0` = Low, `1` = Medium, `2` = High.",
+     "name": "severity",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "`-1` = None, `0` = Customer, `1` = Company.",
+     "name": "responsibleParty",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Start of a `dateFound` range (`>=`). Format `YYYY-MM-DD`.",
+     "name": "dateFoundStart",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "End of a `dateFound` range (`<=`). Format `YYYY-MM-DD`.",
+     "name": "dateFoundEnd",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Start of a `dateResolved` range (`>=`).",
+     "name": "dateResolvedStart",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "End of a `dateResolved` range (`<=`).",
+     "name": "dateResolvedEnd",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Filter to conditions added during a specific appointment.",
+     "name": "appointmentAdded",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "If `1`, return full records in addition to IDs. **Limited to 1,000 rows per request.**",
+     "name": "includeData",
+     "required": false,
+     "type": "boolean"
+    },
+    {
+     "description": "If `1`, nest each condition's list of recommended services as `recommendedServices`. Requires `includeData=1` to have any effect.",
+     "name": "includeRecommendedServices",
+     "required": false,
+     "type": "boolean"
+    }
+   ],
+   "source": "docs",
+   "summary": "Search / List"
+  },
+  "condition/unresolve": {
+   "action": "unresolve",
+   "description": "Re-opens a previously resolved condition. Use this when a resolution was recorded in error, or when the underlying issue has recurred and must be tracked again.\n\n**When to Use** Prefer `unresolve` over `update` with `resolved=0` when you want a dedicated, auditable action. Both paths clear the resolution state, but a dedicated endpoint reads more intentionally in downstream audit trails.",
+   "entity": "condition",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the condition to unresolve.",
+     "name": "conditionID",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Unresolve"
+  },
+  "condition/update": {
+   "action": "update",
+   "description": "Updates fields on an existing condition. Only the fields you send are modified \u2014 all other fields are preserved. The `customerID` and `appointmentAdded` of an existing condition cannot be changed.",
+   "entity": "condition",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the condition to update.",
+     "name": "conditionID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "New condition type. Must belong to your office.",
+     "name": "conditionTypeID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "New short description.",
+     "name": "description",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "New structure association. The structure must belong to the condition's existing `customerID`.",
+     "name": "structureID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "New location within the structure.",
+     "name": "locationID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Severity: `0`, `1`, or `2`.",
+     "name": "severity",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Updated recommended action.",
+     "name": "recommendation",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Responsible party: `-1`, `0`, or `1`.",
+     "name": "responsibleParty",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Updated extended details.",
+     "name": "details",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Actual action taken. Typically set together with `resolved=1`.",
+     "name": "correctiveAction",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Updated internal note.",
+     "name": "note",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "`0` = Open, `1` = Resolved. Setting `1` auto-stamps `dateResolved` (server time) and copies `appointmentAdded` into `appointmentResolved`. Setting `0` clears `dateResolved`, `appointmentResolved`, and `correctiveAction`.",
+     "name": "resolved",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Update"
+  },
+  "contactType/create": {
+   "action": "create",
+   "description": "Creates a new contact type to classify notes and different kinds of contact. The `systemNote` field is automatically set to `0` for all API-created records. Optionally assigns the new contact type to one or more categories.",
+   "entity": "contactType",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Name of the contact type (e.g. \"Follow-Up Call\", \"Complaint\").",
+     "name": "contactType",
+     "required": true,
+     "type": "string"
+    },
+    {
+     "default": "-1",
+     "description": "Office this contact type belongs to. Pass `-1` to make it globally available to all offices.",
+     "name": "officeID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "default": "1",
+     "description": "Visibility of the contact type. `1` = visible, `0` = hidden.",
+     "name": "visible",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "default": "[]",
+     "description": "Array of `contactTypeCategoryID` values to assign this contact type to. Each category ID is validated to ensure it exists and belongs to the authenticated office.",
+     "name": "categoryIDs",
+     "required": false,
+     "type": "array"
+    }
+   ],
+   "source": "docs",
+   "summary": "Create"
+  },
+  "contactType/get": {
+   "action": "get",
+   "description": "Retrieves one or more contact type records by their IDs, including nested category assignments. Results are scoped to the authenticated office plus global (`officeID = -1`) records. Limited to 1,000 records per request.",
+   "entity": "contactType",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The ID of the contact type to retrieve. May also accept multiple IDs from a prior search call.",
+     "name": "contactTypeID",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Get"
+  },
+  "contactType/search": {
+   "action": "search",
+   "description": "Returns a list of contact type IDs (and optionally full records) matching the supplied filters. All filters are combined with AND logic. Results are ordered by `contactTypeID ASC` and limited to 50,000 IDs.",
+   "entity": "contactType",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Filter to specific contact type IDs. Pass as a comma-separated list or array.",
+     "name": "contactTypeIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter by contact type name. Exact match.",
+     "name": "contactType",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Filter to contact types belonging to specific offices. Pass `-1` to include global contact types.",
+     "name": "officeIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter by visibility: `1` = visible only, `0` = hidden only. Omit to return all.",
+     "name": "visible",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "If `1`, return full records (including nested `contactTypeCategories`) in addition to IDs. **Limited to 1,000 rows per request.**",
+     "name": "includeData",
+     "required": false,
+     "type": "boolean"
+    }
+   ],
+   "source": "docs",
+   "summary": "Search / List"
+  },
+  "contactType/update": {
+   "action": "update",
+   "description": "Modifies an existing contact type. Pass only the fields you wish to change along with the required `contactTypeID`. All fields from the create operation are available but optional on update.\n\n**Category Replacement** When `categoryIDs` is provided on an update, the existing category assignments are **completely replaced**. All prior assignments are deleted and new ones are created from the supplied array. To retain existing categories, include their IDs in the array alongside any additions.",
+   "entity": "contactType",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the contact type to update.",
+     "name": "contactTypeID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "Updated name of the contact type.",
+     "name": "contactType",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Updated office assignment. `-1` for global.",
+     "name": "officeID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Updated visibility flag. `1` = visible, `0` = hidden.",
+     "name": "visible",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Replacement set of category IDs. Existing assignments are deleted and re-created from this array. Each ID is validated against the authenticated office.",
+     "name": "categoryIDs",
+     "required": false,
+     "type": "array"
+    }
+   ],
+   "source": "docs",
+   "summary": "Update"
   },
   "contract/create": {
    "action": "create",
@@ -1978,6 +3215,20 @@
      "description": "Set to 1 by default, will send out email to customer with contract as well as a first appointment reminder",
      "name": "notifyCustomerOnSignedAgreement",
      "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "The signed PDF file sent as `multipart/form-data`. Alternative to `base64EncodedFile`. Requires `dateSigned` to be set.",
+     "name": "uploadFile",
+     "required": false,
+     "source": "docs",
+     "type": "file"
+    },
+    {
+     "description": "Foreign key to the employees table. The employee associated with this contract. Must belong to the same office. **Default:** the employee associated with the API session.",
+     "name": "employeeID",
+     "required": false,
+     "source": "docs",
      "type": "integer"
     }
    ],
@@ -2093,6 +3344,62 @@
      "name": "description",
      "required": false,
      "type": "string"
+    },
+    {
+     "description": "Foreign key to the subscriptions table. Either `subscriptionID` or `subscriptionLink` must be provided to identify the associated subscription.",
+     "name": "subscriptionID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Alternative to `subscriptionID`. Resolved to the internal `subscriptionID`.",
+     "name": "subscriptionLink",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Set to `1` to email the customer a link to the updated contract. **Default: `0`**",
+     "name": "emailCustomer",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Set to `1` to notify the customer when a signed agreement is uploaded. **Default: `1`**",
+     "name": "notifyCustomerOnSignedAgreement",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "The Base64-encoded content of a replacement signed contract PDF. Requires `dateSigned`.",
+     "name": "base64EncodedFile",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "The replacement signed PDF file via `multipart/form-data`. Requires `dateSigned`.",
+     "name": "uploadFile",
+     "required": false,
+     "source": "docs",
+     "type": "file"
+    },
+    {
+     "description": "The date the contract was signed. **Required when uploading a signed document.** Accepted formats: `m/d/Y` or `Y-m-d`.",
+     "name": "dateSigned",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Foreign key to the employees table. Must belong to one of the API-authorized offices. **Default:** the session employee.",
+     "name": "employeeID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "update"
@@ -2528,6 +3835,41 @@
      "description": "Sets the Purple Dragon customer flag checkbox",
      "name": "purpleDragon",
      "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Lot size in square feet.",
+     "name": "lotSize",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Customer sub-source ID (from Admin > Preferences > Customer References > Customer Sub Sources).",
+     "name": "subSourceID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Legacy customer number from a previous system.",
+     "name": "customerNumber",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Manual tax override. `1` = use the tax rates you send (`taxRate`, `stateTax`, etc.) even when the office uses ZipTax. `0` = let ZipTax calculate the rates from the service address.",
+     "name": "overrideTax",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "System ZipTax override flag, normally set by the system during the ZipTax lookup. When `1`, the customer\u2019s ZipTax rate is kept as-is during office-wide tax rate reassignments. In ZipTax offices, the lookup that runs after the save can overwrite the value you send.",
+     "name": "systemTaxOverride",
+     "required": false,
+     "source": "docs",
      "type": "integer"
     }
    ],
@@ -3345,6 +4687,13 @@
      "name": "limitCustomerFlags",
      "required": false,
      "type": "string"
+    },
+    {
+     "description": "If `1`, merges linked data from the originating endpoint into the response.",
+     "name": "dataLink",
+     "required": false,
+     "source": "docs",
+     "type": "boolean"
     }
    ],
    "summary": "getBulk"
@@ -3513,9 +4862,223 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Filter by system-protected status. Pass `1` for system-reserved sources only, `0` for editable sources only.",
+     "name": "systemReserved",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Filter by whether a sub-source is required. Pass `1` to return only sources that require a sub-source.",
+     "name": "subSourceRequired",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "search"
+  },
+  "dataLink/create": {
+   "action": "create",
+   "description": "Creates a new data link record that maps a FieldRoutes entity to an external identifier. The `officeID` is automatically set to the office associated with your API credentials. Returns the newly created `dataLinkID`.\n\n**Bulk Rate Limit** This endpoint supports up to **100 records per bulk request**.",
+   "entity": "dataLink",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The FieldRoutes model type to link (e.g., `customer`, `ticket`, `subscription`). Must be a valid API model name. The `customerFlag` type is explicitly disallowed.",
+     "name": "dataLinkType",
+     "required": true,
+     "type": "string"
+    },
+    {
+     "description": "The FieldRoutes primary key of the entity to link (e.g., a `customerID`, `subscriptionID`, or `ticketID`). Must reference an existing entity. A data link for this `dataLinkType` + `dataLinkKey` combination must not already exist.",
+     "name": "dataLinkKey",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "External system identifier. Must be unique within the given `dataLinkType`. If a record with this alias already exists for the same model type, the request will be rejected with a conflict error.",
+     "name": "dataLinkAlias",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Arbitrary JSON data object to store alongside the link. Example: `{\"timestamp\":\"2026-04-01\",\"source\":\"crm\"}`. Stored as a JSON-encoded string.",
+     "name": "dataLink",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Defaults to the office associated with your API credentials. Generally should not be overridden.",
+     "name": "officeID",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Create"
+  },
+  "dataLink/delete": {
+   "action": "delete",
+   "description": "Permanently removes a data link record. You can identify the target by `dataLinkID`, or by `dataLinkType` paired with either `dataLinkKey` or `dataLinkAlias`.\n\n**Irreversible** Delete operations cannot be undone. The data link record and its stored JSON payload will be permanently removed. Verify the target record before calling this endpoint.",
+   "entity": "dataLink",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the data link to delete. If provided, `dataLinkKey`, `dataLinkAlias`, and `dataLinkType` are not required. Must belong to the authenticated office.",
+     "name": "dataLinkID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Required when `dataLinkID` is not provided. Specifies the model type to scope the key/alias lookup.",
+     "name": "dataLinkType",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Delete by FieldRoutes entity ID. Requires `dataLinkType`. Either this or `dataLinkAlias` must be provided when `dataLinkID` is absent.",
+     "name": "dataLinkKey",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Delete by external alias. Requires `dataLinkType`. Either this or `dataLinkKey` must be provided when `dataLinkID` is absent.",
+     "name": "dataLinkAlias",
+     "required": false,
+     "type": "string"
+    }
+   ],
+   "source": "docs",
+   "summary": "Delete"
+  },
+  "dataLink/get": {
+   "action": "get",
+   "description": "Retrieves one or more data link records by their IDs. Pass a list of `dataLinkID` values obtained from the search endpoint. Records are filtered by the office(s) associated with your API credentials.",
+   "entity": "dataLink",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The ID (or IDs) of the data link record(s) to retrieve.",
+     "name": "dataLinkID",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Get"
+  },
+  "dataLink/search": {
+   "action": "search",
+   "description": "Returns a list of data link IDs (and optionally full records) that match the supplied filters. All filters are combined with AND logic. Results are ordered by `dataLinkID ASC` and limited to 50,000 rows.",
+   "entity": "dataLink",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Filter by a specific data link primary key.",
+     "name": "dataLinkID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Filter by multiple data link IDs. Pass as a JSON array, e.g. `[11,23,396]`.",
+     "name": "dataLinkIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter to data links belonging to a specific office.",
+     "name": "officeID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Filter to data links belonging to multiple offices.",
+     "name": "officeIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter by the FieldRoutes entity primary key (e.g., a specific `customerID`).",
+     "name": "dataLinkKey",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Filter by the external system identifier.",
+     "name": "dataLinkAlias",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Filter by model type (e.g., `customer`, `ticket`, `subscription`).",
+     "name": "dataLinkType",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Filter to data links updated on or after this date (`YYYY-MM-DD`). Useful for incremental sync operations.",
+     "name": "dateUpdated",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "If `1`, return full records in addition to IDs. **Limited to 1,000 rows per request.**",
+     "name": "includeData",
+     "required": false,
+     "type": "boolean"
+    }
+   ],
+   "source": "docs",
+   "summary": "Search / List"
+  },
+  "dataLink/update": {
+   "action": "update",
+   "description": "Modifies an existing data link record. You can identify the target record in three ways: by `dataLinkID`, by `dataLinkType` + `dataLinkKey`, or by `dataLinkType` + `dataLinkAlias`. Only the fields you include will be updated; omitted fields retain their current values.\n\n**Upsert Behavior** If you identify the record by `dataLinkType` + `dataLinkKey` (or `dataLinkAlias`) and no matching record is found, the endpoint automatically falls through to **create** a new data link instead of returning an error. This makes the update endpoint useful as an upsert operation.",
+   "entity": "dataLink",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the data link to update. If provided, `dataLinkType`, `dataLinkKey`, and `dataLinkAlias` are not required for identification. Must belong to the authenticated office.",
+     "name": "dataLinkID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Required when `dataLinkID` is not provided. Used with `dataLinkKey` or `dataLinkAlias` to locate the record. Must be a valid API model name; `customerFlag` is disallowed.",
+     "name": "dataLinkType",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "FieldRoutes entity primary key. Used with `dataLinkType` to locate the record when `dataLinkID` is not provided. Either `dataLinkKey` or `dataLinkAlias` must be supplied when `dataLinkID` is absent.",
+     "name": "dataLinkKey",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "External identifier. Used with `dataLinkType` to locate the record when `dataLinkID` and `dataLinkKey` are not provided. If changed, the new alias must be unique within the `dataLinkType`.",
+     "name": "dataLinkAlias",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Updated JSON data payload. Replaces the existing value entirely.",
+     "name": "dataLink",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Updated office ID. Defaults to current value.",
+     "name": "officeID",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Update"
   },
   "diagram/get": {
    "action": "get",
@@ -3759,6 +5322,13 @@
      "name": "showTech",
      "required": false,
      "type": "bool"
+    },
+    {
+     "description": "The file to upload. Must be submitted as a multipart form field named `uploadFile`.",
+     "name": "uploadFile",
+     "required": false,
+     "source": "docs",
+     "type": "file"
     }
    ],
    "summary": "create"
@@ -4056,6 +5626,20 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Filter by the date the door was last updated.",
+     "name": "dateUpdated",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Filter by one or more office IDs.",
+     "name": "officeIDs",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "search"
@@ -4233,6 +5817,34 @@
      "name": "pic",
      "required": false,
      "type": "string"
+    },
+    {
+     "description": "Send as `1` to bypass the geographic validation that ensures start/end addresses are within a reasonable distance from the office location.",
+     "name": "ignoreOfficeRadius",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Send as `1` to require two-factor authentication for this employee.",
+     "name": "twoFactorRequired",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Deadline for the employee to configure 2FA. Set a past date to force configuration on the next login.",
+     "name": "twoFactorConfigDueDate",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Employee's nickname.",
+     "name": "nickname",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "create"
@@ -4287,6 +5899,13 @@
      "name": "includeCommissionData",
      "required": false,
      "type": "int"
+    },
+    {
+     "description": "Send as `1` to merge linked data from related endpoints.",
+     "name": "dataLink",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "getBulk"
@@ -4432,6 +6051,20 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Filter by login username.",
+     "name": "username",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Include employees updated on or after this datetime (inclusive, `>=`). Records with a `NULL dateUpdated` are treated as `1000-01-01 00:00:00`.",
+     "name": "dateUpdatedStart",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "search"
@@ -4621,6 +6254,34 @@
      "name": "removeVisualGrouping",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Send as `1` to bypass start/end address distance validation.",
+     "name": "ignoreOfficeRadius",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Set to `1` to require 2FA. Requires `twoFactorSettings` permission on the API session.",
+     "name": "twoFactorRequired",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Deadline for 2FA configuration. Requires `twoFactorSettings` permission.",
+     "name": "twoFactorConfigDueDate",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Employee's nickname.",
+     "name": "nickname",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "update"
@@ -4765,9 +6426,58 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Filter by one or more contract IDs (primary key).",
+     "name": "contractIDs",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "search"
+  },
+  "genericFlag/create": {
+   "action": "create",
+   "description": "Creates a new generic flag definition. The flag's `code` must be unique within the specified office scope. Returns the `genericFlagID` of the newly created flag.",
+   "entity": "genericFlag",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Short alphanumeric code for the flag. Must be unique within the target `officeID`. Used in reports, filters, and API integrations as a human-readable identifier.",
+     "name": "code",
+     "required": true,
+     "type": "string"
+    },
+    {
+     "description": "Descriptive label for the flag. Displayed in the UI when assigning or viewing flags.",
+     "name": "description",
+     "required": true,
+     "type": "string"
+    },
+    {
+     "description": "Entity type this flag applies to. Allowed values: `CUST` (Customer), `SUBS` (Subscription), `APPT` (Appointment), `EQAS` (Equipment Asset), `REGN` (Region), `AFN` (Affiliate Network).",
+     "name": "type",
+     "required": true,
+     "type": "string"
+    },
+    {
+     "default": "-1",
+     "description": "Office availability. Set to `-1` for a global flag visible to all offices, or pass a specific `officeID` to restrict the flag to that office. The supplied `officeID` must reference a valid, existing office.",
+     "name": "officeID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "default": "1",
+     "description": "Flag status: `1` = Active, `0` = Inactive. Active flags are available for assignment; inactive flags are hidden from selection UIs but remain on previously assigned records.",
+     "name": "status",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Create"
   },
   "genericFlag/get": {
    "action": "get",
@@ -4846,6 +6556,52 @@
     }
    ],
    "summary": "search"
+  },
+  "genericFlag/update": {
+   "action": "update",
+   "description": "Updates an existing generic flag. Only the fields you include in the request will be modified; omitted fields retain their current values. Returns the `genericFlagID` of the updated record.",
+   "entity": "genericFlag",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The ID of the generic flag to update.",
+     "name": "genericFlagID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "New flag code. Must remain unique within the office scope. If changed, existing assignments still reference this flag by ID and are unaffected.",
+     "name": "code",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Updated descriptive label for the flag.",
+     "name": "description",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Updated entity type. Allowed values: `CUST`, `SUBS`, `APPT`, `EQAS`, `REGN`, `AFN`.",
+     "name": "type",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Change the office scope of the flag. If not provided, the flag retains its current `officeID`. A positive value must reference a valid office.",
+     "name": "officeID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Updated status: `1` = Active, `0` = Inactive.",
+     "name": "status",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Update"
   },
   "genericFlagAssignment/create": {
    "action": "create",
@@ -5258,6 +7014,140 @@
    ],
    "summary": "search"
   },
+  "license/create": {
+   "action": "create",
+   "description": "Creates a new employee license record. The employee must belong to the office associated with your API credentials.",
+   "entity": "license",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The ID of the employee who holds this license. The employee must belong to the office associated with your API credentials.",
+     "name": "employeeID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "The official license number issued by the licensing authority.",
+     "name": "licenseNumber",
+     "required": true,
+     "type": "string"
+    },
+    {
+     "description": "Set to `1` to mark this as a Wood Destroying Organism (WDO) license. Defaults to `0` (standard license).",
+     "name": "isWDOLicense",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Comma-separated list of state IDs where this license is valid (e.g. `\"12,15,22\"`).",
+     "name": "states",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Comma-separated list of skill IDs associated with this license (e.g. `\"3,7\"`).",
+     "name": "skills",
+     "required": false,
+     "type": "string"
+    }
+   ],
+   "source": "docs",
+   "summary": "Create"
+  },
+  "license/delete": {
+   "action": "delete",
+   "description": "Permanently removes one or more license records. Accepts an array of license IDs to support bulk deletion in a single request.",
+   "entity": "license",
+   "method": "POST",
+   "params": [
+    {
+     "description": "An array of one or more license primary keys to delete.",
+     "name": "licenseIDs",
+     "required": true,
+     "type": "array"
+    }
+   ],
+   "source": "docs",
+   "summary": "Delete"
+  },
+  "license/get": {
+   "action": "get",
+   "description": "Retrieves a single license record by its primary key.",
+   "entity": "license",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The primary key of the license record to retrieve.",
+     "name": "licenseID",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Get"
+  },
+  "license/search": {
+   "action": "search",
+   "description": "Returns a list of license IDs (and optionally full records) that match the supplied filters. All filters are combined with AND logic. Results are ordered by `licenseID ASC` and limited to 50,000 rows.",
+   "entity": "license",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Filter to specific license IDs. Pass one or more `licenseID` values.",
+     "name": "licenseIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter to licenses belonging to specific employees. Pass one or more `employeeID` values.",
+     "name": "employeeIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "If `1`, return full records in addition to IDs. **Limited to 1,000 rows per request.**",
+     "name": "includeData",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Search / List"
+  },
+  "license/update": {
+   "action": "update",
+   "description": "Modifies an existing license record. Pass only the fields you wish to change along with the required `licenseID`. Note that `employeeID` and `isWDOLicense` cannot be changed after creation.",
+   "entity": "license",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Primary key of the license record to update.",
+     "name": "licenseID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "Updated license number.",
+     "name": "licenseNumber",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Updated comma-separated list of state IDs where this license is valid.",
+     "name": "states",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Updated comma-separated list of skill IDs associated with this license.",
+     "name": "skills",
+     "required": false,
+     "type": "string"
+    }
+   ],
+   "source": "docs",
+   "summary": "Update"
+  },
   "location/get": {
    "action": "get",
    "description": "Get Bulk data for location. Accepts an array of locationIDs. Returns a max of 1000 records.",
@@ -5627,6 +7517,74 @@
    ],
    "summary": "search"
   },
+  "onMyWayNotification/get": {
+   "action": "get",
+   "description": "Retrieves a single On My Way Notification record by its ID.",
+   "entity": "onMyWayNotification",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The ID of the notification record to retrieve.",
+     "name": "onMyWayNotificationID",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Get"
+  },
+  "onMyWayNotification/search": {
+   "action": "search",
+   "description": "Returns a list of notification IDs (and optionally full records) that match the supplied filters. All filters are combined with AND logic.",
+   "entity": "onMyWayNotification",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Filter by primary key.",
+     "name": "onMyWayNotificationID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Filter by the associated appointment.",
+     "name": "appointmentID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Filter by the employee (technician) who sent the notification.",
+     "name": "employeeID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Filter by the customer who received the notification.",
+     "name": "customerID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Filter by notification creation date. Supports date range operators.",
+     "name": "dateCreated",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Filter by last update date. Supports date range operators.",
+     "name": "dateUpdated",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "If `1`, return full records in addition to IDs. **Limited to 1,000 rows per request.**",
+     "name": "includeData",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Search / List"
+  },
   "payment/create": {
    "action": "create",
    "description": "",
@@ -5692,6 +7650,20 @@
      "name": "status",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Only applies when `doCharge=0`. The card brand (e.g., `Visa`, `Mastercard`, `Amex`, `Discover`). Stored for reporting purposes.",
+     "name": "cardType",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Only applies when `doCharge=0`. The last four digits of the card or account processed externally.",
+     "name": "lastFour",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "create"
@@ -5719,9 +7691,56 @@
      "name": "skipProcessing",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "A description for this refund. If provided, a billing note is also created on the customer's account. Defaults to empty string.",
+     "name": "notes",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "createRefund"
+  },
+  "payment/createWriteoff": {
+   "action": "createWriteoff",
+   "description": "Creates a coupon-type payment to write off a customer's outstanding balance. This is used to forgive uncollectable debt or apply courtesy credits. The write-off is recorded as a coupon payment with the `writeOff` flag set, and any excess amount is applied to the customer's account balance.\n\n**How Write-Offs Work** A write-off is internally processed as a coupon payment. It reduces the customer's outstanding balance and is flagged separately from regular payments so it can be tracked and reported distinctly.",
+   "entity": "payment",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The customer whose balance is being written off. Must belong to an office accessible by your API credentials.",
+     "name": "customerID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "The dollar amount to write off. Rounded to two decimal places using half-down rounding.",
+     "name": "amount",
+     "required": true,
+     "type": "number"
+    },
+    {
+     "description": "An arbitrary reference code attached to the coupon. Useful for tracking write-off approvals or external reference numbers. Defaults to empty string.",
+     "name": "couponNumber",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "A description explaining why the write-off was applied. Stored with the coupon record for audit purposes. Defaults to empty string.",
+     "name": "couponDescription",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Additional notes for this write-off, stored in the `customerNotes` field of the payment record. Defaults to empty string.",
+     "name": "notes",
+     "required": false,
+     "type": "string"
+    }
+   ],
+   "source": "docs",
+   "summary": "Create Write-Off"
   },
   "payment/get": {
    "action": "get",
@@ -5815,9 +7834,79 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Filter to payments limited to a specific subscription.",
+     "name": "subscriptionID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Alias for `subscriptionID`. Accepts an array of subscription IDs.",
+     "name": "subscriptionIDs",
+     "required": false,
+     "source": "docs",
+     "type": "array"
     }
    ],
    "summary": "search"
+  },
+  "paymentPriority/get": {
+   "action": "get",
+   "description": "Retrieves a single payment priority record by its ID.",
+   "entity": "paymentPriority",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The ID of the payment priority record to retrieve.",
+     "name": "paymentPriorityID",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Get"
+  },
+  "paymentPriority/search": {
+   "action": "search",
+   "description": "Returns a list of payment priority IDs (and optionally full records) that match the supplied filters. All filters are combined with AND logic.",
+   "entity": "paymentPriority",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Filter by one or more payment priority primary keys (array supported).",
+     "name": "paymentPriorityIDs",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Filter by the payment that the priority belongs to.",
+     "name": "paymentID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Filter by limit type. Values: `TI`, `SU`, `CU`, `CY`.",
+     "name": "limitType",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Filter by reference ID.",
+     "name": "referenceID",
+     "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "If `1`, return full records in addition to IDs. **Limited to 1,000 rows per request.**",
+     "name": "includeData",
+     "required": false,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Search / List"
   },
   "paymentProfile/create": {
    "action": "create",
@@ -5938,6 +8027,20 @@
      "name": "paymentHoldDate",
      "required": false,
      "type": "string"
+    },
+    {
+     "description": "Email address associated with the billing account.",
+     "name": "billingEmail",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Last four digits of the credit card. Useful when the gateway does not automatically provide this during tokenization.",
+     "name": "lastFour",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "create"
@@ -5968,6 +8071,13 @@
      "name": "paymentProfileIDs",
      "required": false,
      "type": "array"
+    },
+    {
+     "description": "Set to `1` to include linked convenience payment plans on each returned payment profile. The plans are nested under the `conveniencePaymentPlans` key. Defaults to off.",
+     "name": "includeConveniencePayment",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "getBulk"
@@ -6135,6 +8245,27 @@
      "description": "Hold date for the payment profile",
      "name": "paymentHoldDate",
      "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Email address associated with the billing account.",
+     "name": "billingEmail",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Updated bank account number.",
+     "name": "accountNumber",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Updated bank routing number.",
+     "name": "routingNumber",
+     "required": false,
+     "source": "docs",
      "type": "string"
     }
    ],
@@ -6746,6 +8877,13 @@
      "name": "groupID",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Subtitle / display name for the route card in the scheduling UI.",
+     "name": "title",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "create"
@@ -6794,6 +8932,13 @@
      "name": "maxDistance",
      "required": false,
      "type": "int"
+    },
+    {
+     "description": "If `1`, merges linked data from related endpoints into the response.",
+     "name": "dataLink",
+     "required": false,
+     "source": "docs",
+     "type": "boolean"
     }
    ],
    "summary": "getBulk"
@@ -6881,6 +9026,13 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Send as `0` to retrieve only unlocked routes. Send as `1` to retrieve only locked routes. When omitted, both locked and unlocked routes are returned.",
+     "name": "lockedRoute",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "search"
@@ -6920,9 +9072,32 @@
      "name": "routeID",
      "required": true,
      "type": "integer"
+    },
+    {
+     "description": "Updated subtitle / display name for the route card.",
+     "name": "title",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "update"
+  },
+  "route/updateDistanceScore": {
+   "action": "updateDistanceScore",
+   "description": "Recalculates and updates the `distanceScore` for one or more routes. This is typically called after appointments on a route have been reordered, added, or removed to refresh the cached distance optimization score. After updating, the endpoint returns full route data for the affected routes.",
+   "entity": "route",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Array of route IDs to recalculate distance scores for. Also accepts a single integer, which will be wrapped into an array automatically.",
+     "name": "routeIDs",
+     "required": true,
+     "type": "array"
+    }
+   ],
+   "source": "docs",
+   "summary": "Update Distance Score"
   },
   "routeTemplate/get": {
    "action": "get",
@@ -7226,6 +9401,69 @@
      "name": "endBillingDate",
      "required": false,
      "type": "string"
+    },
+    {
+     "description": "Subscription sub-source ID.",
+     "name": "subSourceID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Array of custom-schedule objects: `[{\"month\": 6, \"day\": 26}, {\"month\": 7, \"day\": 12}]`. Overrides `customScheduleID`.",
+     "name": "customSchedule",
+     "required": false,
+     "source": "docs",
+     "type": "object"
+    },
+    {
+     "description": "Pre-defined custom schedule template for billing. Sets billing frequency to `-3`.",
+     "name": "billingCustomScheduleTemplateID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Initial billing date. Applies when `initialInvoice = INITIAL_BILLING_DATE`.",
+     "name": "initialBillingDate",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Sold date. Defaults to current date/time.",
+     "name": "dateAdded",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Alias for `dateAdded`.",
+     "name": "soldDate",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Payment profile ID for autopay.",
+     "name": "autopayPaymentProfileID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Auto-schedule mode. `-1` = due date method, `0` = no auto-schedule, `1` = next appointment, `>1` = next X appointments.",
+     "name": "autoSchedule",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Capacity estimate value for scheduling.",
+     "name": "capacityEstimateValue",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "create"
@@ -7512,6 +9750,20 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Filter by subscription sub-source ID.",
+     "name": "subSourceID",
+     "required": false,
+     "source": "docs",
+     "type": "array"
+    },
+    {
+     "description": "Filter by on-hold status. `1` = on hold.",
+     "name": "onHold",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "search"
@@ -7737,6 +9989,34 @@
      "name": "subscriptionID",
      "required": true,
      "type": "integer"
+    },
+    {
+     "description": "Update subscription sub-source.",
+     "name": "subSourceID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Update initial billing date.",
+     "name": "initialBillingDate",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Update the sold/created date.",
+     "name": "dateAdded",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Update auto-schedule mode. Changing this resets auto-scheduled appointments.",
+     "name": "autoSchedule",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "update"
@@ -7794,6 +10074,28 @@
     }
    ],
    "summary": "getBulk"
+  },
+  "servicePlanRound/optOut": {
+   "action": "optOut",
+   "description": "Opts a customer out of (or back into) a specific service plan round. Opting out sets the round as omitted and **cancels any scheduled appointment** for that round.\n\n**Important** Opting out of a service plan round will also cancel the scheduled appointment associated with that round. This action should be communicated to the customer.",
+   "entity": "servicePlanRound",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The subscription ID of the service plan round.",
+     "name": "subscriptionID",
+     "required": true,
+     "type": "integer"
+    },
+    {
+     "description": "`1` = Opt Out (omit the round), `0` = Opt In (re-enable the round).",
+     "name": "status",
+     "required": true,
+     "type": "integer"
+    }
+   ],
+   "source": "docs",
+   "summary": "Opt Out"
   },
   "servicePlanRound/search": {
    "action": "search",
@@ -8146,6 +10448,13 @@
      "name": "typeIDs",
      "required": false,
      "type": "array"
+    },
+    {
+     "description": "Send as `1` to include a nested `quickBooks` array on each service type record containing the mapped QuickBooks Income account information. Only returns data if your database has QuickBooks Online account mappings configured.",
+     "name": "includeQuickBooksAccount",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "getBulk"
@@ -8197,6 +10506,13 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Filter by service type template classification. Accepted values: `SERVICE_TYPE`, `SERVICE_PLAN_TYPE`, `SERVICE_ROUND_TYPE`.",
+     "name": "templateType",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "search"
@@ -8404,9 +10720,32 @@
      "name": "open",
      "required": false,
      "type": "int"
+    },
+    {
+     "description": "If `1`, bypasses full route building and delegates to [getSimple](/apidocs/spots-get-data-full-build#getSimple). Allowed values: `0`, `1`.",
+     "name": "skipBuild",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "getBulk"
+  },
+  "spot/getSimple": {
+   "action": "getSimple",
+   "description": "Returns spot information **without building the route** (i.e., without positioning floating appointments). This endpoint addresses the processing cost of `getData`, which can cause server instability for large offices. Use this when you do not need computed distance metrics or precise floating appointment positions.\n\n**When to Use** Prefer `getSimple` for dashboards, availability checks, and high-frequency polling. Use full `getData` only when you need distance-to-neighbor calculations for route optimization.",
+   "entity": "spot",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Array of spot IDs to retrieve.",
+     "name": "spotIDs",
+     "required": true,
+     "type": "array"
+    }
+   ],
+   "source": "docs",
+   "summary": "Get Simple (Lightweight)"
   },
   "spot/release": {
    "action": "release",
@@ -8517,6 +10856,13 @@
      "description": "{0,1} Sends the resolved objects for the first 1000 IDs. If there are more than 1000 items an additional property spotIDsNoDataExported will specify the items that are not included in the resolved spot array.",
      "name": "includeData",
      "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Set as `1` to skip processing of floating appointment spots. Returns less data with much less processing time. Use when you do not need the final computed spot position or distance metadata. Allowed values: `0`, `1`.",
+     "name": "skipBuild",
+     "required": false,
+     "source": "docs",
      "type": "integer"
     }
    ],
@@ -8787,6 +11133,90 @@
      "name": "initialInvoice",
      "required": false,
      "type": "string"
+    },
+    {
+     "description": "Sub-source ID for granular acquisition tracking.",
+     "name": "subSourceID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Array of custom schedule objects. Each object requires `month` (1-12) and `day` (date of month). Overrides `customScheduleID`. Sets frequency to custom. Example: `[{\"month\":6,\"day\":26},{\"month\":7,\"day\":12}]`",
+     "name": "customSchedule",
+     "required": false,
+     "source": "docs",
+     "type": "array"
+    },
+    {
+     "description": "ID of a pre-defined custom schedule template for billing frequency. Sets `billingFrequency` to `-3`.",
+     "name": "billingCustomScheduleTemplateID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Array of custom-schedule objects for billing, defined inline. `billingCustomScheduleTemplateID` is ignored and `billingFrequency` is set to `-3`. Each entry: `month` (1-12), `day` (1-31), `amount` (decimal billing amount). Example: `[{\"month\":6,\"day\":26,\"amount\":150.00},{\"month\":7,\"day\":12,\"amount\":75.00}]`",
+     "name": "billingCustomSchedule",
+     "required": false,
+     "source": "docs",
+     "type": "array"
+    },
+    {
+     "description": "Date for initial invoice generation. Only applies when `initialInvoice = INITIAL_BILLING_DATE`.",
+     "name": "initialBillingDate",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Sold date. Defaults to current date/time.",
+     "name": "dateAdded",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Alias for `dateAdded`.",
+     "name": "soldDate",
+     "required": false,
+     "source": "docs",
+     "type": "string"
+    },
+    {
+     "description": "Payment profile ID for autopay.",
+     "name": "autopayPaymentProfileID",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Auto-scheduling behavior. `-1` = Due Date Method, `0` = No auto-schedule, `1` = next appointment, `>1` = next X appointments. Initial appointment must already be scheduled.",
+     "name": "autoSchedule",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Capacity estimate value for resource planning.",
+     "name": "capacityEstimateValue",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "When `1`, auto-schedules the initial appointment on `initialServiceDate` using the subscription's scheduling preferences. Defaults to `0`. Allowed values: `0`, `1`.",
+     "name": "addInitialService",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Date to schedule the initial appointment on. Required when `addInitialService=1`.",
+     "name": "initialServiceDate",
+     "required": false,
+     "source": "docs",
+     "type": "string"
     }
    ],
    "summary": "create"
@@ -8901,6 +11331,27 @@
      "name": "includeCancellationReason",
      "required": false,
      "type": "int"
+    },
+    {
+     "description": "Set to `1` to include the full initial appointment object nested inside each subscription record.",
+     "name": "includeInitialAppointments",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Set to `1` to include the custom schedule array for subscriptions with `frequency = CUSTOM`. Each entry contains `month` and `day` fields.",
+     "name": "includeCustomSchedule",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Set to `1` to include data link information for this subscription.",
+     "name": "dataLink",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "getBulk"
@@ -9163,6 +11614,27 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "Filter by the subscription sub-source ID.",
+     "name": "subSourceID",
+     "required": false,
+     "source": "docs",
+     "type": "array"
+    },
+    {
+     "description": "Filter by hold status. `1` = on hold.",
+     "name": "onHold",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "Filter by auto-schedule setting. `-1` = Due Date Method, `0` = No auto-schedule, `1` = Next appointment, `>1` = Next X appointments.",
+     "name": "autoSchedule",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
     }
    ],
    "summary": "search"
@@ -9410,6 +11882,20 @@
      "name": "subscriptionID",
      "required": true,
      "type": "integer"
+    },
+    {
+     "description": "Set to `1` to place the subscription on hold, `0` to remove the hold. Update-only \u2014 not accepted on `create`. Allowed values: `0`, `1`.",
+     "name": "onHold",
+     "required": false,
+     "source": "docs",
+     "type": "integer"
+    },
+    {
+     "description": "New amount for the initial service ticket template. Only the charge changes; the template\u2019s service type, tax setting, bill-to account, production value, discounts, and items are kept.",
+     "name": "initialCharge",
+     "required": false,
+     "source": "docs",
+     "type": "number"
     }
    ],
    "summary": "update"
@@ -10093,6 +12579,13 @@
      "name": "ticketIDs",
      "required": false,
      "type": "array"
+    },
+    {
+     "description": "If `1`, includes data-link references to related entities in the response for cross-entity navigation.",
+     "name": "dataLink",
+     "required": false,
+     "source": "docs",
+     "type": "boolean"
     }
    ],
    "summary": "getBulk"
@@ -10216,6 +12709,13 @@
      "description": "{0,1} Sends the resolved objects for the first 1000 IDs. If there are more than 1000 items an additional property ticketIDsNoDataExported will specify the items that are not included in the resolved ticket array.",
      "name": "includeData",
      "required": false,
+     "type": "integer"
+    },
+    {
+     "description": "Filter by whether `productionValue` was set manually (`1`) or is system-derived from `subTotal` (`0`).",
+     "name": "isCustomProduction",
+     "required": false,
+     "source": "docs",
      "type": "integer"
     }
    ],
@@ -10656,6 +13156,13 @@
      "name": "unitIDs",
      "required": false,
      "type": "array"
+    },
+    {
+     "description": "If `1`, includes any associated data link records nested under each unit record.",
+     "name": "dataLink",
+     "required": false,
+     "source": "docs",
+     "type": "boolean"
     }
    ],
    "summary": "getBulk"
@@ -10689,9 +13196,78 @@
      "name": "includeData",
      "required": false,
      "type": "integer"
+    },
+    {
+     "description": "If `1`, includes any associated data link records nested under each unit record.",
+     "name": "dataLink",
+     "required": false,
+     "source": "docs",
+     "type": "boolean"
     }
    ],
    "summary": "search"
+  },
+  "welcomeChecklist/get": {
+   "action": "get",
+   "description": "Retrieves one or more Welcome Checklist records by their appointment IDs. Limited to 1,000 records per request.",
+   "entity": "welcomeChecklist",
+   "method": "POST",
+   "params": [
+    {
+     "description": "The appointment ID(s) whose Welcome Checklist(s) should be retrieved (primary key).",
+     "name": "appointmentIDs",
+     "required": true,
+     "type": "array"
+    }
+   ],
+   "source": "docs",
+   "summary": "Get"
+  },
+  "welcomeChecklist/search": {
+   "action": "search",
+   "description": "Returns a list of appointment IDs (and optionally full checklist records) that match the supplied filters. All filters are combined with AND logic.",
+   "entity": "welcomeChecklist",
+   "method": "POST",
+   "params": [
+    {
+     "description": "Filter by office ID(s). Accepts a single ID or an array.",
+     "name": "officeIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter by appointment ID(s) (primary key).",
+     "name": "appointmentIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Filter by customer ID(s).",
+     "name": "customerIDs",
+     "required": false,
+     "type": "array"
+    },
+    {
+     "description": "Inclusive lower bound (`>=`) on `dateUpdated`. Records with a `NULL dateUpdated` are excluded.",
+     "name": "dateUpdatedStart",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "Inclusive upper bound (`<=`) on `dateUpdated`. Records with a `NULL dateUpdated` are excluded.",
+     "name": "dateUpdatedEnd",
+     "required": false,
+     "type": "string"
+    },
+    {
+     "description": "If `1`, return full records in addition to IDs. **Limited to 1,000 rows per request.**",
+     "name": "includeData",
+     "required": false,
+     "type": "boolean"
+    }
+   ],
+   "source": "docs",
+   "summary": "Search / List"
   }
  },
  "entities": {
@@ -10715,6 +13291,41 @@
     },
     "accountAgeWidget": {
      "description": "Receivables Aging",
+     "type": "integer"
+    },
+    "actionOnCollections": {
+     "description": "Edit/Actions Collections.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "actionOnConsolidateInvoices": {
+     "description": "Edit/Actions Consolidated Invoices.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "actionOnDisbursements": {
+     "description": "Edit/Actions Disbursements.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "actionOnPaymentBatches": {
+     "description": "Edit/Actions Payment Batches.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "actionOnPaymentHistory": {
+     "description": "Edit/Actions Payments History.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "actionOnPrepaymentBatches": {
+     "description": "Edit/Actions Prepayments.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "actionOnStoredCards": {
+     "description": "Edit/Actions Stored Cards.",
+     "source": "docs",
      "type": "integer"
     },
     "activeCustomersWidget": {
@@ -10861,8 +13472,23 @@
      "description": "Edit Cancellation Date/Reason",
      "type": "integer"
     },
+    "editConveniencePayments": {
+     "description": "Create/Edit Convenience Payments.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "editCreditMemos": {
+     "description": "Add/Edit Credit Memos.",
+     "source": "docs",
+     "type": "integer"
+    },
     "editEmployeeFinancialSettings": {
      "description": "Edit Employee Financial Settings",
+     "type": "integer"
+    },
+    "editExternalAppointmentNotes": {
+     "description": "Edit External Appointment Notes on Customer Card.",
+     "source": "docs",
      "type": "integer"
     },
     "editMap": {
@@ -11025,12 +13651,27 @@
      "description": "Lock/Unlock Routes",
      "type": "integer"
     },
+    "manualEquipmentScan": {
+     "description": "Mark Equipment as Manually Inspected.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "mobileIgnoreMinContractLength": {
+     "description": "Ignore Min Contract Length on Mobile.",
+     "source": "docs",
+     "type": "integer"
+    },
     "monthlyBillingWidget": {
      "description": "Recurring Billing",
      "type": "integer"
     },
     "monthlyServicesWidget": {
      "description": "Monthly Services",
+     "type": "integer"
+    },
+    "overrideCustomerRequirements": {
+     "description": "Override Payment & Agreement Schedule Requirements.",
+     "source": "docs",
      "type": "integer"
     },
     "overrideTimeClockRestrictions": {
@@ -11059,6 +13700,21 @@
     },
     "revenueByServiceTypeWidget": {
      "description": "Revenue by Service",
+     "type": "integer"
+    },
+    "runAccountsReceivable": {
+     "description": "Edit/Actions Accounts Receivable.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "runAccountsWithCredits": {
+     "description": "Edit/Actions Accounts With Credits.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "runAutoPayBalances": {
+     "description": "Edit/Actions Autopay Balances.",
+     "source": "docs",
      "type": "integer"
     },
     "salesroutesBaseballRevenue": {
@@ -11097,12 +13753,47 @@
      "description": "Use Structures/Trend Reporting (Additional Charges Apply)",
      "type": "integer"
     },
+    "viewAccountsReceivable": {
+     "description": "View Accounts Receivable.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "viewAccountsWithCredits": {
+     "description": "View Accounts With Credits.",
+     "source": "docs",
+     "type": "integer"
+    },
     "viewAlerts": {
      "description": "View Alerts",
      "type": "integer"
     },
+    "viewArOversightReport": {
+     "description": "View AR Oversight Report.",
+     "source": "docs",
+     "type": "integer"
+    },
     "viewAssignmentLayers": {
      "description": "View Assignment Layers",
+     "type": "integer"
+    },
+    "viewAutoPayBalances": {
+     "description": "View Autopay Balances.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "viewBillingByServiceType": {
+     "description": "View Billing By Service Type.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "viewCollections": {
+     "description": "View Collections.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "viewConsolidateInvoices": {
+     "description": "View Consolidated Invoices.",
+     "source": "docs",
      "type": "integer"
     },
     "viewCustomReports": {
@@ -11143,6 +13834,11 @@
     },
     "viewFeedback": {
      "description": "View Feedback",
+     "type": "integer"
+    },
+    "viewForecastReport": {
+     "description": "View Forecast Report.",
+     "source": "docs",
      "type": "integer"
     },
     "viewLeaderBoardsAllOffices": {
@@ -11217,12 +13913,42 @@
      "description": "View Own Time Sheet",
      "type": "integer"
     },
+    "viewPaymentBatches": {
+     "description": "View Payment Batches.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "viewPaymentHistory": {
+     "description": "View Payments History.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "viewPaymentsByServiceType": {
+     "description": "View Payment By Service.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "viewPrepaymentBatches": {
+     "description": "View Prepayments.",
+     "source": "docs",
+     "type": "integer"
+    },
     "viewProdValue": {
      "description": "View Production Value",
      "type": "integer"
     },
     "viewReportingLayers": {
      "description": "View Reporting Layers",
+     "type": "integer"
+    },
+    "viewSalesCollections": {
+     "description": "View Sales Collections.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "viewSalesFeed": {
+     "description": "View Sales Feed Menu Item.",
+     "source": "docs",
      "type": "integer"
     },
     "viewSalesmanReports": {
@@ -11233,8 +13959,23 @@
      "description": "View Sales Reps",
      "type": "integer"
     },
+    "viewStoredCards": {
+     "description": "View Stored Cards.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "viewTechCollections": {
+     "description": "View Tech Collections.",
+     "source": "docs",
+     "type": "integer"
+    },
     "viewTechs": {
      "description": "View Techs",
+     "type": "integer"
+    },
+    "viewTimer": {
+     "description": "View Timer Menu Item.",
+     "source": "docs",
      "type": "integer"
     },
     "viewTransactions": {
@@ -11471,6 +14212,11 @@
      "description": "EmployeeID that was assigned to the appointment.",
      "type": "integer"
     },
+    "autoScheduled": {
+     "description": "Whether this appointment was created by the parent subscription's `autoSchedule` setting. `0` = manually placed, `>0` = auto-scheduled (the value reflects the auto-schedule iteration the appointment was created under).",
+     "source": "docs",
+     "type": "integer"
+    },
     "callAhead": {
      "description": "The number of minutes the tech should call ahead to the customer before arriving.",
      "type": "integer"
@@ -11478,6 +14224,11 @@
     "cancellationReason": {
      "description": "Appointment cancellation reason, only returned if parameter 'includeCancellationReason' is included with the request.",
      "type": "string"
+    },
+    "cancellationReasonID": {
+     "description": "ID referencing the cancellation reason selected when the appointment was cancelled.",
+     "source": "docs",
+     "type": "integer"
     },
     "cancelledBy": {
      "description": "EmployeeID that cancelled the appointment.",
@@ -11491,9 +14242,19 @@
      "description": "The time the technician checked out of the appointment (via check-out button).",
      "type": "string"
     },
+    "commissionSplit": {
+     "description": "Array of technician commission split records for this appointment.",
+     "source": "docs",
+     "type": "array"
+    },
     "completedBy": {
      "description": "The employee ID who marked this as serviced -- not necessarily which tech completed the service.",
      "type": "integer"
+    },
+    "customFields": {
+     "description": "Array of custom field name/value pairs defined for this appointment.",
+     "source": "docs",
+     "type": "array"
     },
     "customerID": {
      "description": "The ID of the customer this appointment belongs to.",
@@ -11523,6 +14284,11 @@
      "description": "0 - unspecified, 1 - Exterior only, 2 - Interior Needed",
      "type": "integer"
     },
+    "dueDate": {
+     "description": "Custom due date for the appointment (`YYYY-MM-DD`).",
+     "source": "docs",
+     "type": "string"
+    },
     "duration": {
      "description": "The number of minutes this appointment is scheduled for.",
      "type": "integer"
@@ -11534,6 +14300,21 @@
     "end": {
      "description": "The end of the acceptable time window that the tech may arrive.",
      "type": "string"
+    },
+    "genericFlagAssignment": {
+     "description": "Array of generic flag assignment objects associated with this appointment.",
+     "source": "docs",
+     "type": "array"
+    },
+    "groupID": {
+     "description": "The scheduling group this appointment belongs to.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "isCustomProduction": {
+     "description": "`1` if any ticket linked to this appointment has a manually-set `productionValue` (custom), `0` if all linked tickets are system-derived from `subTotal`. Aggregated across linked tickets for deterministic results.",
+     "source": "docs",
+     "type": "integer"
     },
     "isInitial": {
      "description": "Whether or not this is the initial appointment for the associated subscription. 1: yes, 0: no",
@@ -11578,6 +14359,11 @@
     "paymentMethod": {
      "description": "The method of payment collected. -1: no payment collected, 0: coupon, 1: cash, 2: check, 3: credit card",
      "type": "integer"
+    },
+    "productionValue": {
+     "description": "Production value of the appointment. `-1` means it falls through to the ticket value; if that is also `-1`, it falls through to the service type default.",
+     "source": "docs",
+     "type": "number"
     },
     "rescheduleReasonID": {
      "description": "Appointment reschedule reason ID",
@@ -11643,6 +14429,11 @@
      "description": "Requires parameter 'includeTargetPests' to be sent with the request. The ID of a target insect associated with the appointment, these IDs can be found in preferences via Admin > Preferences > Service Related > Target Issues",
      "type": "integer"
     },
+    "tempSpotID": {
+     "description": "Temporary spot assignment used during scheduling operations before the appointment is finalized on a permanent spot.",
+     "source": "docs",
+     "type": "integer"
+    },
     "temperature": {
      "description": "Degrees Farenheight.",
      "type": "integer"
@@ -11669,6 +14460,16 @@
     },
     "unitIDs": {
      "description": "An array of unit IDs associated with this appointment (for multi unit customers)",
+     "type": "integer"
+    },
+    "welcomeCallStatus": {
+     "description": "Welcome status indicator for this appointment, mirroring the FieldRoutes UI. `0` = No Call Made, `1` = Welcome Call, `2` = Welcome Letter, `3` = Welcome Checklist, `4` = Welcome SMS. Returns `3` when the Welcome Checklist is 100% complete (`welcomeChecklistCompletion = 100`); otherwise reflects the underlying welcome-call status (`0` when no welcome-call record exists).",
+     "source": "docs",
+     "type": "integer"
+    },
+    "welcomeChecklistCompletion": {
+     "description": "Completion percentage (`0`\u2013`100`) of the Welcome Checklist for this appointment. Returns `null` when no welcome checklist row exists for the appointment.",
+     "source": "docs",
      "type": "integer"
     },
     "windDirection": {
@@ -11792,6 +14593,91 @@
    },
    "getIdParam": "rescheduleReasonIDs"
   },
+  "bundleSubscription": {
+   "fields": {
+    "bundleSubscriptionID": {
+     "description": "Unique ID for the bundle subscription (primary key of `serviceBundleSubscriptions`).",
+     "source": "docs",
+     "type": "integer"
+    },
+    "createdBy": {
+     "description": "Employee ID who created this bundle subscription.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "customerID": {
+     "description": "Customer ID who owns this bundle subscription (from `serviceSubscriptions`).",
+     "source": "docs",
+     "type": "integer"
+    },
+    "dateCreated": {
+     "description": "ISO 8601 timestamp when the bundle subscription was created.",
+     "source": "docs",
+     "type": "string"
+    },
+    "dateUpdated": {
+     "description": "ISO 8601 timestamp of the last update.",
+     "source": "docs",
+     "type": "string"
+    },
+    "isAdditionalServicesEnabled": {
+     "description": "Whether additional services can be added to this bundle (inherited from template). `1` = yes, `0` = no.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "isBundleBilling": {
+     "description": "Bundle billing enabled: `1` = consolidated billing at bundle level, `0` = per-service billing.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "isRemoveServicesEnabled": {
+     "description": "Whether removing services is enabled for this bundle (inherited from template). `1` = yes, `0` = no.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "isSignatureRequired": {
+     "description": "Whether a customer signature is required (inherited from template). `1` = yes, `0` = no.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "officeID": {
+     "description": "Office ID this bundle subscription belongs to (from `serviceSubscriptions`). A negative value (e.g. `-5`) indicates the record belongs to a deleted customer.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "parentBundleID": {
+     "description": "Parent bundle ID. `null` for root bundles; set to the parent's `bundleSubscriptionID` for child entries.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "serviceBundleTemplateID": {
+     "description": "Template ID for the bundle this subscription is linked to.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "subscriptionActive": {
+     "description": "Active status of the underlying subscription: `1` = Active (placed in job pool), `0` = Frozen (inactive), `-3` = Lead (legacy, pre-December 2017 only).",
+     "source": "docs",
+     "type": "integer"
+    },
+    "subscriptionID": {
+     "description": "Subscription ID associated with the bundle.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "templateName": {
+     "description": "Display name of the bundle template (from `serviceBundleTemplates.name`).",
+     "source": "docs",
+     "type": "string"
+    },
+    "updatedBy": {
+     "description": "Employee ID who last updated this bundle subscription.",
+     "source": "docs",
+     "type": "integer"
+    }
+   },
+   "source": "docs"
+  },
   "cancellationReason": {
    "fields": {
     "officeID": {
@@ -11892,6 +14778,11 @@
     "activeIngredientRate": {
      "description": "",
      "type": "number"
+    },
+    "activeIngredients": {
+     "description": "Nested array of active ingredient objects. Each contains `activeIngredientID`, `chemicalID`, `name`, and `percentage`. See section 3.2.",
+     "source": "docs",
+     "type": "array"
     },
     "applicationRate": {
      "description": "",
@@ -12147,6 +15038,36 @@
     }
    }
   },
+  "collectionStage": {
+   "fields": {
+    "description": {
+     "description": "Human-readable label for the collection stage (e.g., \"30 Day Notice\", \"Sent to Collections\").",
+     "source": "docs",
+     "type": "string"
+    },
+    "officeID": {
+     "description": "The FieldRoutes office that owns this collection stage. This is the owning office; it is not used as a deleted-customer or global marker.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "sequence": {
+     "description": "Integer defining the display and processing order of stages. Lower numbers appear first.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "stageID": {
+     "description": "Unique primary key identifying the collection stage.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "visible": {
+     "description": "Visibility flag. `1` = visible in the UI, `0` = hidden. Hidden stages are still returned by the API but are not shown in standard FieldRoutes interfaces.",
+     "source": "docs",
+     "type": "integer"
+    }
+   },
+   "source": "docs"
+  },
   "compassCustomer": {
    "fields": {
     "contractValue": {
@@ -12159,6 +15080,11 @@
     },
     "dateAdded": {
      "description": null,
+     "type": "string"
+    },
+    "leadSource": {
+     "description": "Marketing lead source attribution for this customer (e.g., Google Ads, direct). Set to `(direct)` if no source is available.",
+     "source": "docs",
      "type": "string"
     },
     "name": {
@@ -12175,6 +15101,166 @@
     }
    },
    "getIdParam": "customerIDs"
+  },
+  "condition": {
+   "fields": {
+    "appointmentAdded": {
+     "description": "Appointment ID during which the condition was discovered.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "appointmentResolved": {
+     "description": "Appointment ID during which the condition was resolved. `null` while the condition is open.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "conditionID": {
+     "description": "Unique primary key identifying this condition.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "conditionType": {
+     "description": "Friendly name of the condition type, e.g. \"Termite Evidence\" or \"Moisture Damage\".",
+     "source": "docs",
+     "type": "string"
+    },
+    "conditionTypeID": {
+     "description": "The type of condition (foreign key to `conditionTypes`).",
+     "source": "docs",
+     "type": "integer"
+    },
+    "correctiveAction": {
+     "description": "Actual action taken that led to resolution. Set when `resolved=1`; cleared when a condition is unresolved.",
+     "source": "docs",
+     "type": "string"
+    },
+    "createdBy": {
+     "description": "Employee ID of the user who created the condition.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "customerID": {
+     "description": "The customer this condition belongs to. Office scoping is resolved through this customer.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "dateCreated": {
+     "description": "Timestamp when the condition record was created.",
+     "source": "docs",
+     "type": "string"
+    },
+    "dateFound": {
+     "description": "Timestamp when the condition was first logged.",
+     "source": "docs",
+     "type": "string"
+    },
+    "dateResolved": {
+     "description": "Timestamp when the condition was marked resolved. `null` while open.",
+     "source": "docs",
+     "type": "string"
+    },
+    "description": {
+     "description": "Short description of the condition.",
+     "source": "docs",
+     "type": "string"
+    },
+    "details": {
+     "description": "Extended details or observation notes captured with the condition.",
+     "source": "docs",
+     "type": "string"
+    },
+    "lastUpdated": {
+     "description": "Timestamp of the last update to the record.",
+     "source": "docs",
+     "type": "string"
+    },
+    "locationID": {
+     "description": "The specific location (e.g., kitchen, attic) within the structure where the condition was found.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "note": {
+     "description": "Internal note visible to staff.",
+     "source": "docs",
+     "type": "string"
+    },
+    "recommendation": {
+     "description": "Recommended remedial action at the time of discovery.",
+     "source": "docs",
+     "type": "string"
+    },
+    "recommendedServices": {
+     "description": "Nested list of recommended services. **Only returned when `includeRecommendedServices=1`** is passed to `search`. Each element contains `conditionServiceID`, `conditionID`, `serviceID`, and `details`.",
+     "source": "docs",
+     "type": "array"
+    },
+    "resolved": {
+     "description": "`0` = Open, `1` = Resolved.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "responsibleParty": {
+     "description": "`-1` = None, `0` = Customer, `1` = Company. Identifies who is accountable for remediating the condition.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "severity": {
+     "description": "Severity flag: `0` = Low, `1` = Medium, `2` = High.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "structure": {
+     "description": "Human-readable structure description joined from the `structures` table.",
+     "source": "docs",
+     "type": "string"
+    },
+    "structureID": {
+     "description": "The structure on the customer's property where the condition was observed. `null` if no structure is associated.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "updatedBy": {
+     "description": "Employee ID of the user who last modified the condition.",
+     "source": "docs",
+     "type": "integer"
+    }
+   },
+   "source": "docs"
+  },
+  "contactType": {
+   "fields": {
+    "contactType": {
+     "description": "Display name of the contact type (e.g. \"Phone Call\", \"Email\", \"In-Person Visit\").",
+     "source": "docs",
+     "type": "string"
+    },
+    "contactTypeCategories": {
+     "description": "Array of category assignment objects. Each entry contains `contactTypeCategoryID`, `contactTypeCategory` (name), and `officeID`. Present when data is retrieved via `getData` or `includeData=1`.",
+     "source": "docs",
+     "type": "array"
+    },
+    "contactTypeID": {
+     "description": "Unique primary key of the contact type.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "officeID": {
+     "description": "The FieldRoutes office that owns this record. `-1` indicates a global contact type available to all offices.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "systemNote": {
+     "description": "Flag indicating whether this is a system-generated contact type. `0` = user-created, `1` = system-generated. System contact types cannot be modified.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "visible": {
+     "description": "Visibility flag. `1` = visible and available for use, `0` = hidden from selection UIs.",
+     "source": "docs",
+     "type": "integer"
+    }
+   },
+   "source": "docs"
   },
   "contract": {
    "fields": {
@@ -12204,6 +15290,11 @@
     },
     "description": {
      "description": "description of the contract",
+     "type": "string"
+    },
+    "documentLink": {
+     "description": "Pre-signed S3 URL to the contract PDF. Only included when `includeDocumentLink=1` is passed and the document state is `COMPLETED` or `LEGACY`. The link has a **15-day TTL**. Returns `null` for unsigned contracts.",
+     "source": "docs",
      "type": "string"
     },
     "documentState": {
@@ -12330,6 +15421,11 @@
      "description": "Customer Link from the that comes from the integration",
      "type": "string"
     },
+    "customerNumber": {
+     "description": "Legacy customer number, often the ID imported from a previous system.",
+     "source": "docs",
+     "type": "string"
+    },
     "customerSource": {
      "description": "Customer source.",
      "type": "string"
@@ -12337,6 +15433,16 @@
     "customerSourceID": {
      "description": "Customer sourceID.",
      "type": "string"
+    },
+    "customerSubSource": {
+     "description": "Human-readable customer sub-source description.",
+     "source": "docs",
+     "type": "string"
+    },
+    "customerSubSourceID": {
+     "description": "Customer sub-source ID for more granular source tracking.",
+     "source": "docs",
+     "type": "integer"
     },
     "dateAdded": {
      "description": "The date this customer account was created.",
@@ -12349,6 +15455,31 @@
     "dateUpdated": {
      "description": "The date this customer was last changed.",
      "type": "string"
+    },
+    "districtCode1": {
+     "description": "Tax jurisdiction district codes for each district tax slot.",
+     "source": "docs",
+     "type": "number"
+    },
+    "districtCode2": {
+     "description": "Tax jurisdiction district codes for each district tax slot.",
+     "source": "docs",
+     "type": "number"
+    },
+    "districtCode3": {
+     "description": "Tax jurisdiction district codes for each district tax slot.",
+     "source": "docs",
+     "type": "number"
+    },
+    "districtCode4": {
+     "description": "Tax jurisdiction district codes for each district tax slot.",
+     "source": "docs",
+     "type": "number"
+    },
+    "districtCode5": {
+     "description": "Tax jurisdiction district codes for each district tax slot.",
+     "source": "docs",
+     "type": "number"
     },
     "districtTax": {
      "description": "District Tax rate of the customer",
@@ -12402,6 +15533,11 @@
      "description": "Set as 1 if the customer is marked as a multi-unit customer (a customer can be residential, multi-unit, or structure)",
      "type": "integer"
     },
+    "isSMSOptedOut": {
+     "description": "Whether the customer's primary phone number has opted out of SMS (e.g. replied STOP). Independent of `smsReminders`, which only reflects the customer's reminder preference, not carrier opt-out status.",
+     "source": "docs",
+     "type": "integer"
+    },
     "lat": {
      "description": "Lattitude",
      "type": "number"
@@ -12413,6 +15549,11 @@
     "lng": {
      "description": "Longitude",
      "type": "number"
+    },
+    "lotSize": {
+     "description": "Lot size in square feet, used for lawn and exterior service pricing.",
+     "source": "docs",
+     "type": "integer"
     },
     "mapCode": {
      "description": "Mapcode of the customer",
@@ -12436,6 +15577,11 @@
     },
     "mostRecentCreditCardLastFour": {
      "description": "Last 4 digits of most recently used Credit Card",
+     "type": "string"
+    },
+    "notes": {
+     "description": "General notes for the customer record.",
+     "source": "docs",
      "type": "string"
     },
     "officeID": {
@@ -12542,6 +15688,11 @@
      "description": "Friendly status",
      "type": "string"
     },
+    "subPropertyType": {
+     "description": "Human-readable sub-property type description.",
+     "source": "docs",
+     "type": "string"
+    },
     "subPropertyTypeID": {
      "description": "Sub-Property Type ID of the customer",
      "type": "integer"
@@ -12623,12 +15774,72 @@
      "description": "Primary key",
      "type": "integer"
     },
+    "subSourceRequired": {
+     "description": "Set to `1` if a sub-source must be selected whenever this source is used. `0` otherwise.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "subsources": {
+     "description": "Nested list of sub-sources that belong to this source (see below). Empty array if the source has none.",
+     "source": "docs",
+     "type": "array"
+    },
+    "systemReserved": {
+     "description": "Set to `1` if this source is system-protected and cannot be edited. `0` otherwise.",
+     "source": "docs",
+     "type": "integer"
+    },
     "visible": {
      "description": "Visibility of the source",
      "type": "string"
     }
    },
    "getIdParam": "sourceIDs"
+  },
+  "dataLink": {
+   "fields": {
+    "dataLink": {
+     "description": "Arbitrary JSON data payload stored alongside the link. Use this to persist integration metadata, timestamps, or external state. Stored as a JSON-encoded string.",
+     "source": "docs",
+     "type": "string"
+    },
+    "dataLinkAlias": {
+     "description": "External identifier from a third-party system (e.g., an external CRM ID). Must be unique within a given `dataLinkType`. Can be null.",
+     "source": "docs",
+     "type": "string"
+    },
+    "dataLinkID": {
+     "description": "Unique primary key of the data link record.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "dataLinkKey": {
+     "description": "The FieldRoutes primary key ID of the linked entity (e.g., a `customerID`, `subscriptionID`, or `ticketID`).",
+     "source": "docs",
+     "type": "integer"
+    },
+    "dataLinkType": {
+     "description": "The FieldRoutes model type this link is associated with. Must be a valid API model name (e.g., `customer`, `ticket`, `subscription`). The `customerFlag` type is not allowed.",
+     "source": "docs",
+     "type": "string"
+    },
+    "dateCreated": {
+     "description": "Timestamp when the data link was created.",
+     "source": "docs",
+     "type": "string"
+    },
+    "dateUpdated": {
+     "description": "Timestamp of the last update to this data link.",
+     "source": "docs",
+     "type": "string"
+    },
+    "officeID": {
+     "description": "The FieldRoutes office that owns this data link. Automatically set to the authenticated office on creation. This is the owning office; it is not used as a deleted-customer or global marker.",
+     "source": "docs",
+     "type": "integer"
+    }
+   },
+   "source": "docs"
   },
   "diagram": {
    "fields": {
@@ -12782,6 +15993,11 @@
      "description": "Description for this upload",
      "type": "string"
     },
+    "documentLink": {
+     "description": "Pre-signed S3 URL for downloading the document file. **Only returned when `includeDocumentLink=1`** is passed to `getData`. The link has a 15-day TTL.",
+     "source": "docs",
+     "type": "string"
+    },
     "officeID": {
      "description": null,
      "type": "integer"
@@ -12823,6 +16039,11 @@
      "description": "countryID",
      "type": "string"
     },
+    "dateUpdated": {
+     "description": "Date the door was last updated.",
+     "source": "docs",
+     "type": "string"
+    },
     "doorID": {
      "description": "doorID",
      "type": "integer"
@@ -12855,6 +16076,11 @@
      "description": "notes",
      "type": "string"
     },
+    "officeID": {
+     "description": "The FieldRoutes office that owns this record (derived from employee).",
+     "source": "docs",
+     "type": "string"
+    },
     "phone": {
      "description": "phone",
      "type": "string"
@@ -12879,6 +16105,11 @@
   },
   "employee": {
    "fields": {
+    "accessControlProfileDescription": {
+     "description": "Human-readable name of the assigned access-control profile (appended by getData).",
+     "source": "docs",
+     "type": "string"
+    },
     "accessControlProfileID": {
      "description": "Access Control Profile ID",
      "type": "integer"
@@ -12886,6 +16117,11 @@
     "active": {
      "description": "0: Inactive account, 1: Active account",
      "type": "integer"
+    },
+    "commissionRate": {
+     "description": "Flat commission rate stored directly on the employee record, independent of any tiered `commissionRatesByRange` configuration.",
+     "source": "docs",
+     "type": "number"
     },
     "dateUpdated": {
      "description": "Employee dateUpdated",
@@ -12983,6 +16219,21 @@
      "description": "The master employeeID if this employee is linked to other accounts in other offices. Set as 0 if the account cannot roam.",
      "type": "integer"
     },
+    "salesCommissionRate": {
+     "description": "Flat sales-side commission rate stored directly on the employee record.",
+     "source": "docs",
+     "type": "number"
+    },
+    "scheduleCommissionRate": {
+     "description": "Flat schedule-side commission rate stored directly on the employee record.",
+     "source": "docs",
+     "type": "number"
+    },
+    "serviceCommissionRate": {
+     "description": "Flat service-side commission rate stored directly on the employee record.",
+     "source": "docs",
+     "type": "number"
+    },
     "skillDescriptions": {
      "description": "Descriptions of skills associated with the technician",
      "type": "integer"
@@ -12990,6 +16241,11 @@
     "skillIDs": {
      "description": "IDs of skills associated with the technician",
      "type": "integer"
+    },
+    "skills": {
+     "description": "Key-value map of `skillID` to `skillDescription` for skills associated with the employee (technicians).",
+     "source": "docs",
+     "type": "object"
     },
     "startAddress": {
      "description": "Employee's starting address on routes",
@@ -13021,6 +16277,16 @@
     },
     "teamIDs": {
      "description": "The master employeeID if this employee is linked to other accounts in other offices. Set as 0 if the account cannot roam.",
+     "type": "integer"
+    },
+    "twoFactorConfigDueDate": {
+     "description": "Deadline for the employee to configure two-factor authentication. A past date forces configuration on next login.",
+     "source": "docs",
+     "type": "string"
+    },
+    "twoFactorRequired": {
+     "description": "Whether two-factor authentication is required. `0`: not required, `1`: required.",
+     "source": "docs",
      "type": "integer"
     },
     "type": {
@@ -13064,6 +16330,11 @@
   },
   "form": {
    "fields": {
+    "contractID": {
+     "description": "Primary key of the form record.",
+     "source": "docs",
+     "type": "integer"
+    },
     "customerID": {
      "description": null,
      "type": "integer"
@@ -13074,6 +16345,11 @@
     },
     "dateSigned": {
      "description": "The date the form was signed.",
+     "type": "string"
+    },
+    "documentLink": {
+     "description": "Pre-signed AWS S3 URL to download the PDF. Only present when `includeDocumentLink=1` is passed and the document state is `COMPLETED` or `LEGACY`. URL has a 15-day TTL.",
+     "source": "docs",
      "type": "string"
     },
     "documentState": {
@@ -13307,6 +16583,31 @@
     }
    }
   },
+  "license": {
+   "fields": {
+    "employeeID": {
+     "description": "The ID of the employee who holds this license. References the `employees` table.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "isWDOLicense": {
+     "description": "Flag indicating whether this is a Wood Destroying Organism (WDO) license. `1` = WDO license, `0` = standard license.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "licenseID": {
+     "description": "Unique primary key identifying the license record.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "licenseNumber": {
+     "description": "The official license number issued by the licensing authority.",
+     "source": "docs",
+     "type": "string"
+    }
+   },
+   "source": "docs"
+  },
   "location": {
    "fields": {
     "locationID": {
@@ -13341,6 +16642,11 @@
      "description": "If this is part of a cancellation, the ID cancellation reason selected",
      "type": "integer"
     },
+    "clicksCount": {
+     "description": "Number of times links in the associated email have been clicked by the customer (email notes only).",
+     "source": "docs",
+     "type": "integer"
+    },
     "companyName": {
      "description": "Company Name",
      "type": "string"
@@ -13373,6 +16679,11 @@
      "description": "Date the note was last updated.",
      "type": "string"
     },
+    "emailStatus": {
+     "description": "Delivery status of the associated email (e.g., `Processing`, `Delivered`, `Bounced`). Empty for non-email notes.",
+     "source": "docs",
+     "type": "string"
+    },
     "employeeID": {
      "description": "Employee ID that created the note",
      "type": "integer"
@@ -13391,6 +16702,11 @@
     },
     "officeIDs": {
      "description": null,
+     "type": "integer"
+    },
+    "openCount": {
+     "description": "Number of times the associated email has been opened by the customer (email notes only).",
+     "source": "docs",
      "type": "integer"
     },
     "referenceID": {
@@ -13465,6 +16781,16 @@
      "description": "Primary Key",
      "type": "integer"
     },
+    "officeLatitude": {
+     "description": "Geographic latitude coordinate of the office location. Used for map rendering, distance calculations, and route optimization features.",
+     "source": "docs",
+     "type": "number"
+    },
+    "officeLongitude": {
+     "description": "Geographic longitude coordinate of the office location. Used together with `officeLatitude` for geospatial operations.",
+     "source": "docs",
+     "type": "number"
+    },
     "officeName": {
      "description": "Description of the product",
      "type": "string"
@@ -13487,6 +16813,71 @@
     }
    }
   },
+  "onMyWayNotification": {
+   "fields": {
+    "appointmentID": {
+     "description": "Foreign key referencing the appointment this notification is for.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "customerID": {
+     "description": "Foreign key referencing the customer who received the notification.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "dateCreated": {
+     "description": "Timestamp when the notification was created.",
+     "source": "docs",
+     "type": "string"
+    },
+    "dateUpdated": {
+     "description": "Timestamp when the notification was last updated.",
+     "source": "docs",
+     "type": "string"
+    },
+    "employeeID": {
+     "description": "Foreign key referencing the employee (technician) who triggered the notification.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "esriDuration": {
+     "description": "Estimated travel duration in minutes from the ESRI routing engine.",
+     "source": "docs",
+     "type": "number"
+    },
+    "eta": {
+     "description": "Estimated time of arrival as a formatted string.",
+     "source": "docs",
+     "type": "string"
+    },
+    "etaUpdated": {
+     "description": "Timestamp when the ETA was last recalculated.",
+     "source": "docs",
+     "type": "string"
+    },
+    "onMyWayNotificationID": {
+     "description": "Unique primary key for the notification record.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "osrmDuration": {
+     "description": "Estimated travel duration in minutes from the OSRM routing engine.",
+     "source": "docs",
+     "type": "number"
+    },
+    "routeFinishedTime": {
+     "description": "Timestamp when the technician arrived (route completed). Null if still in transit.",
+     "source": "docs",
+     "type": "string"
+    },
+    "routePolyline": {
+     "description": "Encoded polyline representing the technician's route to the customer.",
+     "source": "docs",
+     "type": "string"
+    }
+   },
+   "source": "docs"
+  },
   "payment": {
    "fields": {
     "amount": {
@@ -13505,6 +16896,11 @@
      "description": "time payment batch was opened",
      "type": "string"
     },
+    "cardType": {
+     "description": "The card brand used for the payment (e.g., `Visa`, `Mastercard`, `Amex`, `Discover`). Empty for non-card payments.",
+     "source": "docs",
+     "type": "string"
+    },
     "collectionPayment": {
      "description": "collectionPayment flag",
      "type": "integer"
@@ -13516,6 +16912,11 @@
     "customerID": {
      "description": "Customer Unique Identifier",
      "type": "integer"
+    },
+    "customerNotes": {
+     "description": "Customer-facing notes or descriptions associated with the payment.",
+     "source": "docs",
+     "type": "string"
     },
     "date": {
      "description": "Payment date",
@@ -13577,6 +16978,11 @@
      "description": "Status of the payment (0-Unsuccessful, 1-Successful, 2-Refunded)",
      "type": "integer"
     },
+    "subscriptionID": {
+     "description": "The subscription this payment is restricted to. When set, the payment is only applied to invoices belonging to this subscription. `0` if not limited.",
+     "source": "docs",
+     "type": "integer"
+    },
     "transactionID": {
      "description": "transactionID",
      "type": "integer"
@@ -13590,6 +16996,46 @@
      "type": "integer"
     }
    }
+  },
+  "paymentPriority": {
+   "fields": {
+    "limitType": {
+     "description": "Scope of the payment priority allocation. Values: `TI` = ticket, `SU` = subscription, `CU` = customer, `CY` = billing cycle.",
+     "source": "docs",
+     "type": "string"
+    },
+    "paymentID": {
+     "description": "The payment this priority belongs to.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "paymentPriorityID": {
+     "description": "Unique primary key for the payment priority record.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "referenceID": {
+     "description": "General reference ID for the payment priority record.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "subscriptionID": {
+     "description": "Subscription ID tied to this payment priority (when `limitType = SU`).",
+     "source": "docs",
+     "type": "integer"
+    },
+    "ticketID": {
+     "description": "Ticket ID tied to this payment priority (when `limitType = TI`).",
+     "source": "docs",
+     "type": "integer"
+    },
+    "transactionID": {
+     "description": "External transaction ID associated with this payment priority.",
+     "source": "docs",
+     "type": "string"
+    }
+   },
+   "source": "docs"
   },
   "paymentProfile": {
    "fields": {
@@ -13648,6 +17094,11 @@
     "checkType": {
      "description": "ACH only - 0=checking, 1=savings",
      "type": "integer"
+    },
+    "conveniencePaymentPlans": {
+     "description": "Array of convenience payment plan objects linked to this payment profile via `conveniencePaymentPlans.paymentProfileID`. Empty array when the profile has no associated plans. Available on the [Get](/apidocs/payment-profiles#get) endpoint.",
+     "source": "docs",
+     "type": "array"
     },
     "createdBy": {
      "description": "employeeID who created the paymentProfile",
@@ -13885,6 +17336,11 @@
      "description": null,
      "type": "integer"
     },
+    "profane": {
+     "description": "Only present when `pruneProfanity=1` is passed. `true` if the original feedback contained profanity that was masked.",
+     "source": "docs",
+     "type": "boolean"
+    },
     "starRating": {
      "description": null,
      "type": "integer"
@@ -13922,6 +17378,11 @@
      "description": "Average longitude of customers scheduled to this route (or null)",
      "type": "number"
     },
+    "capacityEstimateValue": {
+     "description": "Remaining capacity for this route in the office's configured capacity units.",
+     "source": "docs",
+     "type": "integer"
+    },
     "date": {
      "description": "date of this route",
      "type": "string"
@@ -13950,12 +17411,27 @@
      "description": "Route distance score (snapshot)",
      "type": "integer"
     },
+    "estimatedAppointmentsDurationMinutes": {
+     "description": "Total estimated duration of all appointments on this route, in minutes.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "estimatedDrivingDurationSeconds": {
+     "description": "Estimated total driving time between appointments on this route, in seconds.",
+     "source": "docs",
+     "type": "integer"
+    },
     "groupID": {
      "description": "",
      "type": "integer"
     },
     "groupTitle": {
      "description": "",
+     "type": "integer"
+    },
+    "lockedRoute": {
+     "description": "Lock status. `1` = route is locked (no further scheduling changes allowed), `0` = unlocked.",
+     "source": "docs",
      "type": "integer"
     },
     "officeID": {
@@ -13980,6 +17456,11 @@
     },
     "title": {
      "description": "",
+     "type": "integer"
+    },
+    "totalDistance": {
+     "description": "Total distance of the route across all appointments.",
+     "source": "docs",
      "type": "integer"
     }
    }
@@ -14053,6 +17534,11 @@
     },
     "callAhead": {
      "description": "int in minutes",
+     "type": "integer"
+    },
+    "cancelledBy": {
+     "description": "Employee ID who cancelled the plan. `0` = system.",
+     "source": "docs",
      "type": "integer"
     },
     "completedAppointmentIDs": {
@@ -14235,6 +17721,11 @@
      "description": "Max monthly charge for the subscription",
      "type": "number"
     },
+    "nextAppointmentDueDate": {
+     "description": "Due date of the next pending appointment.",
+     "source": "docs",
+     "type": "string"
+    },
     "nextBillingDate": {
      "description": "Next billing date for the subscription",
      "type": "string"
@@ -14315,6 +17806,11 @@
      "description": "The service type ID for the regular recurring services",
      "type": "integer"
     },
+    "servicePlanRoundIDs": {
+     "description": "Comma-separated list of child subscription IDs representing individual service plan rounds. Returned by the `getData` endpoint.",
+     "source": "docs",
+     "type": "string"
+    },
     "serviceType": {
      "description": "Friendly description of the serviceID",
      "type": "string"
@@ -14337,6 +17833,16 @@
     },
     "sourceID": {
      "description": "Subscription Source ID",
+     "type": "integer"
+    },
+    "subSource": {
+     "description": "Subscription sub-source description.",
+     "source": "docs",
+     "type": "string"
+    },
+    "subSourceID": {
+     "description": "Subscription sub-source ID.",
+     "source": "docs",
      "type": "integer"
     },
     "subscriptionID": {
@@ -14737,6 +18243,16 @@
   },
   "serviceType": {
    "fields": {
+    "billingFrequency": {
+     "description": "Default billing frequency for subscriptions created from this service type. `-1` = After each completed service, `0` = One-time billing, positive values = frequency in days (e.g., `30` = monthly, `90` = quarterly).",
+     "source": "docs",
+     "type": "integer"
+    },
+    "billingTermsDays": {
+     "description": "Net billing days for subscriptions created from this service type. `-1` means defer to the office-level billing terms preference.",
+     "source": "docs",
+     "type": "integer"
+    },
     "category": {
      "description": "Service type category",
      "type": "string"
@@ -14744,6 +18260,11 @@
     "defaultCharge": {
      "description": "Service type default charge",
      "type": "number"
+    },
+    "defaultFollowupDelay": {
+     "description": "Default number of days after a completed service before a follow-up is automatically scheduled.",
+     "source": "docs",
+     "type": "integer"
     },
     "defaultInitialCharge": {
      "description": "Service defaultInitialCharge. If this is not set, the office default initial quote is sent instead.",
@@ -14793,6 +18314,11 @@
      "description": "Service is a reservice type",
      "type": "integer"
     },
+    "salesVisible": {
+     "description": "`1` if visible in the sales/mobile UI, `0` if hidden from sales representatives.",
+     "source": "docs",
+     "type": "integer"
+    },
     "seasonEnd": {
      "description": "Season End Date for this service",
      "type": "string"
@@ -14804,6 +18330,11 @@
     "sentricon": {
      "description": "Sentricon service type (reports to Sentricon Web Services when completed)",
      "type": "integer"
+    },
+    "templateType": {
+     "description": "Service type template classification. Possible values: `SERVICE_TYPE` (standard service subscription), `SERVICE_PLAN_TYPE` (service plan), `SERVICE_ROUND_TYPE` (service round). Note: `SERVICE_BUNDLE_TYPE` and `SERVICE_BUNDLE_CHILD_TYPE` are not stored in the serviceTypes table and will not be returned by this endpoint.",
+     "source": "docs",
+     "type": "string"
     },
     "typeID": {
      "description": "Unique Identifier",
@@ -14850,6 +18381,11 @@
      "description": "1 when the API can schedule to this spot",
      "type": "integer"
     },
+    "appointmentIDs": {
+     "description": "Appointment IDs assigned to this spot.",
+     "source": "docs",
+     "type": "array"
+    },
     "assignedTech": {
      "description": "EmployeeID assigned to the route.",
      "type": "integer"
@@ -14866,13 +18402,28 @@
      "description": "",
      "type": "integer"
     },
+    "customerIDs": {
+     "description": "Customer IDs of appointments on this spot (may have multiple for overbooked spots).",
+     "source": "docs",
+     "type": "array"
+    },
     "date": {
      "description": "",
+     "type": "string"
+    },
+    "dateUpdated": {
+     "description": "Alias for `lastUpdated`.",
+     "source": "docs",
      "type": "string"
     },
     "description": {
      "description": "",
      "type": "string"
+    },
+    "distanceToClosest": {
+     "description": "Minimum of `distanceToPrevious` and `distanceToNext`. Useful for finding the tightest-fit spot.",
+     "source": "docs",
+     "type": "number"
     },
     "distanceToNext": {
      "description": "",
@@ -14884,6 +18435,11 @@
     },
     "end": {
      "description": "",
+     "type": "string"
+    },
+    "lastUpdated": {
+     "description": "Timestamp of the last route update.",
+     "source": "docs",
      "type": "string"
     },
     "nextAppointmentID": {
@@ -14904,6 +18460,16 @@
     },
     "nextSpotID": {
      "description": "ID of the next occupied spot",
+     "type": "integer"
+    },
+    "officeID": {
+     "description": "Office ID that owns the spot. This is the owning office; it is not used as a deleted-customer or global marker.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "open": {
+     "description": "`1` if the spot is open (unoccupied and not blocked), `0` otherwise.",
+     "source": "docs",
      "type": "integer"
     },
     "prevAppointmentID": {
@@ -14949,6 +18515,11 @@
     "start": {
      "description": "",
      "type": "string"
+    },
+    "subscriptionID": {
+     "description": "Subscription ID associated with the current appointment.",
+     "source": "docs",
+     "type": "integer"
     }
    }
   },
@@ -14986,6 +18557,16 @@
      "description": "Every appointment attached to this subscription",
      "type": "integer"
     },
+    "autoSchedule": {
+     "description": "Auto-schedule behavior for forecasted appointments. `-1` = Due Date Method, `0` = No auto-schedule, `1` = Next appointment, `>1` = Next X appointments.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "autopayPaymentProfileID": {
+     "description": "Payment profile ID used for autopay on this subscription.",
+     "source": "docs",
+     "type": "integer"
+    },
     "billToAccountID": {
      "description": "Billing Account which this subscription belongs to",
      "type": "integer"
@@ -14994,8 +18575,23 @@
      "description": "How often this subscription gets their invoice generated -- can be seperate from when their service takes place. 0 / -1 represents getting billed after each service.",
      "type": "integer"
     },
+    "billingTermsDays": {
+     "description": "Net billing terms in days (e.g., Net 30).",
+     "source": "docs",
+     "type": "integer"
+    },
     "callAhead": {
      "description": "int in minutes",
+     "type": "integer"
+    },
+    "cancelledBy": {
+     "description": "Employee ID who performed the cancellation. `0` indicates the system performed the cancellation automatically.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "capacityEstimate": {
+     "description": "Capacity estimate value for resource planning.",
+     "source": "docs",
      "type": "integer"
     },
     "completedAppointmentIDs": {
@@ -15013,6 +18609,11 @@
     "customDate": {
      "description": "custom next appointment date",
      "type": "string"
+    },
+    "customScheduleID": {
+     "description": "ID of a pre-defined custom schedule template for services.",
+     "source": "docs",
+     "type": "integer"
     },
     "customerID": {
      "description": "Customer ID which this subscription belongs to",
@@ -15048,6 +18649,11 @@
     },
     "frequency": {
      "description": "The frequency that the services get scheduled. -1 represents One-Time, 0 represents 'as needed'. Greater than 0 represents the frequency in days. If it is divisible by 30, it is converted to months -- so 90 would represent 3 months and not necessarily 90 days.",
+     "type": "integer"
+    },
+    "includedInitialOnCustomSchedule": {
+     "description": "Whether the initial service is included on the custom schedule. `1` = included, `0` = excluded. Matches the \"Include Initial On Custom Schedule\" option on the customer card. Only has an effect when `frequency = -3` (Custom Schedule); it may hold a leftover non-zero value on other frequencies, which you can ignore.",
+     "source": "docs",
      "type": "integer"
     },
     "initialAppointment": {
@@ -15162,6 +18768,11 @@
      "description": "Max monthly charge for the subscription",
      "type": "number"
     },
+    "nextAppointmentDueDate": {
+     "description": "Due date of the next pending appointment for this subscription. Useful when `nextService` is null or outdated.",
+     "source": "docs",
+     "type": "string"
+    },
     "nextBillingDate": {
      "description": "Next billing date for the subscription",
      "type": "string"
@@ -15172,6 +18783,11 @@
     },
     "officeID": {
      "description": "Office ID which this subscription belongs to",
+     "type": "integer"
+    },
+    "onHold": {
+     "description": "`1` if the subscription is currently on hold, `0` otherwise.",
+     "source": "docs",
      "type": "integer"
     },
     "parentID": {
@@ -15226,6 +18842,11 @@
      "description": "Date the season starts or 0000-00-00 if it is not a seasonal subscription",
      "type": "string"
     },
+    "sentriconAnniversaryDate": {
+     "description": "Sentricon anniversary date, used for renewal tracking. Null if the subscription has no Sentricon record.",
+     "source": "docs",
+     "type": "string"
+    },
     "sentriconConnected": {
      "description": "Set as 1 if the subscription is connected to sentricon",
      "type": "integer"
@@ -15260,6 +18881,16 @@
     },
     "sourceID": {
      "description": "Subscription Source ID",
+     "type": "integer"
+    },
+    "subSource": {
+     "description": "Human-readable subscription sub-source description.",
+     "source": "docs",
+     "type": "string"
+    },
+    "subSourceID": {
+     "description": "Subscription sub-source ID for more granular source tracking.",
+     "source": "docs",
      "type": "integer"
     },
     "subscriptionID": {
@@ -15437,6 +19068,11 @@
     "invoiceNumber": {
      "description": "The displayed Invoice #",
      "type": "string"
+    },
+    "isCustomProduction": {
+     "description": "`1` when `productionValue` was set manually (custom), `0` when it is system-derived from `subTotal`.",
+     "source": "docs",
+     "type": "integer"
     },
     "items": {
      "description": "An array of line items associated with this ticket",
@@ -15670,10 +19306,212 @@
      "type": "string"
     }
    }
+  },
+  "welcomeChecklist": {
+   "fields": {
+    "appointmentID": {
+     "description": "Primary key \u2014 links to the appointment this checklist was completed on.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "areMoving": {
+     "description": "Checkbox: customer indicated they are moving.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "checkAddress": {
+     "description": "Checkbox: service address verified.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "checkEmail": {
+     "description": "Checkbox: email address verified.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "checkName": {
+     "description": "Checkbox: customer name verified.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "checkPhone": {
+     "description": "Checkbox: phone number verified.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "completionPercent": {
+     "description": "Percentage of checklist items completed (`0`\u2013`100`).",
+     "source": "docs",
+     "type": "integer"
+    },
+    "confirmAgreement": {
+     "description": "Checkbox: service agreement confirmed.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "confirmFollowUp": {
+     "description": "Checkbox: follow-up appointment confirmed.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "confirmInitialPrice": {
+     "description": "Checkbox: initial service price confirmed with customer.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "confirmSqft": {
+     "description": "Checkbox: square footage confirmed.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "customerComments": {
+     "description": "Checkbox: customer comments recorded.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "customerID": {
+     "description": "Customer this checklist belongs to.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "dateUpdated": {
+     "description": "Datetime this record was last modified. `NULL` for records predating this field's introduction.",
+     "source": "docs",
+     "type": "string"
+    },
+    "employeeID": {
+     "description": "Employee who completed the checklist.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "explain30DayNotice": {
+     "description": "Checkbox: 30-day cancellation notice explained.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "explainExterior": {
+     "description": "Checkbox: exterior-only service explained.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "explainIncreasedActivity": {
+     "description": "Checkbox: increased pest activity after treatment explained.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "explainNormalPrice": {
+     "description": "Checkbox: normal recurring price explained.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "explainReferral": {
+     "description": "Checkbox: referral program explained.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "followAlong": {
+     "description": "Checkbox: customer followed along during service.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "hasBabies": {
+     "description": "Customer environment: babies present.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "hasBirds": {
+     "description": "Customer environment: birds present.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "hasFish": {
+     "description": "Customer environment: fish present.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "hasGarden": {
+     "description": "Customer environment: garden present.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "hasPets": {
+     "description": "Customer environment: pets present.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "hasPond": {
+     "description": "Customer environment: pond present.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "notes": {
+     "description": "Internal notes.",
+     "source": "docs",
+     "type": "string"
+    },
+    "notesOnInvoice": {
+     "description": "Notes printed on the invoice.",
+     "source": "docs",
+     "type": "string"
+    },
+    "officeID": {
+     "description": "Office this checklist belongs to.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "ongoingService": {
+     "description": "Checkbox: ongoing service agreement confirmed.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "reviewCalendar": {
+     "description": "Checkbox: upcoming service calendar reviewed.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "reviewPaymentOptions": {
+     "description": "Checkbox: payment options reviewed.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "reviewServiceSchedule": {
+     "description": "Checkbox: service schedule reviewed with customer.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "scheduleTermite": {
+     "description": "Checkbox: termite inspection scheduled.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "specialNotes": {
+     "description": "Checkbox: special notes recorded.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "spokeWith": {
+     "description": "Name of the person spoken with during the checklist.",
+     "source": "docs",
+     "type": "string"
+    },
+    "thankCustomer": {
+     "description": "Checkbox: customer thanked.",
+     "source": "docs",
+     "type": "integer"
+    },
+    "timeCompleted": {
+     "description": "Datetime the checklist reached 100% completion.",
+     "source": "docs",
+     "type": "string"
+    }
+   },
+   "getIdParam": "appointmentIDs",
+   "source": "docs"
   }
  },
  "info": {
-  "source": "https://api.fieldroutes.com/resources/swagger.js",
+  "baseline": "https://api.fieldroutes.com/resources/swagger.js (retired); records without \"source\": \"docs\" come from it",
+  "source": "https://knowledgebase.fieldroutes.com/llms.txt",
   "title": "FieldRoutes"
  }
 }

@@ -272,10 +272,10 @@ async def test_office_filter_is_auto_applied_to_searches(fake: FakeFR) -> None:
 
 async def test_list_and_describe_endpoints() -> None:
     all_eps = loads(await server.list_endpoints())
-    assert all_eps["count"] == 187
+    assert all_eps["count"] == 234
     assert "cancel" in all_eps["entities"]["appointment"]
     appt = loads(await server.list_endpoints("appointment"))
-    assert set(appt["actions"]) == {"search", "get", "create", "update", "cancel", "complete"}
+    assert set(appt["actions"]) == {"search", "get", "create", "update", "cancel", "complete", "reschedule"}
     desc = loads(await server.describe_endpoint("subscription/update"))
     names = {p["name"] for p in desc["params"]}
     assert {"frequency", "billingFrequency", "seasonalStart", "customDate", "regionID"} <= names
@@ -1005,7 +1005,7 @@ async def test_generated_tools_for_selected_entities(monkeypatch: pytest.MonkeyP
         mcp, _client_for(fake), server.SPEC,
         writes_enabled=lambda: True, allow_delete=lambda: False, allow_charges=lambda: False,
     )
-    assert len(names) == 12 and "fr_appointment_cancel" in names and "fr_customer_search" in names
+    assert len(names) == 13 and "fr_appointment_cancel" in names and "fr_customer_search" in names
     tools = {t.name: t for t in await mcp.list_tools()}
     assert tools["fr_appointment_cancel"].input_schema["required"] == ["appointmentID"]
     assert "Write action" in tools["fr_appointment_cancel"].description
@@ -1021,7 +1021,7 @@ async def test_generated_tools_expose_all(monkeypatch: pytest.MonkeyPatch) -> No
         mcp, _client_for(FakeFR()), server.SPEC,
         writes_enabled=lambda: True, allow_delete=lambda: False, allow_charges=lambda: False,
     )
-    assert len(names) == 187
+    assert len(names) == 234
 
 
 async def test_generated_delete_guard(monkeypatch: pytest.MonkeyPatch) -> None:

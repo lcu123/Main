@@ -63,7 +63,7 @@ async def test_every_curated_tool_parameter_has_type_information() -> None:
 
 
 async def test_generated_tools_are_off_by_default_so_they_never_hit_the_budget() -> None:
-    # The 187-endpoint generated set (~70k tokens per CLAUDE.md) only exists
+    # The 234-endpoint generated set (~60k tokens per CLAUDE.md) only exists
     # when FR_EXPOSE_ALL/FR_EXPOSE_ENTITIES is explicitly set -- confirming
     # that here is what makes the 35k-char ceiling above meaningful at all.
     assert server._generated_tools == []

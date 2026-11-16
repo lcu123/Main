@@ -12,7 +12,7 @@ Ask Claude things like:
 
 ## Tools
 
-Curated tools are named the way an office person talks. Every one returns trimmed JSON: names instead of IDs, the property address on anything with a customer, and only the fields an office user reads. The generic tools reach all 187 FieldRoutes endpoints when a curated tool doesn't fit.
+Curated tools are named the way an office person talks. Every one returns trimmed JSON: names instead of IDs, the property address on anything with a customer, and only the fields an office user reads. The generic tools reach all 234 FieldRoutes endpoints when a curated tool doesn't fit.
 
 | Tool | What it does |
 | --- | --- |
@@ -54,7 +54,7 @@ Curated tools are named the way an office person talks. Every one returns trimme
 
 Two things on the FieldRoutes subscription screen have no API: **Autoschedule** (Due Date Method) and defining the dates of a **Custom Schedule**. The API can only pick an existing custom schedule by ID. Both stay UI-only.
 
-Optionally, set `FR_EXPOSE_ENTITIES` or `FR_EXPOSE_ALL` to add one typed tool per endpoint (`fr_customer_search`, `fr_appointment_cancel`, ...). That costs context on every message (all 187 is about 70k tokens), so leave it off unless you need it.
+Optionally, set `FR_EXPOSE_ENTITIES` or `FR_EXPOSE_ALL` to add one typed tool per endpoint (`fr_customer_search`, `fr_appointment_cancel`, ...). That costs context on every message (all 234 is about 60k tokens), so leave it off unless you need it.
 
 ## Safety model
 
@@ -141,7 +141,7 @@ MCP_TRANSPORT=http FR_AUTH_KEY=x FR_AUTH_TOKEN=y FR_SUBDOMAIN=z MCP_PATH_SECRET=
 curl localhost:8080/healthz             # -> ok
 ```
 
-`scripts/extract_spec.py` regenerates `src/fr_mcp/fieldroutes_spec.json` from FieldRoutes' public Swagger. Run it if they change their API. `CLAUDE.md` has the conventions for adding a tool.
+`scripts/extract_spec.py` regenerates `src/fr_mcp/fieldroutes_spec.json`. FieldRoutes retired its public Swagger file in October 2026, so the script now reads the API pages of their help centre (`knowledgebase.fieldroutes.com`) and adds what they document to the Swagger records already in the spec; it never changes or drops those, and it tags what it adds with `"source": "docs"`. Run it if they change their API (it takes about four minutes and prints what changed). It needs no credentials and never calls your FieldRoutes account. If you export the live Swagger yourself with your API key (`POST /api/documentation/swagger`), `python scripts/extract_spec.py --swagger FILE` rebuilds from that instead. `CLAUDE.md` has the conventions for adding a tool.
 
 The Docker build installs from `requirements.lock`, not `pyproject.toml`'s open ranges, so a rebuild months from now can't silently pick up a breaking dependency release. Regenerate it deliberately when you want to bump versions:
 
