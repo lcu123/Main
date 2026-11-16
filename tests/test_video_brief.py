@@ -277,12 +277,16 @@ async def test_the_text_request_goes_to_the_techs_number_from_the_office_line(en
     (request,) = seen
     assert str(request.url) == "https://api.quo.com/v1/messages" and request.method == "POST"
     assert request.headers["authorization"] == "quo_test", "Quo takes the bare key, no Bearer"
+    # "setInboxStatus": the same request files the text's conversation under Done in the
+    # office's Quo inbox. tests/test_video_quo_done.py has the rest of that story.
     assert json.loads(request.content) == {
-        "content": "123456 is your Zest Video code.", "from": "+19165550100", "to": ["+19165550101"]}
+        "content": "123456 is your Zest Video code.", "from": "+19165550100", "to": ["+19165550101"],
+        "setInboxStatus": "done"}
 
     refused, transport = recorder(402, {"message": "out of credits"})
     with pytest.raises(DeliveryError):
         await Texter(cfg, transport=transport).send("9165550101", "x")
+    assert len(refused) == 1, "a text Quo refused is not sent a second time"
     assert not Texter(replace(cfg, quo_api_key="")).configured
     with pytest.raises(DeliveryError):
         await Texter(replace(cfg, quo_api_key="")).send("9165550101", "x")

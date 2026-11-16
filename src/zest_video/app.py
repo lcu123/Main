@@ -459,13 +459,16 @@ def main() -> None:
             "address, check VIDEO_DATABASE_URL: it must start with postgresql://")
         raise SystemExit(1) from None
     port = int(os.environ.get("PORT", "8080"))
+    texting = "off"
+    if cfg.quo_api_key and cfg.quo_from:
+        texting = "on, filed under Done in Quo" if cfg.quo_mark_done else "on, left open in the Quo inbox"
     print(
         f"zest-video {__version__}: starting on :{port}; base={cfg.base_url}; "
         f"where={cfg.platform or ('a public address' if cfg.real_deployment else 'local')}; "
         f"records={'Postgres' if cfg.database_url.startswith('postgresql') else 'A LOCAL FILE (not for real use)'}; "
         f"videos={'bucket' if cfg.storage_configured else 'MEMORY (gone when this stops; not for real use)'}; "
         f"mail={cfg.mail_backend}; customer-email={cfg.email_mode}; "
-        f"text={'on' if cfg.quo_api_key and cfg.quo_from else 'off'}; push={'on' if cfg.push_configured else 'off'}; "
+        f"text={texting}; push={'on' if cfg.push_configured else 'off'}; "
         f"fr-writes={'on' if cfg.fr_writes else 'off'}; demo={'on' if cfg.demo_enabled else 'off'}; "
         f"overrides={', '.join(overrides_on(cfg)) or 'none'}",
         file=sys.stderr,

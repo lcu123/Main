@@ -7,12 +7,18 @@ recorders, and the database is a throwaway SQLite file (or Postgres when
 
 `VideoFR` adds the one FieldRoutes write the MCP tests never needed modelled:
 `appointment/complete`, as FieldRoutes' own help page describes it.
+
+`FakeQuo` is Quo's "send a text" call for the tests that run the real `Texter`
+(`use_quo`): what the request must look like, and where the text's conversation
+ends up in the office's inbox.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -28,7 +34,7 @@ from zest_video import auth, config, db
 from zest_video.app import build_app, build_ctx
 from zest_video.core import Ctx
 from zest_video.fr import local_time
-from zest_video.notify import MemoryMailer, MemoryPusher, MemoryTexter
+from zest_video.notify import MemoryMailer, MemoryPusher, MemoryTexter, Texter
 from zest_video.storage import MemoryStorage
 
 TZ = ZoneInfo("America/Los_Angeles")
@@ -249,6 +255,142 @@ class VideoFR(FakeFR):
         return text
 
 
+QUO_KEY = "quo_made_up_key"
+QUO_LINE = "+19165550100"  # the office's line in these tests; a made-up 555-01xx number
+QUO_SEND = "https://api.quo.com/v1/messages"
+
+
+class FakeQuo:
+    """Quo's "send a text" call, as its v1 reference describes it (read Nov 16, 2026). For
+    `httpx.MockTransport(FakeQuo().handler)` behind the real `Texter`; `use_quo` wires it in.
+
+    POST /v1/messages with the bare API key in `Authorization`. The body must carry
+    `content`, `from` and `to`, and may carry `userId`, `phoneNumberId` and
+    `setInboxStatus`, whose one allowed value is "done". The answer is 202 with the message
+    under `data`, its `conversationId` among it. Anything else is refused with 400 and
+    Quo's error body, and nothing is sent.
+
+    There is one conversation for each number texted. A text sent without `setInboxStatus`
+    leaves it open in the office's inbox ("the default behavior without setting this
+    parameter"), also when it was done before; a text sent with it files it under Done.
+    `inbox` is where each conversation is now, `texts` what reached a phone, `requests`
+    every send that was asked for, refused ones too, and `others` every request that was
+    not a send (the server makes none; each is answered 404).
+
+    The switches model a Quo that does otherwise:
+
+    - `knows_done=False`: it refuses a body that carries `setInboxStatus` and sends
+      nothing. `refuse_done_with` is the status: 400, the way it refuses any body it will
+      not take as written, or 403 or 404, the refusals its reference has for marking a
+      conversation done (`DONE_REFUSALS`). `refusal_takes` is how many seconds it takes to
+      say so. Its error repeats what was sent, the code and the tech's number with it, so
+      a test can prove none of that is logged. `waits` is how long the sender was ready to
+      wait for each answer.
+    - `refuse_with=(status, code)`: every send is refused with that answer (out of
+      credits, the number opted out, a server error) and nothing is sent.
+    - `no_answer`: an httpx error raised in place of an answer, with nothing sent.
+    - `answer_lost`: the text is taken and sent, and the answer never arrives. The worst
+      case for a sender that tries again.
+    - `answers`: "full" as documented; "no_conversation" leaves `conversationId` out of the
+      202; "empty" is a 202 with no body; "not_json" a 202 with a page of words."""
+
+    ALLOWED = {"content", "from", "to", "userId", "phoneNumberId", "setInboxStatus"}
+    # Quo's code and title for each status, from its reference: 400 from the send call,
+    # 403 and 404 from "mark a conversation as done".
+    DONE_REFUSALS = {400: ("0200400", "Bad Request"), 403: ("1001403", "Not Phone Number User"),
+                     404: ("1000404", "Not Found")}
+
+    def __init__(self, *, key: str = QUO_KEY, knows_done: bool = True) -> None:
+        self.key = key
+        self.knows_done = knows_done
+        self.refuse_with: tuple[int, str] | None = None
+        self.refuse_done_with = 400
+        self.refusal_takes = 0.0  # seconds
+        self.waits: list[float | None] = []
+        self.no_answer: Exception | None = None
+        self.answer_lost = False
+        self.answers = "full"
+        self.requests: list[httpx.Request] = []
+        self.others: list[httpx.Request] = []
+        self.texts: list[dict[str, str]] = []
+        self.inbox: dict[str, str] = {}
+        self._conversations: dict[str, str] = {}
+
+    def bodies(self) -> list[dict[str, Any]]:
+        """The JSON body of every send that was asked for, in order."""
+        return [json.loads(r.content) for r in self.requests]
+
+    def _error(self, status: int, code: str, title: str, **more: Any) -> httpx.Response:
+        return httpx.Response(status, json={
+            "message": title, "code": code, "status": status, "docs": "https://www.quo.com/docs", "title": title, **more,
+        })
+
+    def _problem(self, body: Any) -> str:
+        if not isinstance(body, dict):
+            return "the body must be an object"
+        if set(body) - self.ALLOWED:
+            return "unknown field: " + ", ".join(sorted(set(body) - self.ALLOWED))
+        content, sender, to = body.get("content"), body.get("from"), body.get("to")
+        if not isinstance(content, str) or not content.strip() or len(content) > 1600:
+            return "content must be 1 to 1600 characters, with one that is not a space"
+        if not isinstance(sender, str) or not re.fullmatch(r"\+[1-9]\d{1,14}|PN.*", sender):
+            return "from must be a number in E.164 form, or a phone number ID"
+        if not isinstance(to, list) or not 1 <= len(to) <= 10 or not all(
+            isinstance(n, str) and re.fullmatch(r"\+[1-9]\d{1,14}", n) for n in to
+        ):
+            return "to must be 1 to 10 numbers in E.164 form"
+        if "setInboxStatus" in body and body["setInboxStatus"] != "done":
+            return "setInboxStatus must be 'done'"
+        return ""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        if request.method != "POST" or str(request.url) != QUO_SEND:
+            self.others.append(request)
+            return self._error(404, "0200404", "Not Found")
+        self.requests.append(request)
+        self.waits.append(request.extensions.get("timeout", {}).get("read"))
+        if self.no_answer is not None:
+            raise self.no_answer
+        if request.headers.get("authorization") != self.key:
+            return self._error(401, "0200401", "Unauthorized")
+        try:
+            body = json.loads(request.content)
+        except ValueError:
+            return self._error(400, "0200400", "Bad Request")
+        problem = self._problem(body)
+        if problem:
+            return self._error(400, "0200400", "Bad Request", errors=[{"path": "/", "message": problem}])
+        if "setInboxStatus" in body and not self.knows_done:
+            time.sleep(self.refusal_takes)
+            return self._error(
+                self.refuse_done_with, *self.DONE_REFUSALS.get(self.refuse_done_with, ("", "Unprocessable Entity")),
+                errors=[{"path": "/setInboxStatus", "message": "is not allowed", "value": body}],
+                trace=f"{body['to'][0]}: {body['content']}",
+            )
+        if self.refuse_with is not None:
+            status, code = self.refuse_with
+            return self._error(status, code, "Refused")
+        to = body["to"][0]
+        self.texts.append({"to": to, "content": body["content"]})
+        conversation = self._conversations.setdefault(to, f"CN{len(self._conversations) + 1:06d}made0up")
+        self.inbox[to] = "done" if body.get("setInboxStatus") == "done" else "open"
+        if self.answer_lost:
+            raise httpx.ReadTimeout("the answer never arrived", request=request)
+        if self.answers == "empty":
+            return httpx.Response(202)
+        if self.answers == "not_json":
+            return httpx.Response(202, text="<html><body>Accepted</body></html>")
+        stamp = db.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        data: dict[str, Any] = {
+            "id": f"AC{len(self.texts):06d}made0up", "to": body["to"], "from": body["from"], "text": body["content"],
+            "phoneNumberId": "PNmade0up", "conversationId": conversation, "direction": "outgoing",
+            "userId": "USmade0up", "status": "queued", "createdAt": stamp, "updatedAt": stamp,
+        }
+        if self.answers == "no_conversation":
+            del data["conversationId"]
+        return httpx.Response(202, json={"data": data})
+
+
 @dataclass
 class Env:
     ctx: Ctx
@@ -382,6 +524,16 @@ async def make_env(tmp_path: Any, **cfg_changes: Any) -> Env:
     app = build_app(ctx, run_jobs=False)
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE)
     return Env(ctx, fake, app, http, storage, mailer, texter, pusher)
+
+
+def use_quo(env: Env, quo: FakeQuo | None = None, **settings: Any) -> FakeQuo:
+    """Put the real `Texter` in place of the recorder, talking to a stand-in Quo, set up as
+    the deployed server is: a key and the office's line. `settings` are config changes for
+    the test (`quo_mark_done=False`)."""
+    quo = quo or FakeQuo()
+    env.reconfigure(quo_api_key=quo.key, quo_from=QUO_LINE, **settings)
+    env.ctx.texter = Texter(env.ctx.cfg, transport=httpx.MockTransport(quo.handler))
+    return quo
 
 
 def code_from(text: str) -> str:

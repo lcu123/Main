@@ -178,6 +178,12 @@ class Config:
 
     extra: dict[str, str] = field(default_factory=dict)
 
+    # QUO_MARK_DONE, on unless it is set to something else: every code text asks Quo to
+    # file its conversation under Done, so sign-ins do not pile up in the office's shared
+    # inbox (`notify.Texter`). An ordinary setting, not one of the overrides below: it
+    # switches no check off, and either way the code is texted.
+    quo_mark_done: bool = True
+
     # Where this is running, and the three loud overrides (see `check_start` and app.start_up).
     platform: str = ""  # "Railway" when Railway's own variables are in the environment
     allow_throwaway_storage: bool = False  # VIDEO_ALLOW_THROWAWAY_STORAGE=1: a demo that may lose everything
@@ -408,6 +414,12 @@ def switch_notes() -> list[str]:
             "WARNING: VIDEO_EMAIL_MODE is set to a word this server does not know, so it is read as off: no "
             "customer is emailed. Set it to off, test or live."
         )
+    done = os.environ.get("QUO_MARK_DONE", "").strip().lower()
+    if done and done not in ON_WORDS + OFF_WORDS:  # left empty is the same as not set: on
+        out.append(
+            "WARNING: QUO_MARK_DONE is set to a word this server does not know, so it is read as off: the "
+            "conversation of each sign-in code text stays open in the Quo inbox. Set it to on or off."
+        )
     return out
 
 
@@ -479,6 +491,7 @@ def load() -> Config:
         office_phone=_env("VIDEO_OFFICE_PHONE"),
         app_store_url=_env("VIDEO_APP_STORE_URL"),
         privacy_contact=_env("VIDEO_PRIVACY_CONTACT"),
+        quo_mark_done=_bool("QUO_MARK_DONE", True),
         platform="Railway" if any(_env(name) for name in RAILWAY_MARKS) else "",
         allow_throwaway_storage=_bool("VIDEO_ALLOW_THROWAWAY_STORAGE"),
         start_with_files_missing=_bool("VIDEO_START_WITH_FILES_MISSING"),

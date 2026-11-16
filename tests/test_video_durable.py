@@ -417,6 +417,46 @@ def test_a_mistyped_switch_is_named_at_the_start_and_turns_nothing_on(settings, 
     assert "flase" not in err, "names only; a value is never printed"
 
 
+# -- QUO_MARK_DONE: a setting, on by default, said at every start, and not an override ---
+
+QUO = {"QUO_API_KEY": "made-up-quo-key", "QUO_FROM_NUMBER": "+19165550100"}
+
+
+@pytest.mark.parametrize("word, on", [
+    (None, True), ("", True), ("   ", True),
+    ("on", True), ("ON", True), (" On ", True), ("1", True), ("true", True), ("yes", True),
+    ("off", False), ("OFF", False), ("0", False), ("false", False), ("no", False),
+    ("of", False), ("dnoe", False),
+])
+def test_code_texts_are_filed_under_done_unless_the_switch_says_otherwise(settings, word: str | None, on: bool) -> None:
+    """The owner asked for it, so with nothing set it is on. A word the server does not
+    know is read as off, as for every switch here, and the start says so."""
+    cfg = settings({**PRODUCTION, **QUO, **({} if word is None else {"QUO_MARK_DONE": word})})
+    assert cfg.quo_mark_done is on
+    known = word is None or word.strip().lower() in ("", "on", "1", "true", "yes", "off", "0", "false", "no")
+    said = [n for n in config.switch_notes() if "QUO_MARK_DONE" in n]
+    assert bool(said) is not known
+    assert all(n.startswith("WARNING") and "read as off" in n for n in said)
+    assert check_start(cfg) == [], "it switches no start-up check off: not an override, on or off"
+
+
+@pytest.mark.parametrize("env, said", [
+    ({}, "text=off;"),
+    (QUO, "text=on, filed under Done in Quo;"),
+    ({**QUO, "QUO_MARK_DONE": "off"}, "text=on, left open in the Quo inbox;"),
+    ({**QUO, "QUO_MARK_DONE": "dnoe"}, "text=on, left open in the Quo inbox;"),
+])
+def test_the_first_line_says_where_a_code_texts_conversation_goes(settings, entry, capsys, env, said: str) -> None:
+    settings({**PRODUCTION, **env})
+    video_app.main()
+    err = capsys.readouterr().err
+    assert len(entry.served) == 1 and said in err
+    assert "overrides=none" in err, "and it is not counted among the overrides"
+    assert ("WARNING: QUO_MARK_DONE is set to a word this server does not know" in err) is (
+        env.get("QUO_MARK_DONE") == "dnoe")
+    assert "made-up-quo-key" not in err and "dnoe" not in err, "names only; a value is never printed"
+
+
 # -- an override left behind must not sit there in silence ------------------------------
 
 
