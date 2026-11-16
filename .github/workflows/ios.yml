@@ -24,6 +24,12 @@ name: iOS
 # shipping run on main sat behind them for 25 minutes without starting. The
 # archive compiles the whole app itself, so a build that does not compile
 # still cannot ship.
+#
+# A push whose commit message contains [no-sim] runs core only. It is for a
+# commit that changes nothing but the testflight job or its scripts: the
+# simulator jobs do not test those, and on the day of the first upload each
+# such push queued 13 Mac jobs in front of the upload it was meant to fix.
+# Never use it on a commit that touches the app or its tests.
 
 on:
   push:
@@ -53,8 +59,10 @@ on:
         type: boolean
         default: false
 
+# A shipping run and a test run on the same branch are two groups: a push made
+# while an upload is going must not cancel the upload.
 concurrency:
-  group: ios-${{ github.ref }}
+  group: ios-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.testflight && 'ship' || 'test' }}
   cancel-in-progress: true
 
 jobs:
@@ -70,7 +78,7 @@ jobs:
 
   app:
     name: App build + tests (${{ matrix.os }})
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.testflight) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.testflight) && !contains(github.event.head_commit.message, '[no-sim]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
@@ -183,7 +191,7 @@ jobs:
     # with made-up data (no sign-in, no network, no camera, no prompts). That
     # mode is compiled out of any build for a real phone.
     name: Screenshots
-    if: github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.testflight)
+    if: github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.testflight) && !contains(github.event.head_commit.message, '[no-sim]')
     runs-on: macos-26
     timeout-minutes: 40
     defaults:
@@ -409,7 +417,7 @@ jobs:
     # upload session, to show what the simulator does with it. It can never
     # turn the run red.
     name: UI tests (${{ matrix.name }})
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.testflight) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.testflight) && !contains(github.event.head_commit.message, '[no-sim]') }}
     runs-on: macos-26
     timeout-minutes: 45
     continue-on-error: ${{ matrix.informational }}
@@ -715,7 +723,7 @@ jobs:
     # accessibility audit must find nothing that is not on a short, explained
     # list. ios/Scripts/screens_job.sh is what each job does.
     name: Sizes (${{ matrix.name }})
-    if: github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.testflight)
+    if: github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.testflight) && !contains(github.event.head_commit.message, '[no-sim]')
     runs-on: macos-26
     # Two simulators, pictures and every check on each: the 6.1-inch + iPad
     # job needed 51 minutes and was cut off at 45 with the iPad half done.
@@ -883,7 +891,7 @@ jobs:
     # turns the run red. The table is printed in the log and uploaded as
     # performance.txt.
     name: Speed and weight (informational)
-    if: github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.testflight)
+    if: github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.testflight) && !contains(github.event.head_commit.message, '[no-sim]')
     runs-on: macos-26
     timeout-minutes: 45
     continue-on-error: true
@@ -1133,14 +1141,18 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/asc"
           KEY="$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
-          # The last line break matters to some readers of this file, and a
-          # secret pasted from Windows carries carriage returns.
-          printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' > "$KEY"
+          # A key pasted into the secret box often loses its line breaks, or
+          # arrives with "\n" typed out, or without its first and last line.
+          # The first real run stopped here for that. So the file is rebuilt
+          # from the key's own characters, whatever shape they came in.
+          # Only the shape is printed, never a character of the key.
+          KEY="$KEY" python3 Scripts/write_p8.py
           chmod 600 "$KEY"
           if ! openssl pkey -in "$KEY" -noout 2>/dev/null; then
-            echo "::error::Repository secret ASC_KEY_P8 is not a private key. Paste the whole AuthKey_XXXX.p8 file, from -----BEGIN PRIVATE KEY----- to -----END PRIVATE KEY-----, line breaks included."
+            echo "::error::Repository secret ASC_KEY_P8 is not a private key (see the shape printed above). Open the downloaded AuthKey_XXXX.p8 file in a text editor, copy ALL of it, and save it as the secret again."
             exit 1
           fi
+          echo "The key file reads as a private key."
           echo "ASC_KEY_PATH=$KEY" >> "$GITHUB_ENV"
 
       - name: Ask App Store Connect first (key, agreements, app record, push)
