@@ -508,7 +508,7 @@ Those need a real phone.
 | `ui-tests` | macOS, jobs `a`, `b`, `d` and `e` side by side (plus `c`, informational) | starts the fake server, runs the UI tests in the simulator; on a failure, the log names the test, the assertion and what the server saw |
 | `sizes` | macOS, four jobs side by side | pictures of every screen on the smallest iPhone (plus the awkward names), a 6.1-inch iPhone, an iPad, and at the largest text sizes; then `ScreensUITests` on each. Artifacts `screens-small`, `screens-odd-names`, `screens-mid`, `screens-ipad`, `screens-large-text`, `screens-largest-accessibility` |
 | `performance` | macOS, informational | `PerformanceUITests`, plus the size of a Release build for a phone; prints a table and uploads it as `performance.txt` |
-| `testflight` | macOS, manual | archives and uploads to App Store Connect |
+| `testflight` | macOS, manual | archives and uploads to App Store Connect. A run with the box ticked runs only `core` and this job |
 
 ## Pictures of every screen
 
@@ -660,8 +660,12 @@ One-time setup, in Zest's Apple Developer account:
    Actions): `APPLE_TEAM_ID`, `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`
    (the whole text of the `.p8` file).
 
-Then, on GitHub: Actions → **iOS** → Run workflow → tick *Also archive and
-upload this build to TestFlight*. The build number is the run number (a
+Then, on GitHub: Actions → **iOS** → Run workflow → tick *Archive and
+upload this build to TestFlight*. A run with the box ticked is a shipping
+run: it runs `core` and `testflight` and skips every simulator job, so it
+does not wait for thirteen Mac runners. Ship a commit whose push run is
+green; to run the simulator jobs by hand, leave the box unticked. The
+build number is the run number (a
 re-run of the same run gets `.2`, `.3`), so an upload is never refused as a
 duplicate. Both the build number and the version can be typed in on that
 form when a specific one is wanted, for example version `1.0.1` after `1.0.0`

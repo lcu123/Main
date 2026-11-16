@@ -16,6 +16,14 @@ name: iOS
 #   performance informational: launch time, memory, disk and app size
 #               (artifact "performance", file performance.txt)
 #   testflight  manual only: archive and upload to App Store Connect
+#
+# A run started by hand with "upload to TestFlight" ticked is a shipping run:
+# it runs core and testflight and nothing else. The simulator jobs (app,
+# screens, ui-tests, sizes, performance) are for pushes and for a run by hand
+# without the box. They take 13 Mac runners for up to an hour, and the first
+# shipping run on main sat behind them for 25 minutes without starting. The
+# archive compiles the whole app itself, so a build that does not compile
+# still cannot ship.
 
 on:
   push:
@@ -29,7 +37,7 @@ on:
   workflow_dispatch:
     inputs:
       testflight:
-        description: "Also archive and upload this build to TestFlight"
+        description: "Archive and upload this build to TestFlight (skips the simulator tests; untick to run those)"
         type: boolean
         default: false
       build_number:
@@ -58,6 +66,7 @@ jobs:
 
   app:
     name: App build + tests (${{ matrix.os }})
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.testflight) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
@@ -170,7 +179,7 @@ jobs:
     # with made-up data (no sign-in, no network, no camera, no prompts). That
     # mode is compiled out of any build for a real phone.
     name: Screenshots
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.testflight)
     runs-on: macos-26
     timeout-minutes: 40
     defaults:
@@ -396,6 +405,7 @@ jobs:
     # upload session, to show what the simulator does with it. It can never
     # turn the run red.
     name: UI tests (${{ matrix.name }})
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.testflight) }}
     runs-on: macos-26
     timeout-minutes: 45
     continue-on-error: ${{ matrix.informational }}
@@ -701,7 +711,7 @@ jobs:
     # accessibility audit must find nothing that is not on a short, explained
     # list. ios/Scripts/screens_job.sh is what each job does.
     name: Sizes (${{ matrix.name }})
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.testflight)
     runs-on: macos-26
     # Two simulators, pictures and every check on each: the 6.1-inch + iPad
     # job needed 51 minutes and was cut off at 45 with the iPad half done.
@@ -869,7 +879,7 @@ jobs:
     # turns the run red. The table is printed in the log and uploaded as
     # performance.txt.
     name: Speed and weight (informational)
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.testflight)
     runs-on: macos-26
     timeout-minutes: 45
     continue-on-error: true
@@ -1067,7 +1077,7 @@ jobs:
     # "com.zestlawnpest.video" must already exist in App Store Connect.
     name: Upload to TestFlight
     if: github.event_name == 'workflow_dispatch' && inputs.testflight
-    needs: [core, app]
+    needs: [core]
     runs-on: macos-26
     timeout-minutes: 60
     defaults:

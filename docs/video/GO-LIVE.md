@@ -84,7 +84,8 @@ After step 1 is approved:
 3. In GitHub → Settings → Secrets and variables → Actions, add four secrets:
    `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` (the file's contents) and
    `APPLE_TEAM_ID`.
-4. Run the **iOS** workflow with "upload to TestFlight" ticked.
+4. Run the **iOS** workflow with "upload to TestFlight" ticked. With the box ticked it
+   only builds and uploads (about 15 minutes); the long simulator tests run on every push instead.
 5. Invite the techs in TestFlight. They install the TestFlight app, then Zest Video.
 
 This job has never run, because it cannot without the account. Expect one or
