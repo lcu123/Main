@@ -48,6 +48,10 @@ on:
         description: "TestFlight version, e.g. 1.0.1 (blank = the one in ios/Config/App.xcconfig)"
         type: string
         default: ""
+      unsigned_archive:
+        description: "Only if the upload step failed on signing: archive without entitlements (it uploads, but this build gets no push)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ios-${{ github.ref }}
@@ -1065,16 +1069,24 @@ jobs:
           if-no-files-found: warn
 
   testflight:
-    # NOT YET RUN: this job cannot be tested until the Apple Developer account
-    # exists. Before the first run, add these repository secrets
-    # (Settings → Secrets and variables → Actions):
+    # NOT YET RUN against a real Apple account. How it signs, and why:
+    #   - The archive is signed ad hoc ("-"), on the runner, with no Apple
+    #     certificate. That keeps the app's entitlements (push) in the archive
+    #     and needs no development certificate, no development profile and no
+    #     registered device. Automatic development signing cannot work for a
+    #     team with no devices, and on a clean runner it also makes a new
+    #     development certificate on every run. Xcode Cloud archives this way.
+    #   - The export signs for the App Store with Apple's cloud-managed
+    #     distribution certificate and an App Store profile Xcode makes itself.
+    #     That needs the API key to have the Admin role, and nothing on the runner.
+    # Repository secrets (Settings → Secrets and variables → Actions):
     #   APPLE_TEAM_ID   the 10-character Team ID (developer.apple.com → Membership)
-    #   ASC_KEY_ID      App Store Connect API key ID  (Users and Access → Integrations)
+    #   ASC_KEY_ID      App Store Connect API key ID  (Users and Access → Integrations, Team Keys)
     #   ASC_ISSUER_ID   the Issuer ID shown on that same page
     #   ASC_KEY_P8      the full text of the downloaded AuthKey_XXXX.p8 file
-    # The API key needs the Admin role so Xcode can create the signing
-    # certificate and profile by itself (cloud signing). The app record
-    # "com.zestlawnpest.video" must already exist in App Store Connect.
+    # The app record "com.zestlawnpest.video" must already exist in App Store Connect.
+    # This repository is public: nothing from Apple's signing logs is uploaded
+    # as an artifact (artifacts are not masked); errors are printed to the log.
     name: Upload to TestFlight
     if: github.event_name == 'workflow_dispatch' && inputs.testflight
     needs: [core]
@@ -1084,6 +1096,7 @@ jobs:
       run:
         working-directory: ios
     env:
+      BUNDLE_ID: com.zestlawnpest.video
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -1100,11 +1113,40 @@ jobs:
               missing=1
             fi
           done
+          # A space or a line break pasted in with an ID fails much later, and unclearly.
+          for name in APPLE_TEAM_ID ASC_KEY_ID ASC_ISSUER_ID; do
+            case "${!name}" in
+              *[!A-Za-z0-9-]*) echo "::error::Repository secret $name has a space, a line break or another stray character in it. Save it again, the ID only."; missing=1 ;;
+            esac
+          done
+          if [ -n "$APPLE_TEAM_ID" ] && [ "${#APPLE_TEAM_ID}" != "10" ]; then
+            echo "::error::Repository secret APPLE_TEAM_ID must be the 10-character Team ID."
+            missing=1
+          fi
           if [ ! -f ZestVideo/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png ]; then
             echo "::error::The app icon (icon-1024.png) is not committed."
             missing=1
           fi
           exit $missing
+
+      - name: Write the App Store Connect key
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          KEY="$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+          # The last line break matters to some readers of this file, and a
+          # secret pasted from Windows carries carriage returns.
+          printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' > "$KEY"
+          chmod 600 "$KEY"
+          if ! openssl pkey -in "$KEY" -noout 2>/dev/null; then
+            echo "::error::Repository secret ASC_KEY_P8 is not a private key. Paste the whole AuthKey_XXXX.p8 file, from -----BEGIN PRIVATE KEY----- to -----END PRIVATE KEY-----, line breaks included."
+            exit 1
+          fi
+          echo "ASC_KEY_PATH=$KEY" >> "$GITHUB_ENV"
+
+      - name: Ask App Store Connect first (key, agreements, app record, push)
+        # Seconds, not the ten minutes it takes to find the same thing out at
+        # the upload. Also switches Push Notifications on for the App ID.
+        run: python3 Scripts/asc_preflight.py
 
       - name: Toolchain
         run: xcodebuild -version
@@ -1113,12 +1155,6 @@ jobs:
         run: |
           brew install xcodegen
           xcodegen generate
-
-      - name: Write the App Store Connect key
-        run: |
-          mkdir -p "$RUNNER_TEMP/asc"
-          printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
-          chmod 600 "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
 
       - name: Pick the build number
         env:
@@ -1136,12 +1172,12 @@ jobs:
             fi
           fi
           case "$BUILD" in
-            ""|*[!0-9.]*) echo "::error::Build number must be digits and dots, got '$BUILD'."; exit 1 ;;
+            ""|*[!0-9.]*|.*|*.|*..*|*.*.*.*) echo "::error::Build number must be one to three whole numbers with dots between, got '$BUILD'."; exit 1 ;;
           esac
           VERSION_SETTING=""
           if [ -n "$VERSION_INPUT" ]; then
             case "$VERSION_INPUT" in
-              *[!0-9.]*) echo "::error::Version must be digits and dots, got '$VERSION_INPUT'."; exit 1 ;;
+              *[!0-9.]*|.*|*.|*..*|*.*.*.*) echo "::error::Version must be like 1.0.1, got '$VERSION_INPUT'."; exit 1 ;;
             esac
             VERSION_SETTING="MARKETING_VERSION=$VERSION_INPUT"
           fi
@@ -1150,23 +1186,50 @@ jobs:
           echo "VERSION_SETTING=$VERSION_SETTING" >> "$GITHUB_ENV"
 
       - name: Archive
+        env:
+          UNSIGNED_INPUT: ${{ inputs.unsigned_archive }}
         run: |
           set -o pipefail
+          # No -allowProvisioningUpdates and no key here: the archive never
+          # talks to Apple. See the note at the top of this job.
+          if [ "$PUSH_READY" = "yes" ] && [ "$UNSIGNED_INPUT" != "true" ]; then
+            SIGNING=(CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES)
+            echo "Archive: signed ad hoc, entitlements kept."
+          else
+            SIGNING=(CODE_SIGNING_ALLOWED=NO)
+            echo "::warning::Archive: not signed, so this build has no push entitlement. It uploads and installs; pushes do not reach it."
+          fi
           xcodebuild archive \
             -project ZestVideo.xcodeproj \
             -scheme ZestVideo \
             -configuration Release \
             -destination "generic/platform=iOS" \
             -archivePath "$RUNNER_TEMP/ZestVideo.xcarchive" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
+            "${SIGNING[@]}" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             $VERSION_SETTING \
             -quiet 2>&1 | tee archive.log
+
+      - name: What is in the archive
+        run: |
+          APP="$RUNNER_TEMP/ZestVideo.xcarchive/Products/Applications/ZestVideo.app"
+          GOT_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist")
+          GOT_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
+          GOT_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist")
+          echo "Archived: $GOT_ID  version $GOT_VERSION  build $GOT_BUILD"
+          echo "Export compliance key: $(/usr/libexec/PlistBuddy -c "Print :ITSAppUsesNonExemptEncryption" "$APP/Info.plist" 2>/dev/null || echo "MISSING")"
+          codesign -dv "$APP" 2>&1 | grep -E "Signature|TeamIdentifier" || echo "The archived app is not signed."
+          echo "Entitlements in the archive:"
+          codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -p - 2>/dev/null || echo "  (none)"
+          if [ "$GOT_BUILD" != "$BUILD_NUMBER" ]; then
+            echo "::error::The archive has build $GOT_BUILD, not $BUILD_NUMBER: the build number did not reach the app."
+            exit 1
+          fi
+          if [ "$GOT_ID" != "$BUNDLE_ID" ]; then
+            echo "::error::The archive's bundle ID is $GOT_ID, not $BUNDLE_ID."
+            exit 1
+          fi
 
       - name: Upload to App Store Connect
         run: |
@@ -1191,14 +1254,39 @@ jobs:
           </dict>
           </plist>
           PLIST
+          plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/ZestVideo.xcarchive" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -exportPath "$RUNNER_TEMP/export" \
             -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
             -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" 2>&1 | tee export.log
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" 2>&1 \
+            | sed -E 's/((Apple|iPhone|iOS) (Distribution|Development)[^:]*: )[^"(]*\(/\1[name hidden] (/g' | tee export.log
+          echo "Uploaded build $BUILD_NUMBER. It shows in App Store Connect, TestFlight, once Apple has processed it."
+
+      - name: What went wrong
+        if: failure()
+        run: |
+          # Printed, never uploaded: this repository is public, and the log
+          # masks the secrets where an artifact would not. A signing
+          # certificate carries its holder's name; that is hidden too.
+          hide() { sed -E 's/((Apple|iPhone|iOS) (Distribution|Development)[^:]*: )[^"(]*\(/\1[name hidden] (/g'; }
+          for log in archive.log export.log; do
+            [ -f "$log" ] || continue
+            echo "---- error lines in $log ----"
+            grep -n -E "error:|error |Error Domain|\*\* (ARCHIVE|EXPORT) FAILED" "$log" | head -60 || true
+          done
+          DIST=$(grep -o '/[^"]*\.xcdistributionlogs' export.log 2>/dev/null | head -1)
+          [ -n "$DIST" ] || DIST=$(find "${TMPDIR:-/tmp}" -maxdepth 2 -name "*.xcdistributionlogs" 2>/dev/null | head -1)
+          if [ -n "$DIST" ] && [ -d "$DIST" ]; then
+            echo "---- Apple's distribution log: critical ----"
+            tail -80 "$DIST/IDEDistribution.critical.log" 2>/dev/null | hide || true
+            echo "---- Apple's distribution log: lines that say error or fail ----"
+            grep -h -i -E "error|fail|denied|permission|not found|invalid" "$DIST/IDEDistribution.standard.log" 2>/dev/null | grep -v -i "bearer" | cut -c1-600 | tail -60 | hide || true
+          fi
+          ls -la "$RUNNER_TEMP/export" 2>/dev/null || true
 
       - name: Remove the key
         if: always()

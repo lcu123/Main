@@ -671,6 +671,17 @@ duplicate. Both the build number and the version can be typed in on that
 form when a specific one is wanted, for example version `1.0.1` after `1.0.0`
 is on sale.
 
+How it signs: the archive is signed ad hoc on the runner (no certificate,
+no profile, no registered device), and the export signs it for the App
+Store with Apple's cloud-managed certificate, which needs the API key to
+be a Team key with the Admin role. Before the build, the job asks App
+Store Connect whether the key works, an agreement is waiting and the app
+record exists, and switches Push Notifications on for the App ID if it is
+off (`ios/Scripts/asc_preflight.py`). If the upload step fails on signing,
+run it again with *unsigned_archive* ticked: that build uploads and
+installs but gets no pushes. None of this has run against a real Apple
+account yet.
+
 The same archive can be made by hand in Xcode: Product → Archive →
 Distribute App → App Store Connect.
 
