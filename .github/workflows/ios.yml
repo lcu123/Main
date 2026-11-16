@@ -275,6 +275,12 @@ jobs:
         run: |
           APP="build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app"
           ls -d "$APP"
+          # Two of the pictures are the sign-in steps with the keyboard up
+          # (loginkeys, codekeys). A simulator that thinks a hardware keyboard
+          # is connected shows none; the setting is read at boot.
+          defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false || true
+          defaults write com.apple.iphonesimulator DevicePreferences -dict-add "$SIM_UDID" \
+            '<dict><key>ConnectHardwareKeyboard</key><false/></dict>' || true
           xcrun simctl boot "$SIM_UDID" || true
           xcrun simctl bootstatus "$SIM_UDID" -b
           # A clean status bar: 9:41, full battery, full signal. Nice to have only.
@@ -308,7 +314,7 @@ jobs:
           blank=""
           slow=""
           number=0
-          for name in login code today today2 confirm far record recording review warning saved stopvideo locked queue update team lowspace full olddraft; do
+          for name in login code today today2 confirm far record recording review warning saved stopvideo locked queue update team lowspace full olddraft loginkeys codekeys; do
             number=$((number + 1))
             file=$(printf "screens/%02d-%s.png" "$number" "$name")
             ok=1
@@ -572,8 +578,13 @@ jobs:
           # How the app is signed, and what it is entitled to (for the record).
           codesign -dv "$APP" 2>&1 | grep -E "Signature|Identifier|flags" || echo "the app is not signed"
           codesign -d --entitlements - "$APP" 2>/dev/null | head -20 || true
-          # Typing in the tests needs the on-screen keyboard.
+          # The on-screen keyboard has to show: SignInUITests looks at both
+          # sign-in steps with it up (and skips, loudly, if there is none).
+          # A simulator that thinks a hardware keyboard is connected shows
+          # none; the setting is read at boot, so it is written before it.
           defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false || true
+          defaults write com.apple.iphonesimulator DevicePreferences -dict-add "$SIM_UDID" \
+            '<dict><key>ConnectHardwareKeyboard</key><false/></dict>' || true
           xcrun simctl boot "$SIM_UDID" || true
           xcrun simctl bootstatus "$SIM_UDID" -b
           xcrun simctl ui "$SIM_UDID" appearance light || true

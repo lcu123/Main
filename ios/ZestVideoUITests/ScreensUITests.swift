@@ -27,6 +27,16 @@ import UIKit
 ///    contrast issue on a line of text is settled by scrolling the line
 ///    whole on to the screen and measuring its pixels, a tap target by its
 ///    size once whole, and anything else it flags on a whole row fails.
+/// 5. **The two sign-in steps with the keyboard up** (`loginkeys`,
+///    `codekeys`: the same steps opened with the cursor in the field, as a
+///    tech has them). The question, the whole field or all six code boxes,
+///    the number read back under the field and the help line are above the
+///    keyboard and under no button, and the buttons can still be reached.
+///    (With the text at its largest the number is not read back, and the
+///    check is that it is not.) Every other check here looks at a screen
+///    with no keyboard on it, which is how a build went out with two pinned
+///    buttons covering half of the field. A picture of each step as it was
+///    found is kept with the pass's reports (`keyboard-up.<screen>...`).
 ///
 /// CI runs this class on several simulators and text sizes. It is told which
 /// through the environment:
@@ -121,6 +131,72 @@ class ScreenChecks: ZestUITestCase {
         let audits: XCUIAccessibilityAuditType = [.contrast, .hitRegion, .textClipped, .sufficientElementDescription, .dynamicType]
         let problems = inspect(screen, odd: nil, audits: audits)
         report(problems, for: screen)
+    }
+
+    /// One sign-in step, opened with the cursor in its field so that the
+    /// keyboard is up (see `typingProblems` in `ZestUITestCase`).
+    ///
+    /// Skipped, and said so in the log, when the simulator shows no
+    /// keyboard, and on an iPad, where the app runs in an iPhone-sized
+    /// window and the iPad lays its own keyboard over it in its own way.
+    fileprivate func checkTyping(_ screen: String) throws {
+        if Self.device == "ipad" {
+            let words = "On an iPad the app runs in an iPhone-sized window with the iPad's own keyboard over it. The sign-in steps with the keyboard up are checked on the iPhones."
+            print("NOTE SKIPPED \(shortName): \(words)")
+            throw XCTSkip(words)
+        }
+        app.launchArguments = ["-ZestScreen", screen]
+        app.launchEnvironment = [:]
+        app.launch()
+
+        let codeStep = screen == "codekeys"
+        let name = "\(screen) (\(Self.device))"
+        let field = app.textFields[codeStep ? "code-field" : "contact-field"]
+        guard field.waitForExistence(timeout: 40) else {
+            XCTFail("\(name): the screen never came up (no field to type into after 40 s). On screen: \(screenSummary())")
+            return
+        }
+        // The first moment a screen ignores touches; and let it finish drawing.
+        pause(1.0)
+        let keyboard = try keyboardOrSkip(for: field, on: name)
+        // The step as it stands before anything is moved, kept with this
+        // pass's reports whether or not anything is wrong with it: a person
+        // can look at what the numbers below are about.
+        savePicture(named: "keyboard-up.\(screen).\(Self.device).info")
+
+        var seen: [(String, XCUIElement)]
+        let buttons: [String]
+        var problems: [String] = []
+        if codeStep {
+            seen = [
+                ("the question \"We texted a 6-digit code to your phone.\"", textLine("We texted a 6-digit code to your phone.")),
+                ("the six code boxes", field),
+                ("the help line \"No code? Ask the office to check your mobile number.\"", textLine("No code? Ask the office to check your mobile number.")),
+            ]
+            buttons = ["SEND A NEW CODE", "BACK"]
+        } else {
+            seen = [
+                ("the question \"Type your mobile number.\"", textLine("Type your mobile number.")),
+                ("the mobile number field", field),
+            ]
+            // The number is in the field as a tech types it, ten plain
+            // digits, so it is read back grouped under the field: the page
+            // as tall as it gets while he types. With the text at its two
+            // largest sizes the app leaves that line out, so that the help
+            // line and SEND MY CODE keep clear of the keyboard.
+            let readBack = element("contact-preview")
+            if Self.bigText {
+                if readBack.exists {
+                    problems.append("\(name): the number is read back under the field. With the text at its largest that line is left out while the field is typed into: the help line and SEND MY CODE need its room.")
+                }
+            } else {
+                seen.append(("the number read back under the field", readBack))
+            }
+            seen.append(("the help line \"We will text you a 6-digit code.\"", textLine("We will text you a 6-digit code.")))
+            buttons = ["SEND MY CODE", "USE EMAIL INSTEAD"]
+        }
+        problems += typingProblems(on: name, seen: seen, buttons: buttons, keyboard: keyboard)
+        report(problems, for: "\(screen), the keyboard up")
     }
 
     fileprivate func report(_ problems: [String], for what: String) {
@@ -1433,6 +1509,9 @@ final class ScreensUITests: ScreenChecks {
     func testAlmostFull() { check("lowspace") }
     func testFull() { check("full") }
     func testOldDraft() { check("olddraft") }
+    // The two sign-in steps as a tech has them: the keyboard up.
+    func testLoginWithTheKeyboardUp() throws { try checkTyping("loginkeys") }
+    func testCodeWithTheKeyboardUp() throws { try checkTyping("codekeys") }
 }
 
 /// The route of awkward customers (an apostrophe, accents, a hyphen, a

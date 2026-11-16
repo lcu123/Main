@@ -61,7 +61,7 @@ def token():
                             input=(head + "." + body).encode(), capture_output=True)
     if signed.returncode != 0:
         fail("openssl could not sign with the .p8 file. The secret ASC_KEY_P8 must be the whole "
-             "file, from -----BEGIN PRIVATE KEY----- to -----END PRIVATE KEY-----.")
+             "file, from its first line to its last line.")
     try:
         return head + "." + body + "." + b64url(der_to_raw(signed.stdout))
     except (ValueError, IndexError):

@@ -63,6 +63,14 @@ number is wrong the app does not say so; the text just never comes. You can
 also tap **SEND A NEW CODE**, or tap **USE EMAIL INSTEAD**. Still nothing:
 call the office. They can read you a code.
 
+While the keyboard is up, these buttons are on the page under the box you
+type in. If you do not see one, slide the page up with your thumb. The
+arrow at the top left also goes back.
+
+If the app cannot send your code ("No signal. Please try again."), the
+keyboard goes away and **SEND MY CODE** is at the bottom of the screen. Tap
+it to try again. To change your number, tap the box.
+
 ## The phone asks five questions
 
 Say yes to all five. Each one is asked once.

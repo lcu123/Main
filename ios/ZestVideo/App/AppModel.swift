@@ -78,6 +78,10 @@ struct CheckResult: Equatable {
 struct ScreenSeeds: Equatable {
     var loginStep: LoginView.Step = .contact
     var loginContact = ""
+    /// `loginContact` is in the field as a tech types it (ten plain digits),
+    /// so it is read back grouped under the field. Otherwise the field
+    /// starts with the number already grouped and nothing is read back.
+    var loginAsTyped = false
     var loginCode = ""
     var confirmStage: ConfirmStopView.Stage = .confirm
     var reviewStage: ReviewView.Stage = .ask

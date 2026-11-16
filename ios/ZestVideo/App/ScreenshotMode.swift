@@ -48,6 +48,12 @@ enum ScreenshotMode {
         case full
         /// "Save this video?" for a clip left unsaved since yesterday.
         case olddraft
+        /// The first sign-in step as a tech has it in front of him: the
+        /// cursor in the field and the keyboard up. (`login` is the same
+        /// step with no cursor, so the whole page shows.)
+        case loginkeys
+        /// The code step the same way: the number pad up.
+        case codekeys
     }
 
     /// The screen asked for on the command line, if any.
@@ -192,6 +198,25 @@ enum ScreenshotMode {
             shot.seeds.loginContact = "9165550100"
             shot.seeds.loginCode = "482"
             shot.seeds.autoFocus = false
+        case .loginkeys:
+            // The cursor is put in the field as in the real app
+            // (`autoFocus` is left on), so the keyboard comes up and the
+            // step takes the shape it has while it is typed into. On a
+            // simulator that shows no keyboard the shape is the same, with
+            // spare room where the keyboard would be.
+            //
+            // The number is in the field as he types it, ten plain digits,
+            // so it is read back grouped under the field: the page as tall
+            // as it gets while he types. (`login` starts with the number
+            // already grouped, and so has no such line.)
+            shot = Shot(route: .login, tech: nil, today: nil)
+            shot.seeds.loginContact = "9165550100"
+            shot.seeds.loginAsTyped = true
+        case .codekeys:
+            shot = Shot(route: .login, tech: nil, today: nil)
+            shot.seeds.loginStep = .code
+            shot.seeds.loginContact = "9165550100"
+            shot.seeds.loginCode = "482"
         case .today:
             break
         case .today2:

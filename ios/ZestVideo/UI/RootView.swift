@@ -31,7 +31,7 @@ struct RootView: View {
         case .login:
             LoginView(
                 step: app.seeds.loginStep, contact: app.seeds.loginContact, code: app.seeds.loginCode,
-                autoFocus: app.seeds.autoFocus
+                autoFocus: app.seeds.autoFocus, asTyped: app.seeds.loginAsTyped
             )
         case .today:
             TodayView()

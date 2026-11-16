@@ -276,6 +276,27 @@ page under Settings.
 owner can switch it off in a second. It does nothing while `FR_WRITES` is off,
 and with `FR_WRITE_CUSTOMER_IDS` set it reaches only those customers.
 
+Sign-in codes are the only texts the server sends, through the office's Quo
+line. Each one asks Quo, in the same request (`"setInboxStatus": "done"`), to
+file its conversation under Done, so sign-ins do not pile up in the office's
+shared inbox. Nothing else is asked of Quo: no second request, no look-up, no
+other conversation. It is the whole conversation with that tech's number that
+moves, and a reply from him brings it back. If Quo says no to the request
+(400, 403, 404 or 422: by its reference nothing is sent on any of them, and
+the field is the one new thing in it), the same text goes once more without
+the field, inside the same 15 seconds, and one line in the log says that
+conversation is open. On any other answer, or none, the text is not sent
+again, so a tech never gets two codes. Nothing passes a failed text on (the
+code still goes by email), so such a text is one line in the log too: what
+Quo answered, the last four digits of the number, and the switch to try if no
+code text has gone through since the field was added. A text Quo refused both
+with the field and without it has no line: the field was not why.
+`QUO_MARK_DONE=off` leaves the field out and sends the text exactly as it went
+before, and a failed text is then as quiet as it was. It is an ordinary
+setting, on by default, and not one of the start-up overrides: it switches no
+check off. The first line of every start says which way it is (`text=on, filed
+under Done in Quo`), and so does the office page under Settings.
+
 ## What survives a restart
 
 Railway replaces the server's container at every deploy and may restart it at
@@ -543,11 +564,14 @@ Proven:
 - URL signing matches Amazon's published SigV4 example.
 - App: compiles and passes its unit tests on Xcode 16 and Xcode 26, and CI
   launches every screen in the iPhone simulator and photographs it.
-- App, end to end in the simulator: 99 UI tests tap through every screen and
+- App, end to end in the simulator: UI tests tap through every screen and
   button against a fake server and check both the screen and what the server
-  received. They cover sign-in by text code, the route list, record → "Save
-  this video?" → SAVE, record again, delete inside the 10 minutes, the
-  two-keys warning, double taps, and the failures: the app killed in the
+  received (103 in all; 99 have run and passed, and the four added on Nov 16,
+  2026, the sign-in steps with the keyboard up and with a message on them,
+  are in the list below until they have). They cover sign-in by text code,
+  the route list, record → "Save this video?" → SAVE, record again, delete
+  inside the 10 minutes, the two-keys warning, double taps, and the
+  failures: the app killed in the
   middle of a recording (the clip is recovered and offered on relaunch),
   killed on the review screen, killed in the middle of an upload, killed
   before the server confirmed; server errors, no connection, an expired
@@ -680,9 +704,43 @@ Not proven until it runs on real phones with real accounts:
   [`GO-LIVE.md`](GO-LIVE.md) lists the six checks, a few minutes each.
 - A TestFlight build on a real phone: installed, signed in, a video recorded and uploaded. The upload to
   App Store Connect is proven (build 1.0.0 (27), Nov 16, 2026); nothing after it is.
-- Sending through Resend, the bounce webhook's payload, texts through Quo and
-  push through APNs. Each is built to the provider's documentation and has
-  never run with real keys.
+- The sign-in steps with the keyboard up. Build 27 on the owner's iPhone had
+  its two pinned buttons over half of the number field and all of the line
+  under it, and over the foot of the six code boxes: no test and no picture
+  had looked at those screens with a keyboard on them. The steps were changed
+  the same day so that nothing is pinned over the keyboard, and three UI tests
+  and two pictures now look at them with it up (`ios/README.md`, "Typing on
+  the sign-in steps"). Two things follow from it and were built with it. A
+  message on the first step pushes the buttons under the keyboard, so a
+  message about the number goes at the next key and a message from the server
+  puts the keyboard away (a fourth test). And with the text at its two
+  largest sizes the number is not read back under the field while it is
+  typed, to leave the help line and SEND MY CODE their room. All of it was
+  written where nothing could build or run it, and its sizes are sums from
+  the app's own numbers, not measurements. It is proven in the simulator once
+  the iOS workflow has built it and the four tests have passed, the three
+  keyboard ones without skipping themselves, on every phone and text size
+  the Sizes jobs run them on; and on a phone once the next TestFlight build
+  has been signed in to.
+- Sending through Resend, the bounce webhook's payload and push through APNs.
+  Each is built to the provider's documentation and has never run with real
+  keys.
+- That a sign-in code's conversation leaves the office's Quo inbox. Texting
+  itself went live on Nov 16, 2026 and a code reached a real phone. The field
+  that files the conversation under Done was added to that request the same
+  day, from Quo's reference (read that day), and has not been sent to Quo: one
+  real sign-in and a look at the inbox settles it. Also not known: whether the
+  conversation shows in the inbox for a moment first, whether a delivery
+  report on the text can bring it back, and what Quo answers if it does not
+  take the field. The server sends the text again without it after a 400, 403,
+  404 or 422; after anything else (a 500, or no answer) it does not, the code
+  goes by email only, and the log names `QUO_MARK_DONE=off` as the way back.
+  That second send rests on Quo sending nothing when it answers one of those
+  four, which is how its reference reads and has not been seen. Quo has no call
+  that reads a conversation's inbox state, so the server cannot check any of
+  this itself. If the field turns out not to work, Quo documents a second
+  way, not built: `POST /v1/conversations/{id}/mark-as-done` with the ID from
+  the send's answer.
 - `review/create` against the live account. `note/create` and `task/create`
   use the same params the MCP server already verified live.
 - Whether `emailReminders = 0` in FieldRoutes is a fair stand-in for "opted

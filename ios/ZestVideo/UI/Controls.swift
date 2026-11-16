@@ -214,6 +214,10 @@ enum HomeTab: Equatable {
 ///   half-hidden behind the buttons.
 /// - On a very short screen the buttons join the scrolling page, so nothing
 ///   is squeezed out.
+/// - While a field on the page is being typed into (`typing`), the keyboard
+///   has the lower part of the screen. Then nothing is pinned over it and
+///   the large title is not drawn: the page is the question, the field and
+///   its help line, with the buttons after them.
 struct Screen<Content: View, Footer: View>: View {
     /// The screen's short name, centred in the top bar.
     let bar: String
@@ -232,6 +236,18 @@ struct Screen<Content: View, Footer: View>: View {
     /// is hidden below the fold; it only scrolls if even the smallest
     /// version will not fit.
     var squeeze = false
+    /// A field on this page has the cursor in it, so the keyboard is up
+    /// (the two sign-in steps; nothing is typed anywhere else).
+    ///
+    /// Two big buttons pinned over the keyboard left a strip too short for
+    /// the field itself: on a 6.1-inch iPhone half of the field and all of
+    /// its help line were under the buttons. So while this is true:
+    /// - `footer` is not shown at all, pinned or in the page. The screen
+    ///   puts the same buttons in its `content`, after the help line, where
+    ///   they scroll with the rest and can never lie over a word;
+    /// - the title is not drawn. The top bar still names the screen, and
+    ///   the title stays the page's heading for VoiceOver.
+    var typing = false
     @ViewBuilder var content: () -> Content
     @ViewBuilder var footer: () -> Footer
 
@@ -254,13 +270,18 @@ struct Screen<Content: View, Footer: View>: View {
                     page
                         // Spare room, so the last line clears the edge when scrolled.
                         .padding(.bottom, 32)
+                        // The page has a name, so a screen that is typed
+                        // into can put it back at its top (`LoginView`).
+                        .id(ScreenAnchor.pageTop)
                 }
                 .defaultScrollAnchor(startAtBottom ? .bottom : nil)
             }
 
             if let tab {
                 TabBar(selected: tab)
-            } else if Theme.compactHeight {
+            } else if Theme.compactHeight || typing {
+                // Nothing pinned: the page has the room down to the foot of
+                // the screen, or down to the keyboard.
                 Color.clear.frame(height: 1)
             } else {
                 VStack(spacing: 14) {
@@ -284,7 +305,7 @@ struct Screen<Content: View, Footer: View>: View {
     /// The title, the content and (on a very short screen) the buttons.
     private var page: some View {
         VStack(alignment: .leading, spacing: 18) {
-            if let title {
+            if let title, !typing {
                 Text(title)
                     .zestFont(.title)
                     .foregroundColor(Theme.titleInk)
@@ -293,7 +314,7 @@ struct Screen<Content: View, Footer: View>: View {
                     .accessibilityIdentifier("screen-title")
             }
             content()
-            if Theme.compactHeight {
+            if Theme.compactHeight, !typing {
                 VStack(spacing: 14) {
                     footer()
                 }
@@ -303,7 +324,33 @@ struct Screen<Content: View, Footer: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, Theme.gutter)
         .padding(.top, 14)
+        .background(alignment: .topLeading) {
+            if typing, let title {
+                // The title is not drawn while the keyboard is up, but it is
+                // still this page's heading: VoiceOver reads it, and the UI
+                // tests know which step is showing by it. It sits behind the
+                // page in clear ink and takes no room.
+                Text(title)
+                    .zestFont(.label)
+                    .foregroundColor(.clear)
+                    .lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier("screen-title")
+            }
+        }
     }
+}
+
+/// Places on a screen's scrolling page that it can be moved to. (Outside
+/// `Screen`, which is generic and so cannot hold a stored constant of its
+/// own.)
+enum ScreenAnchor {
+    /// Where the page begins.
+    static let pageTop = "screen-page-top"
+    /// The message on a page that is typed into ("Type all 10 digits of
+    /// your mobile number."). The screen gives its message this name
+    /// (`LoginView`).
+    static let message = "screen-message"
 }
 
 extension Screen where Footer == EmptyView {

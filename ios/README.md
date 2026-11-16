@@ -105,6 +105,49 @@ No third-party code. Apple frameworks only, system font, one bundled image
   (`AppSourceRulesTests` reads them from `Theme.swift`).
 - **AppModel** is the one router. A screen is a value of `route`; there is no
   navigation stack to swipe back through.
+- **Typing on the sign-in steps.** The two sign-in steps are the only
+  screens with a keyboard, and a tech always has them with it up (the app
+  puts the cursor in the field itself). Each has two shapes, chosen by the
+  cursor alone (`Screen(typing:)`, `LoginView`). With no cursor: the large
+  title, the page, two buttons pinned at the foot. With the cursor in the
+  field: no large title (the top bar says Sign In), then the question, the
+  field, the number read back, the help line, and the same two buttons
+  under them in the page, full size, scrolling with it. Nothing is pinned
+  over the keyboard, not even one button. The sums, from `Theme`'s sizes
+  and a keyboard about 260 points tall with its suggestion bar: on the
+  smallest iPhone one pinned button would leave about 200 points, and the
+  question, the field, the number read back and the help line need about
+  250. By the same sums SEND MY CODE is whole under the help line on a
+  6.1-inch iPhone, and on the smallest only its top shows once a number is
+  typed: the page is slid up for the rest. (Sums, not measurements: the
+  UI tests print where everything really was, see "The on-screen keyboard"
+  below.) The page goes back to its top when the cursor arrives and when
+  the way in is changed, and scrolling does not put the keyboard away. The
+  first TestFlight build had both buttons pinned over the keyboard: on the
+  owner's 6.1-inch iPhone that left a strip about 165 points tall, with
+  half of the field and all of its help line behind the buttons.
+  - *The two largest text sizes.* The question and the help line can take
+    two lines each then, and the number is not read back while the field
+    is typed into (`numberPreview`; the field itself shows the digits, at
+    40 points). With that line on the page, by the sums, the help line ran
+    20 to 37 points under the keyboard on the smallest iPhone, and SEND MY
+    CODE was wholly under it on a 6.1-inch one. Without it, by the same
+    sums: the help line is whole on every iPhone; on a 6.1-inch one SEND
+    MY CODE is whole at the second-largest size and about two thirds of it
+    shows at the largest; on the smallest little or none of it shows while
+    the phone's suggestion bar is up, and the page is slid up.
+  - *A message.* "Type all 10 digits of your mobile number." goes up
+    between the help line and the buttons, so it pushes the buttons down:
+    on a 6.1-inch iPhone SEND MY CODE is then wholly under the keyboard,
+    and on the smallest half of the message is. So the page moves just far
+    enough to show the whole message. A message about what is in the field
+    keeps the keyboard and goes at the next key, which brings the buttons
+    back up. A message from the server on the first step ("No signal.
+    Please try again.") puts the keyboard away instead: the number was
+    fine and the way on is SEND MY CODE again, so the step is back in its
+    shape with both buttons whole at the foot of the screen. On the code
+    step the keyboard stays (the code is typed again), and the buttons
+    are reached by sliding the page, or the arrow in the top bar.
 - **A new screen ignores touches for 0.4 seconds** (`SettleFirst`), so the
   second tap of a gloved double tap cannot answer the next question. The
   shield opens once and never closes again while that screen is up.
@@ -395,11 +438,29 @@ issues the token when a test resets it), so only the sign-in tests type a
 number and a code. A test that kills the app starts it again *without* the
 reset: what the app kept is what is being tested.
 
-**What is covered** (99 tests):
+**The on-screen keyboard.** A simulator that thinks a hardware keyboard is
+connected shows none. The tests type all the same, so nothing fails, and
+the sign-in steps are then looked at with all their room, as no tech ever
+has them: that is how the first TestFlight build went out with two pinned
+buttons over half of the field. The jobs now write
+`defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false`
+(and the same for the one simulator, under `DevicePreferences`) before
+every boot: in the `screens` and `ui-tests` jobs of the workflow, and in
+`boot` in `Scripts/screens_job.sh` for the `sizes` jobs. On a Mac, switch
+it off in the Simulator app: I/O, Keyboard, Connect Hardware Keyboard. The
+three tests that look at a step with the keyboard up skip themselves when
+none comes up, and say so in the log in capitals (`NOTE ######## SKIPPED
+... NO ON-SCREEN KEYBOARD`); when one does, each prints a `NOTE keyboard
+up, ...` line with where the keyboard, the field and the help line were.
+The two in `ScreensUITests` also keep a picture of the step as they found
+it, in the pass's reports (`keyboard-up.<screen>.<device>.info.jpg`), and
+a test that skips keeps one of the screen with no keyboard on it.
+
+**What is covered** (103 tests):
 
 | Class | What it proves |
 | --- | --- |
-| `SignInUITests` | the number and the code typed one key at a time arrive whole and are sent once; a country code in front; too short and too long; wrong and right code; the loading line right after sign-in; email instead and back; a new code; both ways back; Terms and Privacy; sign out with its question |
+| `SignInUITests` | the number and the code typed one key at a time arrive whole and are sent once; both steps with the keyboard up (the question, the whole field or all six code boxes, the number read back and the help line are above the keyboard and under no button; the buttons are still full size and can be tapped; moving the page presses nothing); a country code in front; too short and too long, and the message about the number goes when the number is changed; a message from the server puts the keyboard away, is whole on the page, and leaves SEND MY CODE whole at the foot of the screen, where the next tap sends the same number; wrong and right code; the loading line right after sign-in; email instead and back; a new code; both ways back; Terms and Privacy; sign out with its question |
 | `RouteUITests` | header counts, nearest stop first, both tabs, locked stop, WRONG STOP, the far-away warning |
 | `RecordUITests` | record → SAVE → one register, the whole file once, one complete; FLIP, BACK, ending early; RECORD AGAIN; the recommend switch; the two-keys warning both ways; another customer's name said where the place and the time fit still asks ("It sounded like…"), a forgotten name at the right house does not; change and delete inside ten minutes; not-on-my-list (SENT TO OFFICE, no promise of an email, deletable for ten minutes and not after); double taps; and that the audit events (record, retake, override) really reach the server for the right customer |
 | `KillUITests` | the app killed mid-recording, on review, mid-upload, before "complete" is answered, and right after SAVE: after it is started again there is exactly one video on the server |
@@ -412,7 +473,7 @@ reset: what the app kept is what is being tested.
 | `WithoutLocationUITests` | location refused: the stops show in route order, a video is recorded and arrives once with the GPS key "unknown" and no location, and nothing crashes |
 | `TeamUITests` | one video per tech per property. The lead is not shown another tech's video, his own is taken with no 409, and RECORD AGAIN replaces only his own. The helper sees DONE BY TEAM, gets no RECORD AGAIN, DELETE or CALL OFFICE on the lead's video, records his own beside it, and deleting his own leaves the lead's alone and the stop reads DONE BY TEAM again. After a delete the app asks the server for the day again; for the lead the stop simply reopens |
 | `BackgroundUploadUITests` | informational: what the simulator does with the real background upload session. Skipped, with the recorded error, if the upload never arrives |
-| `ScreensUITests` | every screen (19), opened with made-up data: its main actions are on the screen, tappable and not overlapping, nothing runs off the side; the gloves rule (every main button at least 76 points tall and as wide as the screen less its gutters, the record button and ring at least 120 across, and after sign-in nothing to type, pick, slide or swipe); every page that is taller than its room scrolls every line of it clear of the bars (a single card taller than the room must be readable in two scrolls: its first line and its last each come into view); and Apple's accessibility audit (contrast, 44-point tap targets, clipped text, descriptions, Dynamic Type) finds nothing unexplained. The audit moves the page while it runs and flags rows it saw half under a bar, so a contrast issue on a line of text is settled by scrolling that line whole on to the screen and measuring its pixels, a tap target by its size once whole, and anything else flagged on a whole row fails. The YES / NO switch is looked at in both states. Run by the `sizes` jobs on several simulators and text sizes |
+| `ScreensUITests` | every screen (19), opened with made-up data: its main actions are on the screen, tappable and not overlapping, nothing runs off the side; the gloves rule (every main button at least 76 points tall and as wide as the screen less its gutters, the record button and ring at least 120 across, and after sign-in nothing to type, pick, slide or swipe); every page that is taller than its room scrolls every line of it clear of the bars (a single card taller than the room must be readable in two scrolls: its first line and its last each come into view); and Apple's accessibility audit (contrast, 44-point tap targets, clipped text, descriptions, Dynamic Type) finds nothing unexplained. The audit moves the page while it runs and flags rows it saw half under a bar, so a contrast issue on a line of text is settled by scrolling that line whole on to the screen and measuring its pixels, a tap target by its size once whole, and anything else flagged on a whole row fails. The YES / NO switch is looked at in both states. And the two sign-in steps opened with the keyboard up (`loginkeys`, `codekeys`): the question, the field or the code boxes, the number read back under the field and the help line whole above the keyboard, no button over them, the buttons reachable; with the text at its largest, that the number is not read back (skipped on the iPad, where the iPad lays its own keyboard over the iPhone-sized window). Run by the `sizes` jobs on several simulators and text sizes; those two tests run once more at the largest text on the smallest and on the 6.1-inch iPhone, where the room over the keyboard is shortest |
 | `OddNamesUITests` | the route of awkward customers (an apostrophe, accents, a hyphen, a 45-letter business, all capitals, an emoji, one word, a unit, a PO box, a 24-letter last name) on every screen that shows a name: nothing cut off, every action still there. Seven tests of a few minutes each (it was one, and on the smallest iPhone it was stopped at fifteen minutes a third short of done). Run on the smallest iPhone by the `sizes` job |
 | `PerformanceUITests` | informational: launch time, time to My Route, memory on each screen and over ten videos, what is left on disk. Run by the `performance` job |
 
@@ -506,7 +567,7 @@ Those need a real phone.
 | `app` | macOS | generates the project, builds for an iPhone simulator, runs the unit tests |
 | `screens` | macOS | takes a picture of every screen in the simulator; download the `screens` artifact |
 | `ui-tests` | macOS, jobs `a`, `b`, `d` and `e` side by side (plus `c`, informational) | starts the fake server, runs the UI tests in the simulator; on a failure, the log names the test, the assertion and what the server saw |
-| `sizes` | macOS, four jobs side by side | pictures of every screen on the smallest iPhone (plus the awkward names), a 6.1-inch iPhone, an iPad, and at the largest text sizes; then `ScreensUITests` on each. Artifacts `screens-small`, `screens-odd-names`, `screens-mid`, `screens-ipad`, `screens-large-text`, `screens-largest-accessibility` |
+| `sizes` | macOS, four jobs side by side | pictures of every screen on the smallest iPhone (plus the awkward names), a 6.1-inch iPhone, an iPad, and at the largest text sizes; then `ScreensUITests` on each, and the two sign-in steps with the keyboard up once more at the largest text on the smallest and the 6.1-inch iPhone. Artifacts `screens-small`, `screens-odd-names`, `screens-mid`, `screens-ipad`, `screens-large-text`, `screens-largest-accessibility` |
 | `performance` | macOS, informational | `PerformanceUITests`, plus the size of a Release build for a phone; prints a table and uploads it as `performance.txt` |
 | `testflight` | macOS, manual | archives and uploads to App Store Connect. A run with the box ticked runs only `core` and this job |
 
@@ -527,6 +588,15 @@ Names: `login`, `code`, `today`, `today2` (the same list scrolled to the end),
 recorded), `lowspace` and `full` (the phone almost full, and full),
 `olddraft` (a clip left unsaved since yesterday). That is 19.
 (`recording` is held still on the first thing to say, "Hi Jane".)
+
+Two more names show the sign-in steps again as a tech has them, with the
+cursor in the field and the keyboard up: `loginkeys` and `codekeys`. (`login`
+and `code` have no cursor, so the whole page shows.) The jobs take them
+last, so there are 21 pictures of 19 screens. If a simulator shows no
+keyboard, those two pictures have empty room where it would be. In
+`loginkeys` the number is in the field as a tech types it, ten plain
+digits, and is read back grouped under the field (except with the text at
+its two largest sizes); `login` starts with the number already grouped.
 
 All of it sits behind `#if targetEnvironment(simulator)`
 (`App/ScreenshotMode.swift`, `UI/StandInPicture.swift`, and a few small hooks),

@@ -1,5 +1,6 @@
 import CoreLocation
 import XCTest
+import ZestCore
 
 /// The base of every UI test: a clean app, a clean fake server, and the
 /// handful of steps the tests share.
@@ -189,6 +190,15 @@ class ZestUITestCase: XCTestCase {
         let folder = URL(fileURLWithPath: Self.failureFolder, isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try? Data(text.utf8).write(to: folder.appendingPathComponent(name + ".txt"))
+    }
+
+    /// Keeps a picture of the screen as it is now with the run's results,
+    /// whether or not anything failed. (CI shrinks every picture in that
+    /// folder before it uploads it.)
+    func savePicture(named name: String) {
+        let folder = URL(fileURLWithPath: Self.failureFolder, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? XCUIScreen.main.screenshot().pngRepresentation.write(to: folder.appendingPathComponent(name + ".png"))
     }
 
     /// Adds lines to a note kept with the run's results (one file can be
@@ -599,6 +609,214 @@ class ZestUITestCase: XCTestCase {
             }
         } else {
             field.typeText(digits)
+        }
+    }
+
+    // MARK: The keyboard
+
+    /// Where the on-screen keyboard is, once it is up and has stopped
+    /// moving. `nil` when none is showing.
+    ///
+    /// A simulator that believes a hardware keyboard is connected shows
+    /// none. The tests type all the same, so nothing fails, and every
+    /// screen is then looked at as no tech ever sees it: with all its room.
+    /// CI switches that setting off before it boots a simulator (the
+    /// `screens` and `ui-tests` jobs of the workflow, and `boot` in
+    /// `Scripts/screens_job.sh`).
+    func keyboardOnScreen(wait: TimeInterval = 10) -> CGRect? {
+        let keyboard = app.keyboards.firstMatch
+        guard keyboard.waitForExistence(timeout: wait) else { return nil }
+        // It slides up: wait until two looks in a row agree.
+        var last = keyboard.frame
+        for _ in 0..<12 {
+            pause(0.3)
+            guard keyboard.exists else { return nil }
+            let now = keyboard.frame
+            if now == last { break }
+            last = now
+        }
+        // A real one is a good part of the screen, not a thin bar.
+        return (last.height >= 120 && last.width >= 200) ? last : nil
+    }
+
+    /// The keyboard, for a check that is about the keyboard. With none on
+    /// the screen there is nothing to check. The test is then skipped, not
+    /// failed (a setting of the runner must not turn the run red for the
+    /// wrong reason), and the log says so where it cannot be missed.
+    /// - Parameter field: tapped once if no keyboard came up by itself.
+    func keyboardOrSkip(for field: XCUIElement, on step: String) throws -> CGRect {
+        if let frame = keyboardOnScreen(wait: 8) { return frame }
+        // The app puts the cursor in the field itself. Where that brought
+        // no keyboard, a tap on the field must.
+        if field.exists, field.isHittable {
+            field.tap()
+            if let frame = keyboardOnScreen(wait: 8) {
+                print("NOTE \(shortName): on \(step) the keyboard only came up after the field was tapped. The app is meant to put the cursor there by itself.")
+                return frame
+            }
+        }
+        let words = "NO ON-SCREEN KEYBOARD on \(step), so nothing was checked with the keyboard up. "
+            + "The simulator is taking its typing from a hardware keyboard. Before it boots, run: "
+            + "defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false "
+            + "(in the Simulator app: I/O, Keyboard, Connect Hardware Keyboard, off)."
+        print("NOTE ######## SKIPPED \(shortName): \(words)")
+        appendNote(named: "no-keyboard.info", "\(shortName): \(words)")
+        // What the screen looked like with no keyboard on it.
+        savePicture(named: "no-keyboard.\(shortName).info")
+        throw XCTSkip(words)
+    }
+
+    /// One line of a page, by its exact words.
+    func textLine(_ words: String) -> XCUIElement {
+        app.staticTexts.matching(NSPredicate(format: "label == %@", words)).firstMatch
+    }
+
+    /// A sign-in step WITH THE KEYBOARD UP: everything wrong with it, in
+    /// plain words.
+    ///
+    /// The owner's own phone showed it (build 27, a 6.1-inch iPhone): two
+    /// big buttons pinned over the keyboard left a strip so short that half
+    /// of the field, and the whole line under it, were behind the buttons.
+    /// No test saw it, because no test looked at these screens with the
+    /// keyboard up. This looks, at the elements' own frames (an element
+    /// says where it is whether or not something covers it):
+    ///
+    /// - everything in `seen` (the question, the field or the six code
+    ///   boxes, the help line) is whole between the top bar and the
+    ///   keyboard;
+    /// - no button lies over any of it;
+    /// - the step's own `buttons` are still there, still the size of a main
+    ///   button, and can still be tapped, after scrolling at most.
+    ///
+    /// On the old layout it fails on every count but the last: the pinned
+    /// buttons end the page's room a long way above the keyboard, the field
+    /// runs past that edge, and the help line lies wholly inside SEND MY
+    /// CODE's frame.
+    ///
+    /// - Parameters:
+    ///   - seen: what must be in view, each with its name for the report.
+    ///   - buttons: the step's main buttons, by the words on them.
+    ///   - keyboard: from `keyboardOrSkip`.
+    func typingProblems(
+        on name: String, seen: [(String, XCUIElement)], buttons: [String], keyboard: CGRect
+    ) -> [String] {
+        let window = app.windows.firstMatch.frame
+        guard window.width > 0, window.height > 0 else {
+            return ["\(name): the app has no window to measure."]
+        }
+        var problems: [String] = []
+
+        // The room the page shows in. Its top is the foot of the top bar.
+        // Its foot is the top of the keyboard, or the foot of the page's own
+        // scroll view where that is higher: anything pinned over the
+        // keyboard ends the scroll view first (the two buttons of the old
+        // layout; the phone's suggestion bar, should the keyboard's frame
+        // leave it out).
+        var top = window.minY
+        var bottom = keyboard.minY
+        let bar = element("bar-title")
+        if bar.exists {
+            top = max(top, bar.frame.maxY)
+        }
+        let page = app.scrollViews.firstMatch
+        if page.exists, page.frame.height > 40 {
+            top = max(top, page.frame.minY)
+            bottom = min(bottom, page.frame.maxY)
+        }
+        func place(_ frame: CGRect) -> String {
+            "y \(Int(frame.minY))...\(Int(frame.maxY))"
+        }
+        let room = "the room between the top bar and the keyboard is y \(Int(top))...\(Int(bottom)), "
+            + "on a \(Int(window.width)) x \(Int(window.height)) screen with the keyboard from y \(Int(keyboard.minY))"
+
+        var frames: [(String, CGRect)] = []
+        for (what, item) in seen {
+            guard item.exists else {
+                problems.append("\(name): \(what) is missing.")
+                continue
+            }
+            let frame = item.frame
+            frames.append((what, frame))
+            if frame.width < 1 || frame.height < 1 {
+                problems.append("\(name): \(what) has no size.")
+            } else if frame.maxY > bottom + 1.5 {
+                let hidden = Int(min(frame.height, frame.maxY - bottom))
+                problems.append("\(name): \(what) is not whole above the keyboard: \(hidden) of its \(Int(frame.height)) points are below the foot of the room (it is at \(place(frame)); \(room)).")
+            } else if frame.minY < top - 1.5 {
+                let hidden = Int(min(frame.height, top - frame.minY))
+                problems.append("\(name): \(what) is cut off at the top: \(hidden) of its \(Int(frame.height)) points are under the top bar (it is at \(place(frame)); \(room)).")
+            }
+            if frame.minX < window.minX - 1.5 || frame.maxX > window.maxX + 1.5 {
+                problems.append("\(name): \(what) runs off the side of the screen (x \(Int(frame.minX))...\(Int(frame.maxX))).")
+            }
+        }
+
+        // No button may lie over any of it. (One picture of the screen's
+        // elements. The keyboard's own keys and buttons start at its top
+        // edge and are left out.)
+        if let tree = try? app.snapshot() {
+            var found: [(String, CGRect)] = []
+            gatherButtons(in: tree, into: &found)
+            for (what, frame) in frames {
+                for (words, spot) in found where spot.minY < keyboard.minY - 1 {
+                    let shared = frame.intersection(spot)
+                    if !shared.isNull, shared.width > 2, shared.height > 2 {
+                        problems.append("\(name): the button \"\(words)\" lies over \(what), \(Int(shared.height)) points deep (the button is at \(place(spot)), \(what) at \(place(frame))).")
+                    }
+                }
+            }
+        } else {
+            problems.append("\(name): the screen could not be read to look for buttons lying over the field.")
+        }
+
+        // For the record, in every run: where things were, before anything
+        // is moved. (How much of a button shows without scrolling is not a
+        // failure on a small phone; the log says how it was.)
+        var spots = frames.map { "\($0.0) \(place($0.1))" }
+        for words in buttons {
+            let item = button(words)
+            guard item.exists else { continue }
+            let frame = item.frame
+            var how = "below the keyboard's top edge until the page is slid up"
+            if frame.maxY <= bottom + 1.5 {
+                how = "whole in the room"
+            } else if frame.minY < bottom {
+                how = "its top \(Int(bottom - frame.minY)) points in the room"
+            }
+            spots.append("\(words) \(place(frame)), \(how)")
+        }
+        print("NOTE keyboard up, \(name): \(room). \(spots.joined(separator: "; ")).")
+
+        // The step's own buttons. (Reaching them may move the page, so this
+        // comes last.)
+        let wanted = GloveRule.actionWidth(screenWidth: Double(window.width))
+        for words in buttons {
+            let item = button(words)
+            guard item.exists else {
+                problems.append("\(name): \(words) is missing while the keyboard is up.")
+                continue
+            }
+            bringIntoView(item)
+            let frame = item.frame
+            if Double(frame.height) < GloveRule.minButtonHeight - 0.5 {
+                problems.append("\(name): \(words) is only \(Int(frame.height)) points tall with the keyboard up; a main button is never under \(Int(GloveRule.minButtonHeight)).")
+            }
+            if Double(frame.width) < wanted - 2 {
+                problems.append("\(name): \(words) is \(Int(frame.width)) points wide with the keyboard up; a main button spans the screen, \(Int(wanted)) points here.")
+            }
+            if !item.isHittable {
+                problems.append("\(name): \(words) cannot be tapped with the keyboard up, even after scrolling (it is at \(place(frame)); \(room)).")
+            }
+        }
+        return problems
+    }
+
+    private func gatherButtons(in node: XCUIElementSnapshot, into found: inout [(String, CGRect)]) {
+        if node.elementType == .button, node.frame.width > 0, node.frame.height > 0 {
+            found.append((node.identifier.isEmpty ? node.label : node.identifier, node.frame))
+        }
+        for child in node.children {
+            gatherButtons(in: child, into: &found)
         }
     }
 

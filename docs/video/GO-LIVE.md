@@ -47,6 +47,26 @@ after 15 minutes, and locks after 5 wrong tries. Only active technicians can
 get one. The phone then stays signed in, and the office can cut off any phone
 at once.
 
+The codes stay out of the office's Quo inbox. A code is a text from the office
+line, so it opens a conversation in the shared inbox. As it sends the code, the
+server asks Quo to file that conversation under **Done**: it leaves the inbox
+for everyone, nothing is deleted, and it is still under the Done filter and in
+search. Three things to know:
+
+- It is the whole conversation with that tech's number that is filed. If the
+  office was texting with him on that line, that thread goes to Done with the
+  code. By Quo's own description it is back in the inbox when he replies or
+  calls.
+- It has not been seen on your account yet. After the next sign-in, look in
+  Quo: the code's conversation should be under Done and not in the inbox. If
+  it is still in the inbox, tell Claude.
+- If no text arrives at all on that sign-in (the code comes by email only, or
+  the app says it could not send a code), or the same code arrives in two
+  texts, set `QUO_MARK_DONE=off` on `zest-video` and tell Claude. That sends
+  the text exactly as it went on Nov 16, 2026, the day texting first worked.
+
+To leave code texts in the inbox, set `QUO_MARK_DONE=off` on `zest-video`.
+
 ## 3. Email sender — owner, about 15 minutes
 
 The server emails the customer's video link, and office sign-in codes.

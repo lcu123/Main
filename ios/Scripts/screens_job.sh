@@ -4,8 +4,11 @@
 # (ScreensUITests) on each. Run from the ios/ folder, after the app and the UI
 # tests have been built into build/DerivedData.
 #
-#   screens_job.sh small        the smallest iPhone: usual route, then the awkward names
-#   screens_job.sh mid-ipad     a 6.1-inch iPhone, then an iPad
+#   screens_job.sh small        the smallest iPhone: usual route, then the awkward names,
+#                               then the two sign-in steps with the keyboard up at
+#                               the largest text
+#   screens_job.sh mid-ipad     a 6.1-inch iPhone (and its sign-in steps with the
+#                               keyboard up at the largest text), then an iPad
 #   screens_job.sh large-text   the big iPhone with the text at the largest size the
 #                               app follows: pictures and every check
 #   screens_job.sh big          the big iPhone: every check at the ordinary text
@@ -37,7 +40,9 @@ APP="build/DerivedData/Build/Products/Debug-iphonesimulator/ZestVideo.app"
 # seven tests of a few minutes each.
 SUITE="ZestVideoUITests/ScreensUITests"
 ODD_SUITE="ZestVideoUITests/OddNamesUITests"
-ALL="login code today today2 confirm far record recording review warning saved stopvideo locked queue update team lowspace full olddraft"
+# The last two are the sign-in steps again, with the cursor in the field and
+# so the keyboard up: the way a tech has them.
+ALL="login code today today2 confirm far record recording review warning saved stopvideo locked queue update team lowspace full olddraft loginkeys codekeys"
 # The awkward names: the lists, then the screen with the largest type for
 # every customer, then the other screens for the four longest names.
 ODD="today today2 queue queue@4 queue@8"
@@ -67,8 +72,22 @@ pick() {
   python3 Scripts/pick_simulator.py "$1"
 }
 
+# The on-screen keyboard has to show: the sign-in steps are pictured and
+# checked with it up (loginkeys, codekeys, the two "keyboard up" tests). A
+# simulator that thinks a hardware keyboard is connected shows none. The
+# setting is the Simulator app's own; it is read when a simulator boots, so
+# it is written before every boot: for all simulators, and for this one.
+soft_keyboard() {
+  local udid="$1"
+  defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false 2>/dev/null \
+    || echo "::warning::could not switch the simulator's hardware keyboard off: the keyboard-up checks may be skipped"
+  defaults write com.apple.iphonesimulator DevicePreferences -dict-add "$udid" \
+    '<dict><key>ConnectHardwareKeyboard</key><false/></dict>' 2>/dev/null || true
+}
+
 boot() {
   local udid="$1"
+  soft_keyboard "$udid"
   xcrun simctl boot "$udid" 2>/dev/null || true
   xcrun simctl bootstatus "$udid" -b
   # A clean status bar: 9:41, full battery, full signal. Nice to have only.
@@ -243,6 +262,21 @@ checks() {
   fi
 }
 
+# keys_at_largest_text <label> <udid> <device word>
+# The two sign-in steps with the keyboard up, once more with the text at the
+# largest size the app follows. That is where the room over the keyboard is
+# shortest (the question and the help line take two lines each), and the
+# large-text job only has the biggest iPhone, where everything fits easily.
+# Two tests, no pictures and no audit: a minute or two. Each test keeps a
+# picture of the step with its reports (keyboard-up.<screen>.<device>.info).
+keys_at_largest_text() {
+  local label="$1" udid="$2" device="$3"
+  text_size "$udid" extra-extra-extra-large
+  checks "$label" "$udid" "$device" 0 0 1 \
+    "-only-testing:$SUITE/testLoginWithTheKeyboardUp" "-only-testing:$SUITE/testCodeWithTheKeyboardUp"
+  text_size "$udid" large
+}
+
 case "$VARIANT" in
   small)
     SMALL=$(pick small) || exit 1
@@ -251,6 +285,8 @@ case "$VARIANT" in
     pictures "$SMALL" screens-odd-names odd $ODD
     checks small "$SMALL" small 0 1 0 "-only-testing:$SUITE"
     checks small-odd-names "$SMALL" small 0 1 0 "-only-testing:$ODD_SUITE"
+    # Last, so that the text size is changed after everything else is done.
+    keys_at_largest_text small-large-text-keys "$SMALL" small-large-text
     ;;
   mid-ipad)
     MID=$(pick mid) || exit 1
@@ -258,6 +294,7 @@ case "$VARIANT" in
     pictures "$MID" screens-mid $ALL
     # On 6.1 inches and up every main action must show without scrolling.
     checks mid "$MID" mid 1 1 0 "-only-testing:$SUITE"
+    keys_at_largest_text mid-large-text-keys "$MID" mid-large-text
     xcrun simctl shutdown "$MID" 2>/dev/null || true
 
     # The app is iPhone-only. On an iPad it runs in an iPhone-sized window,
