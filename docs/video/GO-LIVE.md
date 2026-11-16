@@ -88,8 +88,17 @@ After step 1 is approved:
    only builds and uploads (about 15 minutes); the long simulator tests run on every push instead.
 5. Invite the techs in TestFlight. They install the TestFlight app, then Zest Video.
 
-This job has never run, because it cannot without the account. Expect one or
-two rounds of fixes the first time.
+This job first ran on Nov 16, 2026 and uploaded build 1.0.0 (27). Three things the
+first tries taught: start it from a branch that has the current workflow (the form's
+tick box then says "skips the simulator tests"); the API key must be a Team key with the
+Admin role; and the key pasted into the `ASC_KEY_P8` secret may lose its line breaks,
+which the job now repairs by itself.
+
+After the upload Apple processes the build (minutes, with an email when done). A tech can
+only be an internal tester once he is a user of the App Store Connect account: Users and
+Access → invite him, he accepts, then TestFlight → Internal Testing → add him to a group.
+Sign-in on the phone needs the server to be able to send the code: `QUO_API_KEY` (texts)
+or `RESEND_API_KEY` (email) on the zest-video service.
 
 ## Before step 7: keep the data safe — owner, about 10 minutes
 

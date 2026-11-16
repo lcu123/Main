@@ -678,7 +678,8 @@ Not proven until it runs on real phones with real accounts:
   mail app on a real Android phone, and in classic Outlook. The browser tests
   use the same engines at those sizes; they are not those devices.
   [`GO-LIVE.md`](GO-LIVE.md) lists the six checks, a few minutes each.
-- The TestFlight job (needs the Apple Developer account).
+- A TestFlight build on a real phone: installed, signed in, a video recorded and uploaded. The upload to
+  App Store Connect is proven (build 1.0.0 (27), Nov 16, 2026); nothing after it is.
 - Sending through Resend, the bounce webhook's payload, texts through Quo and
   push through APNs. Each is built to the provider's documentation and has
   never run with real keys.

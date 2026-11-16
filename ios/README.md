@@ -679,8 +679,9 @@ Store Connect whether the key works, an agreement is waiting and the app
 record exists, and switches Push Notifications on for the App ID if it is
 off (`ios/Scripts/asc_preflight.py`). If the upload step fails on signing,
 run it again with *unsigned_archive* ticked: that build uploads and
-installs but gets no pushes. None of this has run against a real Apple
-account yet.
+installs but gets no pushes. First real upload: run 27, Nov 16, 2026, build
+1.0.0 (27), ad hoc archive and cloud-signed export, from a clean runner in
+four minutes. The unsigned fallback has not been needed and has not run.
 
 The same archive can be made by hand in Xcode: Product → Archive →
 Distribute App → App Store Connect.

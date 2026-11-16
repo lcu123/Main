@@ -1077,7 +1077,8 @@ jobs:
           if-no-files-found: warn
 
   testflight:
-    # NOT YET RUN against a real Apple account. How it signs, and why:
+    # First real upload: run 27, Nov 16, 2026 (build 1.0.0 (27)). The unsigned
+    # fallback has never run. How it signs, and why:
     #   - The archive is signed ad hoc ("-"), on the runner, with no Apple
     #     certificate. That keeps the app's entitlements (push) in the archive
     #     and needs no development certificate, no development profile and no
