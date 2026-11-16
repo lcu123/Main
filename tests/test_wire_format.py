@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import time
 import urllib.parse
+from datetime import date
 from typing import Any
 
 import httpx
@@ -706,7 +707,10 @@ async def test_update_subscription_sends_only_given_fields(fake: FakeFR) -> None
 
 
 async def test_service_schedule_groups_by_subscription_and_zone(fake: FakeFR) -> None:
-    out = loads(await server.service_schedule(service_type_id=3, start="2025-10-01", days=400))
+    # The window must reach from the 2025-10-09 visit to today's, whatever today is: a
+    # fixed `days=400` stopped covering "today" on 2026-11-05 and the test went red.
+    start = date(2025, 10, 1)
+    out = loads(await server.service_schedule(service_type_id=3, start=start.isoformat(), days=(date.today() - start).days + 1))
     assert out["subscriptionCount"] == 1
     group = out["groups"][0]
     assert group["subscriptionID"] == 100
