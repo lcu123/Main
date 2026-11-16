@@ -94,9 +94,25 @@ tick box then says "skips the simulator tests"); the API key must be a Team key 
 Admin role; and the key pasted into the `ASC_KEY_P8` secret may lose its line breaks,
 which the job now repairs by itself.
 
-After the upload Apple processes the build (minutes, with an email when done). A tech can
-only be an internal tester once he is a user of the App Store Connect account: Users and
-Access → invite him, he accepts, then TestFlight → Internal Testing → add him to a group.
+After the upload Apple processes the build (minutes, with an email when done; more than a
+day in Processing means something is wrong). Putting it on a tech's phone is two invitations,
+in this order (read on Apple's pages, Nov 16, 2026):
+
+1. Ask each tech for the email of the Apple account on his iPhone (Settings, his name at
+   the top). His phone needs iOS 17 or newer.
+2. App Store Connect → Users and Access → People → **+**. His name, that email, role
+   **Developer** only, every extra-access box unticked, **Next**, tick only Zest Video,
+   **Invite**. He taps the button in Apple's email within 3 days and signs in.
+3. Apps → Zest Video → TestFlight → **Internal Testing** → **+**. Name the group, tick
+   **Enable automatic distribution**, Create. If the group lists no build, **Add Builds**.
+4. In the group: **Invite Testers**, tick the techs who have accepted, **Add**. Each gets
+   the TestFlight email. `docs/video/TECH-GUIDE.md` is what the tech does from there.
+5. TestFlight → Testers → All shows each tech as Invited, Accepted or Installed.
+
+The account holder is already a user: he only needs steps 3 and 4 for himself. A build
+stops opening 90 days after its upload (build 27: about Feb 14, 2027), so a pilot longer
+than that needs a new build. On a TestFlight install the app's own "Please update" screen
+points at the App Store; the tech updates in the TestFlight app instead.
 Sign-in on the phone needs the server to be able to send the code: `QUO_API_KEY` (texts)
 or `RESEND_API_KEY` (email) on the zest-video service.
 
