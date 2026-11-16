@@ -1,0 +1,9 @@
+node_modules/
+report/
+test-results/
+live-test-results/
+probe-test-results/
+screenshots/
+safari-shots/
+.playwright/
+*.log

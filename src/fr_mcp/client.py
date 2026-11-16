@@ -105,6 +105,20 @@ class RateLimiter:
                 sleep_for = self.window - (now - self._calls[0])
                 await asyncio.sleep(max(sleep_for, 0.01))
 
+    def free_slots(self) -> int:
+        """How many calls made at this instant would go out without waiting. 0 while
+        another call is already waiting for its turn.
+
+        For a caller that must not be held up between two calls (the video server reads
+        an appointment and then writes to it, and nothing may sleep in between): it asks
+        here first, and comes back later when there is no room."""
+        if self._lock.locked():
+            return 0
+        now = time.monotonic()
+        while self._calls and now - self._calls[0] >= self.window:
+            self._calls.popleft()
+        return max(self.limit - len(self._calls), 0)
+
 
 class UsageCounter:
     """Self-imposed daily read/write budget.
@@ -278,6 +292,7 @@ class FieldRoutesClient:
         params: dict[str, Any] | None = None,
         *,
         optional_params: set[str] | None = None,
+        attempts: int | None = None,
     ) -> dict[str, Any]:
         """POST `{entity}/{action}` with form-encoded params; return the parsed JSON body.
 
@@ -290,6 +305,10 @@ class FieldRoutesClient:
         (e.g. `customer/get`'s `includeSubscriptions`, which the spec
         declares but which Zest's live account ignores; `customer_360`
         already re-fetches subscriptions separately when that happens).
+
+        `attempts` is how often the request may be sent (default: `max_retries`). Pass 1
+        for a write that must not be sent a second time without its caller looking
+        first: a timeout or a 5xx then raises at once instead of sending it again.
         """
         is_read = is_read_action(action)
         self.usage.check(is_read)
@@ -304,8 +323,9 @@ class FieldRoutesClient:
 
         url = f"{self.base_url}/{entity}/{action}"
         last_exc: Exception | None = None
+        tries = self.max_retries if attempts is None else max(1, attempts)
 
-        for attempt in range(self.max_retries):
+        for attempt in range(tries):
             await self.rate_limiter.acquire()
             try:
                 resp = await self._http.post(
@@ -313,14 +333,14 @@ class FieldRoutesClient:
                 )
             except httpx.TransportError as exc:
                 last_exc = exc
-                if attempt + 1 < self.max_retries:
+                if attempt + 1 < tries:
                     await asyncio.sleep(0.5 * (2**attempt))
                     continue
                 raise FieldRoutesError(
                     f"{entity}/{action}: transport error: {exc}", entity=entity, action=action
                 ) from exc
 
-            if resp.status_code >= 500 and attempt + 1 < self.max_retries:
+            if resp.status_code >= 500 and attempt + 1 < tries:
                 await asyncio.sleep(0.5 * (2**attempt))
                 continue
 

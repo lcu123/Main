@@ -1,0 +1,55 @@
+{
+  "//": "Features the customer pages use that some browser on the support list (iOS 12+, Chromium 53+, Samsung Internet 7+, Safari 12+, Firefox ESR) lacks. static/compat.spec.js prints the full list with versions on every run. An entry here means: seen, understood, accepted FOR NOW. 'effect' is what a customer on such a browser gets; 'reason' is why that is tolerable; 'fix' (optional) is the cheap way to make it right. A feature that is not listed here fails the build; so does an entry the pages no longer need.",
+  "css-focus-visible": {
+    "effect": "On Safari before 15.4, Chromium before 86 and Samsung Internet before 14 every rule with :focus-visible in its selector is dropped whole. On the page those are only the rules that take the focus ring AWAY again for a mouse or a finger (':focus:not(:focus-visible){outline:0}'). The plain ':focus' rules before them still apply, so on those browsers a star, a button or a link that was clicked or tapped keeps its ring until something else is pressed (seen with the rules taken out of a current Chromium: a clicked star stays outlined).",
+    "reason": "A ring too many, never one too few: a keyboard or TV-remote user always sees where the focus is, which is what the first version got wrong on these browsers (the star row showed nothing). specs/old-engines.spec.js checks it."
+  },
+  "aspect-ratio": {
+    "effect": "On Chromium before 88, Safari and iOS before 15 and Samsung Internet before 15 the '@supports (aspect-ratio:1/1)' block is skipped. The player is then a black box the width of the column and 74% of the window tall from the first moment, with the picture in the middle of it; on a tall, narrow phone that leaves black bands above and below the picture.",
+    "reason": "The box is reserved before the video arrives, so nothing jumps, and the picture is never stretched (object-fit is the browser's default, contain). specs/old-engines.spec.js checks both."
+  },
+  "variable-fonts": {
+    "effect": "Chromium 53 to 61 and Samsung Internet 7 do not understand 'font-weight:300 900' in @font-face. They use the one Rubik file at its lightest built-in weight and fake the bold, so headings look thinner and slightly smeared. Chromium 62 to 65 support it only partly.",
+    "reason": "All text stays readable. Only 2016-2018 TV browsers and very old Android phones are that old; iOS has had variable fonts since iOS 11."
+  },
+  "css-font-rendering-controls": {
+    "effect": "Chromium 53 to 59 and Samsung Internet 7 ignore font-display:swap: while the Rubik file is on its way the words are invisible (for up to 3 seconds on a slow connection), then appear.",
+    "reason": "The words always appear; the delay is short and only on the very oldest Chromium."
+  },
+  "aac": {
+    "effect": "Firefox does not carry its own AAC decoder: it uses the one in Windows, macOS or Android, which is always there. On a Linux desktop without the system codecs the video is silent or does not play.",
+    "reason": "Customers on Firefox are on Windows or a Mac, where the decoder is part of the system. The CI run on Linux installs it."
+  },
+  "media-fragments": {
+    "effect": "No browser supports the whole media-fragments standard, so caniuse marks every one 'partly'. The part used here, #t=0.1 (show the frame at a tenth of a second instead of a possibly black first frame), is the part they all do support.",
+    "reason": "Where it were ignored the video would simply show its very first frame."
+  },
+  "referrer-policy": {
+    "effect": "Chromium 53 to 60 know only the older referrer values. 'no-referrer', the one used here, is among those.",
+    "reason": "The value in use works on the whole list; and the watch link is also sent with Referrer-Policy: no-referrer as a header."
+  },
+  "text-size-adjust": {
+    "effect": "Desktop Safari, Firefox and Chromium 53 ignore -webkit-text-size-adjust. It exists to stop an iPhone enlarging text when turned on its side; desktop browsers never do that.",
+    "reason": "It is understood exactly where it matters (Safari on iOS, Chrome on Android)."
+  },
+  "font-family-system-ui": {
+    "effect": "Chromium 53 to 55 do not know the name system-ui and move on to the next names in the list (-apple-system, Segoe UI, Roboto, sans-serif).",
+    "reason": "It is only the fallback behind Rubik, and it has fallbacks of its own."
+  },
+  "css-overflow": {
+    "effect": "None. caniuse marks 'overflow' as partly supported because of its newer values (clip, two values at once). The page uses only overflow:hidden, which every browser has always had.",
+    "reason": "False alarm from the tool for the value in use; listed so that the day a newer overflow value is written it shows up in review."
+  },
+  "mdn-text-decoration-shorthand": {
+    "effect": "None. Chromium 53 to 56 lack the three-part text-decoration shorthand (line, style, colour). The page writes only text-decoration:none, which every browser understands.",
+    "reason": "False alarm from the tool for the value in use."
+  },
+  "css-math-functions": {
+    "effect": "max() is used twice, each time AFTER a plain declaration of the same property, so a browser that does not know it keeps the plain one. '.wrap{max-width:560px;max-width:max(560px,46vh)}': Chromium before 79 and Samsung Internet before 12 keep the 560 px column (on a TV browser that reports 3840x2160 the picture is then 528 px wide and 939 px tall, 43% of the screen, in the middle of a taller black box). 'max-height:74vh;max-height:max(74vh,240px)' sits inside the @supports (aspect-ratio) block, and every browser that reads that block also knows max().",
+    "reason": "The fallback is the page as it was before the change, which worked. Safari 12 to 13.3 is marked 'partly' by caniuse for nesting and units in clamp(); the two plain max() calls here are in the part it supports."
+  },
+  "forced-colors": {
+    "effect": "Chromium before 89, Safari before 16 and Samsung Internet before 15 skip the '@media (forced-colors:active)' rules. Those browsers have no forced colours to apply them to (Windows contrast themes reach web pages through Edge and Chrome 89 and later, and Firefox), so nothing is lost.",
+    "reason": "A media query a browser does not know is simply false. The rules only matter where a contrast theme is on."
+  }
+}

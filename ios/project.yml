@@ -1,0 +1,137 @@
+# XcodeGen spec. The .xcodeproj is generated, never committed:
+#   brew install xcodegen && cd ios && xcodegen generate && open ZestVideo.xcodeproj
+name: ZestVideo
+
+options:
+  bundleIdPrefix: com.zestlawnpest
+  deploymentTarget:
+    iOS: "17.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+configFiles:
+  Debug: Config/App.xcconfig
+  Release: Config/App.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+
+packages:
+  ZestCore:
+    path: ZestCore
+
+targets:
+  ZestVideo:
+    type: application
+    platform: iOS
+    sources:
+      - path: ZestVideo
+    dependencies:
+      - package: ZestCore
+        product: ZestCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zestlawnpest.video
+        PRODUCT_NAME: ZestVideo
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_ENTITLEMENTS: ZestVideo/Resources/ZestVideo.entitlements
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+    info:
+      path: ZestVideo/Info.plist
+      properties:
+        CFBundleDisplayName: Zest Video
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        ITSAppUsesNonExemptEncryption: false
+        ZestServerURL: $(ZEST_SERVER_URL)
+        ZestAppStoreURL: $(ZEST_APP_STORE_URL)
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiresFullScreen: true
+        LSApplicationQueriesSchemes:
+          - tel
+        NSCameraUsageDescription: Zest Video uses the camera to record a short video of the property after each visit.
+        NSMicrophoneUsageDescription: Zest Video records your voice so the customer can hear what you did.
+        NSSpeechRecognitionUsageDescription: Zest Video listens for the customer's name in your video to check it goes to the right home. This happens on your phone.
+        NSLocationWhenInUseUsageDescription: Zest Video uses your location to show the stop you are at and to check the video goes to the right home.
+        NSLocationAlwaysAndWhenInUseUsageDescription: Zest Video can remind you to record a video when you leave a stop.
+
+  ZestVideoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ZestVideoTests
+    # ZestCore is NOT linked here a second time: the tests run inside the app,
+    # which already contains it. Linking it twice would give two copies of
+    # every type.
+    dependencies:
+      - target: ZestVideo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zestlawnpest.video.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+  # End-to-end tests: XCUITest drives the real app in the simulator against
+  # the fake server in Scripts/fake_server.py. See README ("UI tests").
+  ZestVideoUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ZestVideoUITests
+    # ZestCore is linked here too: the UI tests run in their own process (not
+    # inside the app), and read the same size rules the app is laid out with
+    # (GloveRule) instead of keeping a copy of the numbers.
+    dependencies:
+      - target: ZestVideo
+      - package: ZestCore
+        product: ZestCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zestlawnpest.video.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: ZestVideo
+
+schemes:
+  ZestVideo:
+    build:
+      targets:
+        ZestVideo: all
+        ZestVideoTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ZestVideoTests
+    archive:
+      config: Release
+
+  # The UI tests have their own scheme, so the ordinary build and unit tests
+  # (scheme ZestVideo) never need the fake server.
+  ZestVideoUITests:
+    build:
+      targets:
+        ZestVideo: all
+        ZestVideoUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      # No automatic screen recordings: they made the results hundreds of MB.
+      # A failing test saves its own picture and notes (ZestUITestCase).
+      captureScreenshotsAutomatically: false
+      targets:
+        - ZestVideoUITests

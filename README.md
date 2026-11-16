@@ -2,6 +2,8 @@
 
 A remote [MCP](https://modelcontextprotocol.io) server that gives Claude (claude.ai web and mobile, Cowork, Claude Desktop) read **and write** access to one FieldRoutes office. Built for Zest Lawn & Pest; deploys to Railway in about fifteen minutes.
 
+This repo also holds **Zest Visit Video**: an iPhone app for techs and the server behind it, which emails each customer a short video after a visit. See [`docs/video/`](docs/video/README.md).
+
 Ask Claude things like:
 
 - "Who's on Carlos's route tomorrow and what does he need to know before each stop?"

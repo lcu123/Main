@@ -1,0 +1,675 @@
+"""The office page: today's stops by tech with video status, flags on top, and the
+few actions staff need (pull, move, note, issue a code, cut off a phone). Owners also
+get settings, office users, per-tech stats and the audit trail.
+
+Server-rendered HTML with plain forms. Sign-in is an emailed code for addresses on
+the allow-list; every POST carries a CSRF token tied to the session.
+"""
+
+from __future__ import annotations
+
+import re
+
+from contextvars import ContextVar
+from datetime import datetime, timedelta
+from typing import Any, Awaitable, Callable
+from urllib.parse import parse_qs, quote, urlsplit
+
+import sqlalchemy as sa
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.routing import Route
+
+from . import __version__, auth, db, security, videos
+from .core import (
+    DEFAULT_SETTINGS, FLAG_WORDS, FR_EMAIL_TRIO, SETTING_CHOICES, SETTING_LIMITS, ApiError, Ctx, audit, clear_flags,
+    coerce_setting, fr_email_problem, get_settings, set_setting,
+)
+from .fr import FieldRoutesError, to_id
+from .http_api import client_ip
+from .jobs import techs_with_the_app
+from .render import render
+from .route import FR_EMAIL, LIVE_STATES, covers, helper_techs, lead_techs, sync_day, tech_view
+
+COOKIE = "zv_office"
+OFFICE_HEADERS = {
+    "X-Robots-Tag": "noindex, nofollow, noarchive",
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "same-origin",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": (
+        "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self'; "
+        "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+    ),
+}
+
+EMAIL_SKIP_WORDS = {
+    "email_off": "customer emails are off",
+    "not_in_test_list": "customer is not on the test list",
+    "opted_out": "customer stopped video emails",
+    "no_address": "no email on file",
+    "fr_reminders_off": "email reminders are off in FieldRoutes",
+    "send_failed": "the email could not be sent",
+    "off_route": "the stop is no longer on the route",
+    "second_video": "a second video for this visit",
+    "overdue": "its email was hours late, so it waits for the office",
+    "fr_missed": "it waits for the office, and its flag says what is known about FieldRoutes' email",
+    "fr_email": "the link is in FieldRoutes' email",
+    "demo": "demo",
+}
+
+# FieldRoutes' delay, in minutes, when this deployment puts the video link into FieldRoutes'
+# own email (`videos.fr_email_on`), for the banner on every office page. Set once per request.
+_fr_email: ContextVar[int] = ContextVar("fr_email_minutes", default=0)
+
+FR_EMAIL_CHOICES = {
+    0: "Our own email (as it has always been)",
+    30: "FieldRoutes' own email, which FieldRoutes sends 30 minutes after a visit is completed",
+    60: "FieldRoutes' own email, which FieldRoutes sends 1 hour after a visit is completed",
+}
+
+SETTING_HELP = {
+    "max_seconds": "Longest video, in seconds.",
+    "hold_minutes": "Minutes the tech has to delete or record again before the customer is emailed.",
+    "far_meters": "Warn the tech when he is farther than this from the address (meters).",
+    "min_build": "Oldest app build allowed. Raise it to force an update.",
+    "require_video": "Flag the office when a stop finishes with no video.",
+    "recommend_button": "Show the tech the 'I recommended something' switch.",
+    "leave_reminders": "Let the app remind the tech when he leaves a stop with no video. This asks the tech for "
+    "'Always' location. Leave it off until Apple has approved the app.",
+    "missing_alert_minutes": "Minutes after a stop finishes before 'no video' is flagged.",
+    "stuck_hours": "Hours a video may sit on a phone before the office is flagged.",
+    "retention_months": "Months videos are kept before they are deleted.",
+    "skip_service_ids": "FieldRoutes service type IDs that do not need a video (space or comma between).",
+    "respect_fr_email_reminders": "Do not email customers whose email reminders are off in FieldRoutes.",
+    "hold_off_route": "When a tech films a visit that FieldRoutes no longer has on that day (cancelled, a no-show, "
+    "or moved to another day), hold the email until the office says send. The same when a stop changes hands and "
+    "both techs film it: the second video waits. Unticked: the email goes and the office is told after.",
+    "overdue_hours": "After the server or FieldRoutes was down, or a backup was put back: a video whose email is "
+    "more than this many hours late is not sent by itself. It waits for the office to press Send it anyway or "
+    "Pull. The same for a video that waited for the route (its visit was off the day) and is this late by the "
+    "time the visit is back. 0 switches this off, and late emails then go out the moment the server is back.",
+    "fr_email_minutes": "Which email brings the customer the video link. One email, not two. With FieldRoutes' own "
+    "email picked, this server adds one line with the link to the technician's comments on the completed visit. "
+    "FieldRoutes' after-service email carries it, and our own email is not sent. Three things must be true in "
+    "FieldRoutes first (Admin > Preferences > Customer Preferences > Customer Communication). One: Service "
+    "Followup Email is set to 30 Minutes After Completion or 1 Hour After Completion. Two: the choice here is the "
+    "same as that one. Three: the Service Follow-Up email body has {{techComments}} in it, or the link has "
+    "nowhere to show. A video that is ready too late for FieldRoutes' email waits for the office. No second "
+    "email goes by itself. The tech's hold (above) must be at least 10 minutes shorter than FieldRoutes' wait. "
+    "Overdue hours (above) cannot be 0: a video waits that long, at most, for its visit to be completed in "
+    "FieldRoutes. Do not pick this before the test in the go-live guide has passed on the test customer.",
+    "fr_email_line": "The one line added to the technician's comments. {link} becomes the video link and must be "
+    "in it once. One line, 200 characters at most.",
+    "email_subject": "Email subject. {tech} becomes the tech's first name, {service} the service.",
+    "email_intro": "First lines of the email. {tech}, {address} and {service} are filled in.",
+    "prompts": "What the tech reads while recording, one per line. {name} becomes the customer's first name.",
+}
+
+
+def _valid_day(raw: str | None, default: str) -> str:
+    try:
+        return datetime.strptime(raw or "", "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return default
+
+
+def _shift(day: str, days: int) -> str:
+    return (datetime.strptime(day, "%Y-%m-%d").date() + timedelta(days=days)).isoformat()
+
+
+async def tech_names(ctx: Ctx) -> dict[int, str]:
+    async with ctx.engine.connect() as conn:
+        rows = (await conn.execute(sa.select(db.techs.c.id, db.techs.c.fname, db.techs.c.lname))).all()
+    return {r.id: f"{r.fname} {r.lname}".strip() or f"Tech {r.id}" for r in rows}
+
+
+def video_status(ctx: Ctx, video: Any, line: Any | None = None) -> tuple[str, str]:
+    """(label, tone) for a video. Tones: good, wait, bad, off. `line` is the video's row in
+    the outbox for FieldRoutes' own email, when it has one (`videos.comment_rows`)."""
+    if video.state == "no_email" and video.email_skip == FR_EMAIL:
+        # Three stages, and each says only what the server knows (`videos.line_stage`).
+        stage = videos.line_stage(video, line)
+        if stage == "going":
+            return "Going into FieldRoutes' email", "wait"
+        added = videos.line_added_at(line)
+        when = f" · {ctx.local(added).strftime('%-I:%M %p')}" if added else ""
+        if stage == "added":
+            # In the technician's comments. FieldRoutes has not sent yet, and the server
+            # looks once more shortly before it does.
+            return f"Link added for FieldRoutes' email{when}", "wait"
+        return f"In FieldRoutes' email{when}", "good"
+    if video.state == "awaiting_upload":
+        return "Waiting on phone", "wait"
+    if video.state == "held":
+        when = ctx.local(video.email_due_at).strftime("%-I:%M %p") if video.email_due_at else "soon"
+        return f"Sending at {when}", "wait"
+    if video.state == "sent":
+        return ("Watched", "good") if video.first_viewed_at else ("Sent", "good")
+    if video.state == "no_email":
+        return f"No email: {EMAIL_SKIP_WORDS.get(video.email_skip, video.email_skip or 'not sent')}", "off"
+    if video.state == "unmatched":
+        return "Needs a customer", "bad"
+    if video.state == "pulled":
+        return "Pulled", "off"
+    return video.state.capitalize(), "off"
+
+
+async def board(ctx: Ctx, day: str) -> dict[str, Any]:
+    names = await tech_names(ctx)
+    async with ctx.engine.connect() as conn:
+        stops = (
+            await conn.execute(
+                sa.select(db.stops).where(db.stops.c.day == day, db.stops.c.gone.is_(False)).order_by(db.stops.c.position)
+            )
+        ).all()
+        vids = (
+            await conn.execute(
+                sa.select(db.videos)
+                .where(db.videos.c.day == day, db.videos.c.demo.is_(False))
+                .where(db.videos.c.state.in_((*LIVE_STATES, "pulled")))
+                .order_by(db.videos.c.created_at)
+            )
+        ).all()
+        score_rows = (
+            await conn.execute(sa.select(db.scores).where(db.scores.c.video_id.in_([v.id for v in vids] or [""])))
+        ).all()
+        open_flags = (
+            await conn.execute(
+                sa.select(db.flags).where(db.flags.c.cleared_at.is_(None)).order_by(db.flags.c.created_at.desc()).limit(200)
+            )
+        ).all()
+    scores = {s.video_id: s for s in score_rows}
+    notes = await row_notes(ctx, day)
+    lines = await videos.comment_rows(ctx, vids)
+    settings, now = await get_settings(ctx), db.now()
+
+    # One video per tech per property. Prefer a tech's live video; fall back to his
+    # pulled one so the row says so.
+    by_key: dict[tuple[int, int], Any] = {}
+    for v in vids:
+        if v.customer_id is None:
+            continue
+        key = (v.customer_id, v.tech_id)
+        current = by_key.get(key)
+        if current is None or (current.state == "pulled" and v.state != "pulled"):
+            by_key[key] = v
+
+    here: dict[int, list[Any]] = {}
+    for v in by_key.values():
+        here.setdefault(v.customer_id, []).append(v)
+
+    def best(videos: list[Any]) -> Any | None:
+        live = [v for v in videos if v.state != "pulled"]
+        return (live or videos or [None])[0]
+
+    equipped = await techs_with_the_app(ctx)
+    groups: dict[int, list[dict[str, Any]]] = {}
+    seen_videos: set[str] = set()
+    open_ids: set[int] = set()
+    counts = {"stops": 0, "done": 0, "with_video": 0, "missing": 0}
+    for stop in stops:
+        helpers = helper_techs(stop)
+        # One row per tech with appointments of his own here: each owes his own video.
+        for tech_id in lead_techs(stop) or [(stop.tech_ids or [0])[0]]:
+            view = tech_view(stop, tech_id)
+            # A helper's video stands in for the lead's, and so does one left by the tech
+            # who had this work before the office moved it.
+            own = by_key.get((stop.customer_id, tech_id))
+            stand_ins = [
+                v for v in here.get(stop.customer_id, [])
+                if v.tech_id != tech_id and covers(stop, tech_id, v.tech_id, v.appointment_ids, v.state)
+            ]
+            video = best([v for v in (own, *stand_ins) if v is not None])
+            has_app = bool(equipped.intersection([tech_id, *helpers]))
+            if video is not None:
+                seen_videos.add(video.id)
+                label, tone = video_status(ctx, video, lines.get(video.id))
+                if await videos.waits_for_completion(ctx, video, stop, settings, now):
+                    # "Sending at ..." would be wrong: nothing is sent until he completes it.
+                    label, tone = "Waiting for the tech to complete the visit", "wait"
+            elif not has_app:
+                label, tone = "Tech has no app yet", "off"
+            elif view.done:
+                label, tone = "No video", "bad"
+            else:
+                label, tone = "Not done yet", "off"
+            filmed = video is not None and video.state != "pulled"
+            if not filmed:
+                open_ids.add(stop.customer_id)
+            counts["stops"] += 1
+            counts["done"] += 1 if view.done else 0
+            counts["with_video"] += 1 if filmed else 0
+            counts["missing"] += 1 if has_app and view.done and not filmed else 0
+            groups.setdefault(tech_id, []).append(
+                {"stop": stop, "view": view, "video": video, "label": label, "tone": tone,
+                 "score": scores.get(video.id) if video else None,
+                 "note_key": f"{stop.customer_id}:{tech_id}", "note": notes.get(f"{stop.customer_id}:{tech_id}")}
+            )
+
+    others = [
+        {"video": v, "label": video_status(ctx, v, lines.get(v.id))[0], "tone": video_status(ctx, v, lines.get(v.id))[1],
+         "score": scores.get(v.id), "note_key": f"v:{v.id}", "note": notes.get(f"v:{v.id}")}
+        for v in vids
+        if v.id not in seen_videos
+    ]
+    open_stops = [s for s in stops if s.customer_id in open_ids]
+    return {
+        "day": day,
+        "groups": sorted(((names.get(t, f"Tech {t}" if t else "No tech"), rows) for t, rows in groups.items()), key=lambda g: g[0]),
+        "others": others,
+        "open_stops": open_stops,
+        "flags": [
+            {"flag": f, "words": FLAG_WORDS.get(f.kind, f.kind), "tech": names.get(f.tech_id or 0, "")} for f in open_flags
+        ],
+        "counts": counts,
+    }
+
+
+NOTE_KEY = re.compile(r"^(?:-?\d{1,10}:\d{1,10}|v:[0-9a-f-]{36})$")
+
+
+async def row_notes(ctx: Ctx, day: str) -> dict[str, Any]:
+    """The newest office note on each row of a day. Notes live in the audit trail (who
+    wrote what, when), so a note can never be edited away, only added to."""
+    async with ctx.engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                sa.select(db.events).where(db.events.c.action == "office_note").order_by(db.events.c.id.desc()).limit(2000)
+            )
+        ).all()
+    out: dict[str, Any] = {}
+    for e in rows:
+        detail = e.detail if isinstance(e.detail, dict) else {}
+        if detail.get("day") == day and detail.get("key") not in out:
+            out[detail.get("key")] = {"text": detail.get("note", ""), "by": e.actor, "at": e.at}
+    return out
+
+
+async def stats(ctx: Ctx, days: int) -> list[dict[str, Any]]:
+    """Per tech over the last `days`: videos sent, stops missed, watch rate, average score."""
+    settings = await get_settings(ctx)
+    skip = set(settings["skip_service_ids"] or [])
+    end = ctx.today()
+    start = _shift(end, -(days - 1))
+    names = await tech_names(ctx)
+    async with ctx.engine.connect() as conn:
+        stops = (
+            await conn.execute(
+                sa.select(db.stops).where(db.stops.c.day.between(start, end), db.stops.c.gone.is_(False))
+            )
+        ).all()
+        vids = (
+            await conn.execute(
+                sa.select(db.videos)
+                .where(db.videos.c.day.between(start, end), db.videos.c.demo.is_(False))
+                .where(db.videos.c.state.in_((*LIVE_STATES, "pulled")))
+            )
+        ).all()
+        score_rows = (
+            await conn.execute(sa.select(db.scores).where(db.scores.c.video_id.in_([v.id for v in vids] or [""])))
+        ).all()
+    filmed: dict[tuple[str, int], list[Any]] = {}
+    for v in vids:
+        if v.customer_id is not None:
+            filmed.setdefault((v.day, v.customer_id), []).append(v)
+    stars = {s.video_id: s.stars for s in score_rows}
+    lines = await videos.comment_rows(ctx, vids)
+    equipped = await techs_with_the_app(ctx)
+
+    rows: dict[int, dict[str, Any]] = {}
+
+    def row(tech_id: int) -> dict[str, Any]:
+        return rows.setdefault(
+            tech_id,
+            {"name": names.get(tech_id, f"Tech {tech_id}"), "stops": 0, "missed": 0, "videos": 0, "sent": 0,
+             "watched": 0, "stars": []},
+        )
+
+    for stop in stops:
+        helpers = helper_techs(stop)
+        here = filmed.get((stop.day, stop.customer_id), [])
+        for tech_id in lead_techs(stop) or [(stop.tech_ids or [0])[0]]:
+            view = tech_view(stop, tech_id)
+            if not view.done or (view.types and view.types <= skip):
+                continue
+            if not equipped.intersection([tech_id, *helpers]):
+                continue  # a tech without the app cannot miss a video
+            r = row(tech_id)
+            r["stops"] += 1
+            if not any(covers(stop, tech_id, v.tech_id, v.appointment_ids, v.state) for v in here):
+                r["missed"] += 1
+    for v in vids:
+        r = row(v.tech_id)
+        r["videos"] += 1
+        # Sent: our own email went, or the video's line is in FieldRoutes' own email.
+        if v.state == "sent" or videos.line_written(v, lines.get(v.id)):
+            r["sent"] += 1
+            r["watched"] += 1 if v.first_viewed_at else 0
+        if v.id in stars:
+            r["stars"].append(stars[v.id])
+    out = []
+    for r in rows.values():
+        r["watch_rate"] = round(100 * r["watched"] / r["sent"]) if r["sent"] else None
+        r["avg_stars"] = round(sum(r["stars"]) / len(r["stars"]), 1) if r["stars"] else None
+        r["scores"] = len(r["stars"])
+        out.append(r)
+    return sorted(out, key=lambda r: r["name"])
+
+
+Handler = Callable[[Request, auth.OfficeUser], Awaitable[Response]]
+
+
+def routes(ctx: Ctx) -> list[Route]:
+    secure_cookie = ctx.cfg.base_url.startswith("https://")
+
+    def html(template: str, user: auth.OfficeUser | None = None, status: int = 200, **context: Any) -> HTMLResponse:
+        return HTMLResponse(
+            render(
+                template,
+                brand=ctx.cfg.brand_name,
+                version=__version__,
+                user=user,
+                csrf=security.csrf_token(ctx.cfg.secret, user.session) if user else "",
+                email_mode=ctx.cfg.email_mode if ctx.mailer.delivers else "off",
+                mail_delivers=ctx.mailer.delivers,
+                email_test_to=ctx.cfg.email_test_to,
+                tz=ctx.cfg.tz,
+                fr_email_minutes=_fr_email.get(),
+                fr_email_only=sorted(ctx.cfg.fr_write_customer_ids) if ctx.cfg.fr_write_customer_ids is not None else None,
+                **context,
+            ),
+            status_code=status,
+            headers=OFFICE_HEADERS,
+        )
+
+    def back(request: Request, fallback: str = "/office", *, msg: str = "", err: str = "") -> RedirectResponse:
+        # Only ever send people back inside the office page (the target can come from a
+        # form field or the Referer header), keeping just the day they were looking at.
+        parts = urlsplit(fallback)
+        target = parts.path if parts.path.startswith("/office") else "/office"
+        day = parse_qs(parts.query).get("day", [""])[0]
+        if day:
+            target += f"?day={_valid_day(day, ctx.today())}"
+        sep = "&" if "?" in target else "?"
+        if msg:
+            target += f"{sep}msg={quote(msg)}"
+        elif err:
+            target += f"{sep}err={quote(err)}"
+        return RedirectResponse(target, status_code=303)
+
+    def page(handler: Handler, *, owner: bool = False) -> Callable[[Request], Awaitable[Response]]:
+        async def endpoint(request: Request) -> Response:
+            user = await auth.office_user(ctx, request.cookies.get(COOKIE, ""))
+            if user is None:
+                return RedirectResponse("/office/login", status_code=303)
+            _fr_email.set(videos.fr_email_on(ctx, await get_settings(ctx)))
+            if owner and not user.owner:
+                return html("office_message.html", user, status=403, title="Owners only",
+                            message="Ask the owner to do this, or to make you an owner.")
+            if request.method == "POST":
+                form = await request.form()
+                if not security.same(str(form.get("csrf") or ""), security.csrf_token(ctx.cfg.secret, user.session)):
+                    return html("office_message.html", user, status=400, title="That page was stale",
+                                message="Go back, refresh, and try again.")
+            try:
+                return await handler(request, user)
+            except ApiError as exc:
+                if request.method == "POST":
+                    return back(request, request.headers.get("referer") or "/office", err=exc.message)
+                return html("office_message.html", user, status=exc.status, title="That did not work", message=exc.message)
+
+        return endpoint
+
+    # -- sign in ---------------------------------------------------------------
+
+    async def login(request: Request) -> Response:
+        if request.method == "GET":
+            return html("office_login.html", step="email")
+        form = await request.form()
+        email = str(form.get("email") or "").replace("\x00", "").strip().lower()[:254]
+        try:
+            await auth.request_office_code(ctx, email, client_ip(request))
+        except ApiError as exc:
+            return html("office_login.html", step="email", error=exc.message, status=exc.status)
+        return html("office_login.html", step="code", email=email)
+
+    async def verify(request: Request) -> Response:
+        form = await request.form()
+        email = str(form.get("email") or "").replace("\x00", "").strip().lower()[:254]
+        try:
+            token = await auth.verify_office_code(ctx, email, str(form.get("code") or ""), client_ip(request))
+        except ApiError as exc:
+            return html("office_login.html", step="code", email=email, error=exc.message, status=exc.status)
+        response = RedirectResponse("/office", status_code=303)
+        response.set_cookie(
+            COOKIE, token, max_age=auth.OFFICE_SESSION_DAYS * 86400, httponly=True, secure=secure_cookie,
+            samesite="lax", path="/office",
+        )
+        return response
+
+    async def logout(request: Request, user: auth.OfficeUser) -> Response:
+        await auth.office_logout(ctx, user.session)
+        response = RedirectResponse("/office/login", status_code=303)
+        response.delete_cookie(COOKIE, path="/office")
+        return response
+
+    # -- the day ---------------------------------------------------------------
+
+    async def day_page(request: Request, user: auth.OfficeUser) -> Response:
+        today = ctx.today()
+        day = _valid_day(request.query_params.get("day"), today)
+        stale = ""
+        if day == today or request.query_params.get("refresh") == "1":
+            try:
+                await sync_day(ctx, day, force=request.query_params.get("refresh") == "1")
+            except FieldRoutesError as exc:
+                stale = f"FieldRoutes did not answer, so this is the last saved list. ({exc})"
+        data = await board(ctx, day)
+        return html(
+            "office_day.html", user, **data, today=today, prev_day=_shift(day, -1), next_day=_shift(day, 1),
+            stale=stale, msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""),
+            now=db.now(), held_back=videos.HELD_BACK,
+        )
+
+    async def open_video(request: Request, user: auth.OfficeUser) -> Response:
+        video_id = request.path_params["video_id"].lower()
+        video = await videos.get_video(ctx, video_id) if videos.UUID_RE.match(video_id) else None
+        if video is None or video.object_deleted or video.state == "awaiting_upload":
+            raise ApiError(404, "bad_request", "That video's file is not here.")
+        await audit(ctx, "office", user.email, "video_opened", video_id=video.id, customer_id=video.customer_id)
+        return RedirectResponse(ctx.storage.get_url(video.object_key, ctx.cfg.watch_url_seconds), status_code=302)
+
+    async def pull_video(request: Request, user: auth.OfficeUser) -> Response:
+        form = await request.form()
+        reason = str(form.get("reason") or "").replace("\x00", "").strip()
+        await videos.pull(ctx, request.path_params["video_id"].lower(), user.email, reason)
+        return back(request, str(form.get("back") or "/office"), msg="Video pulled. Its link is dead.")
+
+    async def move_video(request: Request, user: auth.OfficeUser) -> Response:
+        form = await request.form()
+        raw = str(form.get("customer_id") or form.get("customer_id_other") or "").strip()
+        customer_id = to_id(raw) if raw.isdigit() else None
+        if customer_id is None or customer_id <= 0:
+            raise ApiError(400, "bad_request", "Pick a customer, or type the FieldRoutes customer number.")
+        await videos.move(ctx, request.path_params["video_id"].lower(), customer_id, user.email)
+        if videos.fr_email_customer(ctx, customer_id, await get_settings(ctx)):
+            msg = ("Video moved. If FieldRoutes' email for that visit has not gone yet, the link goes into it. "
+                   "If it has, the video waits here for you. The day page will say.")
+        else:
+            msg = "Video moved. The right customer gets the email in a minute."
+        return back(request, str(form.get("back") or "/office"), msg=msg)
+
+    async def send_video(request: Request, user: auth.OfficeUser) -> Response:
+        form = await request.form()
+        await videos.send_anyway(ctx, request.path_params["video_id"].lower(), user.email)
+        # Say only what is sure. Whether an email goes is decided on the next pass, like for
+        # any other video: emails may be off, or this customer may have no address.
+        if ctx.cfg.email_mode != "off" and ctx.mailer.delivers:
+            msg = "Let go. If this customer can be emailed, the email goes in a minute. The day page will say."
+        else:
+            msg = "Kept. Customer emails are off, so no email goes. The day page will say what was saved."
+        return back(request, str(form.get("back") or "/office"), msg=msg)
+
+    async def add_note(request: Request, user: auth.OfficeUser) -> Response:
+        form = await request.form()
+        day = _valid_day(str(form.get("day") or ""), ctx.today())
+        key = str(form.get("key") or "")
+        note = " ".join(str(form.get("note") or "").replace("\x00", "").split())[:300]
+        target = str(form.get("back") or "/office")
+        if not NOTE_KEY.match(key) or not note:
+            return back(request, target, err="Type a note first.")
+        video_id = key[2:] if key.startswith("v:") else None
+        customer_id = None if video_id else to_id(key.split(":")[0])
+        await audit(ctx, "office", user.email, "office_note", video_id=video_id, customer_id=customer_id,
+                    detail={"day": day, "key": key, "note": note})
+        return back(request, target, msg="Note saved.")
+
+    async def clear_flag(request: Request, user: auth.OfficeUser) -> Response:
+        form = await request.form()
+        flag_id = to_id(request.path_params["flag_id"])
+        note = str(form.get("note") or "").replace("\x00", "").strip()
+        cleared = await clear_flags(ctx, db.flags.c.id == flag_id, user.email, note) if flag_id else 0
+        if cleared:
+            await audit(ctx, "office", user.email, "flag_cleared", detail={"flag": flag_id, "note": note[:300]})
+        return back(request, str(form.get("back") or "/office"), msg="Flag cleared.")
+
+    # -- techs and phones ------------------------------------------------------
+
+    async def techs_page(request: Request, user: auth.OfficeUser) -> Response:
+        async with ctx.engine.connect() as conn:
+            techs = (
+                await conn.execute(
+                    sa.select(db.techs).where(db.techs.c.demo.is_(False)).order_by(db.techs.c.active.desc(), db.techs.c.fname)
+                )
+            ).all()
+            devices = (await conn.execute(sa.select(db.devices).order_by(db.devices.c.last_seen_at.desc()))).all()
+        by_tech: dict[int, list[Any]] = {}
+        for d in devices:
+            by_tech.setdefault(d.tech_id, []).append(d)
+        return html(
+            "office_techs.html", user, techs=techs, devices=by_tech, msg=request.query_params.get("msg", ""),
+            err=request.query_params.get("err", ""), code=request.query_params.get("code", ""),
+            code_for=request.query_params.get("for", ""),
+            mask=security.mask_email,
+        )
+
+    async def refresh_techs(request: Request, user: auth.OfficeUser) -> Response:
+        try:
+            count = await auth.sync_techs(ctx)
+        except FieldRoutesError as exc:
+            raise ApiError(503, "server_error", f"FieldRoutes did not answer: {exc}") from exc
+        return back(request, "/office/techs", msg=f"Found {count} active techs in FieldRoutes.")
+
+    async def issue_code(request: Request, user: auth.OfficeUser) -> Response:
+        tech_id = to_id(request.path_params["tech_id"])
+        if tech_id is None:
+            raise ApiError(400, "bad_request", "That tech is not active in FieldRoutes.")
+        code = await auth.issue_code_by_hand(ctx, tech_id, user.email)
+        names = await tech_names(ctx)
+        return RedirectResponse(f"/office/techs?code={code}&for={quote(names.get(tech_id, ''))}", status_code=303)
+
+    async def cut_device(request: Request, user: auth.OfficeUser) -> Response:
+        device_id = request.path_params["device_id"]
+        if await auth.revoke_device(ctx, device_id, user.email):
+            await audit(ctx, "office", user.email, "device_cut_off", detail={"device": device_id})
+        return back(request, "/office/techs", msg="That phone is cut off.")
+
+    # -- owner -----------------------------------------------------------------
+
+    async def settings_page(request: Request, user: auth.OfficeUser) -> Response:
+        if request.method == "POST":
+            form = await request.form()
+            errors = []
+            # Three settings have to fit each other once the link goes into FieldRoutes' email
+            # (`core.fr_email_problem`). They are saved from one form, so they are judged as
+            # what they will be together, not one after the other.
+            together: dict[str, Any] = {}
+            for key in FR_EMAIL_TRIO:
+                if form.get(key) is not None:
+                    try:
+                        together[key] = coerce_setting(key, form.get(key))
+                    except ValueError:
+                        pass  # said below, when that setting is saved
+            now = await get_settings(ctx)
+            changed = {key for key in together if together[key] != now[key]}
+            skip: set[str] = set()
+            problem = fr_email_problem({**now, **together})
+            if problem and len(changed) > 1:
+                # More than one of them was changed and they do not fit: none is saved, said once.
+                skip = changed
+                errors.append(f"{problem} None of these was changed.")
+            for key, default in DEFAULT_SETTINGS.items():
+                raw: Any = form.get(key)
+                if isinstance(default, bool):
+                    raw = raw is not None
+                elif raw is None or key in skip:
+                    continue
+                try:
+                    await set_setting(ctx, key, raw, user.email, alongside=together)
+                except ValueError as exc:
+                    errors.append(str(exc))
+            if errors:
+                return back(request, "/office/settings", err=" ".join(errors))
+            return back(request, "/office/settings", msg="Saved.")
+        return html(
+            "office_settings.html", user, settings=await get_settings(ctx), defaults=DEFAULT_SETTINGS, help=SETTING_HELP,
+            msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""), cfg=ctx.cfg,
+            limits=SETTING_LIMITS, choices=SETTING_CHOICES, fr_email_choices=FR_EMAIL_CHOICES,
+        )
+
+    async def users_page(request: Request, user: auth.OfficeUser) -> Response:
+        if request.method == "POST":
+            form = await request.form()
+            await auth.set_office_user(
+                ctx, str(form.get("email") or ""), str(form.get("role") or "staff"), form.get("remove") is None, user.email
+            )
+            return back(request, "/office/users", msg="Saved.")
+        async with ctx.engine.connect() as conn:
+            users = (await conn.execute(sa.select(db.office_users).order_by(db.office_users.c.email))).all()
+        return html("office_users.html", user, users=users, fixed=set(ctx.cfg.owner_emails),
+                    msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""))
+
+    async def stats_page(request: Request, user: auth.OfficeUser) -> Response:
+        try:
+            days = max(1, min(120, int(request.query_params.get("days", "30"))))
+        except ValueError:
+            days = 30
+        return html("office_stats.html", user, rows=await stats(ctx, days), days=days)
+
+    async def audit_page(request: Request, user: auth.OfficeUser) -> Response:
+        query = sa.select(db.events).order_by(db.events.c.id.desc()).limit(500)
+        video_id = request.query_params.get("video", "").strip().lower()
+        action = request.query_params.get("action", "").replace("\x00", "").strip()[:80]
+        if video_id and not videos.UUID_RE.match(video_id):
+            video_id = ""  # not a video ID: show everything rather than ask the database about junk
+        if video_id:
+            query = query.where(db.events.c.video_id == video_id)
+        if action:
+            query = query.where(db.events.c.action == action)
+        async with ctx.engine.connect() as conn:
+            rows = (await conn.execute(query)).all()
+        names = await tech_names(ctx)
+        return html("office_audit.html", user, rows=rows, names=names, video_id=video_id, action=action)
+
+    return [
+        Route("/office/login", login, methods=["GET", "POST"]),
+        Route("/office/verify", verify, methods=["POST"]),
+        Route("/office/logout", page(logout), methods=["POST"]),
+        Route("/office", page(day_page)),
+        Route("/office/video/{video_id}", page(open_video)),
+        Route("/office/video/{video_id}/pull", page(pull_video), methods=["POST"]),
+        Route("/office/video/{video_id}/move", page(move_video), methods=["POST"]),
+        Route("/office/video/{video_id}/send", page(send_video), methods=["POST"]),
+        Route("/office/flag/{flag_id:int}/clear", page(clear_flag), methods=["POST"]),
+        Route("/office/note", page(add_note), methods=["POST"]),
+        Route("/office/techs", page(techs_page)),
+        Route("/office/techs/refresh", page(refresh_techs), methods=["POST"]),
+        Route("/office/techs/{tech_id:int}/code", page(issue_code), methods=["POST"]),
+        Route("/office/devices/{device_id}/cut", page(cut_device), methods=["POST"]),
+        Route("/office/settings", page(settings_page, owner=True), methods=["GET", "POST"]),
+        Route("/office/users", page(users_page, owner=True), methods=["GET", "POST"]),
+        Route("/office/stats", page(stats_page, owner=True)),
+        Route("/office/audit", page(audit_page, owner=True)),
+    ]

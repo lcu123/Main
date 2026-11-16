@@ -1,0 +1,685 @@
+import CoreLocation
+import XCTest
+
+/// The base of every UI test: a clean app, a clean fake server, and the
+/// handful of steps the tests share.
+///
+/// The tests drive the real app in the simulator, launched in its UI-test
+/// mode (see `UITestMode.swift` in the app): real sign-in, real stores on
+/// disk, real upload manager, real navigation. Each test checks BOTH what is
+/// on the screen and what the fake server saw.
+///
+/// When a test fails it prints the test's name, the reason, what was on the
+/// screen and the server's request log, and saves a picture of the screen, so
+/// a failure in CI can be read without running anything.
+class ZestUITestCase: XCTestCase {
+    let app = XCUIApplication()
+    let server = FakeServer()
+    let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+
+    /// On the first customer's lawn (the fake server's stop 201).
+    static let near = CLLocation(latitude: 38.67800, longitude: -121.17600)
+
+    /// The fake server's customers.
+    static let smith = 201      // "Smith, Jane", 123 Main St: checked in and out, where the phone is
+    static let johnson = 202    // "Johnson, Robert", 125 Main St: next door, no check-in
+    static let garcia = 203     // "Garcia, Maria", 48 Oak Ave: about 375 m away
+    static let business = 204   // "Green Valley HOA": kilometres away
+    static let locked = 205     // "Wilson, Tom": its video already went to the customer
+
+    static let mobile = "9165550100"
+    static let code = "123456"
+
+    /// What the speech check "hears" unless a test says otherwise: the tech's
+    /// script, with the first name of the customer at stop 201. No street.
+    static let smithWords = "Hi Jane. Here's what I did. Here's what I recommend. I closed the backyard gate."
+
+    /// Failure pictures and notes are also written here, where CI picks them up.
+    static let failureFolder = ProcessInfo.processInfo.environment["ZEST_FAILURE_DIR"] ?? "/tmp/zest-ui-failures"
+
+    private var transcript: String?
+    private var backgroundUploads = false
+    private var metrics = false
+
+    /// The free space the phone is to "have", in MB, from the next launch or
+    /// relaunch on. `nil` is the simulator's real free space (plenty).
+    var freeMB: Int?
+    /// Make the unsaved clip found at the next launch this many days old,
+    /// as if the phone had been put away with it. Reset to `nil` after one
+    /// launch, so a later relaunch does not age it again.
+    var ageDraftDays: Int?
+    /// The first clip of each launch is interrupted this many seconds in,
+    /// as a call would interrupt it; the camera is then away for `lasting`
+    /// seconds and comes back by itself. `cause` is what the phone would
+    /// say took the camera ("call_or_alarm", "camera_taken", "phone_busy"...).
+    var interruption: (at: Double, lasting: Double, cause: String)?
+    /// The stand-in camera never says a recording is over (it neither
+    /// stops at the limit nor answers the ring): the app has to end it.
+    var silentCamera = false
+    /// Answer "Don't Allow" to the phone's questions instead of "Allow".
+    /// (One test refuses location; it puts this back in its tear-down.)
+    static var refusing = false
+
+    /// False for tests that open the app's screens with made-up data and
+    /// talk to no server at all (`ScreensUITests`).
+    class var needsServer: Bool { true }
+    /// A device token the fake server signed in when it was reset.
+    private var issuedToken: String?
+
+    /// The phone asks each system question once per simulator: location at
+    /// the first sign-in, notifications after the first saved video. The
+    /// first time is given longer to show up.
+    private static var answeredLocation = false
+    private static var answeredNotifications = false
+
+    /// "RecordUITests.testHappyPathRecordSaveSend"
+    var shortName: String {
+        let method = name.replacingOccurrences(of: "]", with: "").components(separatedBy: " ").last ?? name
+        return "\(String(describing: type(of: self))).\(method)"
+    }
+
+    // MARK: Set up and tear down
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        continueAfterFailure = false
+        if Self.needsServer {
+            XCTAssertTrue(
+                server.isUp,
+                "The fake server is not answering on \(server.baseURL). Start it first: python3 ios/Scripts/fake_server.py"
+            )
+            resetServer()
+        }
+        setLocation(Self.near)
+        // A system question ("Allow notifications?") must never hang a test.
+        addUIInterruptionMonitor(withDescription: "A system question") { alert in
+            ZestUITestCase.answer(alert)
+        }
+    }
+
+    override func tearDownWithError() throws {
+        // Before the app goes: say what failed, if anything did.
+        reportIssues()
+        app.terminate()
+        try super.tearDownWithError()
+    }
+
+    /// Clean server, new token. Called before every test; a test that wants
+    /// the long route (twenty stops in a row) calls it again before launching.
+    func resetServer(route: String = "usual", config: [String: Any] = ["maxSeconds": 3]) {
+        // Three-second clips keep the tests quick.
+        issuedToken = server.reset(test: shortName, config: config, route: route)
+        XCTAssertNotNil(issuedToken, "The fake server did not hand over a token when it was reset.")
+    }
+
+    /// What was recorded when XCTest handed over an issue: its words, what
+    /// was on the screen, what the server had seen, and a picture.
+    private struct Sighting {
+        let words: String
+        let screen: String
+        let serverLog: String
+        let picture: XCUIScreenshot
+    }
+
+    private var sightings: [Sighting] = []
+    /// System notes already printed in this run, so each is said once.
+    private static var notesPrinted = Set<String>()
+
+    /// XCTest hands over every issue here, and not all of them are failures:
+    /// on an iPad it also passes on Apple's notes about the app's Info.plist,
+    /// in tests that go on to pass. Whether the test failed is only known
+    /// when it is over, so this keeps what was on the screen at that moment
+    /// and `reportIssues` (from the tear-down) says FAILED only if it did.
+    override func record(_ issue: XCTIssue) {
+        if sightings.count < 5 {
+            let log = Self.needsServer ? server.logText() : "(this test opens the app's screens with made-up data and uses no server)"
+            sightings.append(Sighting(
+                words: issue.compactDescription, screen: screenSummary(), serverLog: log,
+                picture: XCUIScreen.main.screenshot()
+            ))
+        }
+        super.record(issue)
+    }
+
+    /// Every failure: say which test, why, what was showing and what the
+    /// server saw; keep a picture. A test that passed prints no FAILED
+    /// block: what the system noted along the way is printed once, as a note.
+    private func reportIssues() {
+        guard !sightings.isEmpty else { return }
+        defer { sightings = [] }
+        let failed = (testRun?.totalFailureCount ?? 0) > 0
+        guard failed else {
+            for sighting in sightings where Self.notesPrinted.insert(sighting.words).inserted {
+                print("NOTE (not a failure; \(shortName) passed) the system said: \(sighting.words)")
+            }
+            return
+        }
+        // The test stops at its first failure, so the last thing recorded is
+        // the failure; anything before it was only a note.
+        guard let last = sightings.last else { return }
+        let earlier = sightings.dropLast().map { "######## Noted earlier: \($0.words)" }
+        let note = ([
+            "######## FAILED \(shortName)",
+            "######## \(last.words)",
+            "######## On screen: \(last.screen)",
+        ] + earlier + [
+            "######## What the server saw:",
+            last.serverLog,
+            "########",
+        ]).joined(separator: "\n")
+        print("\n" + note + "\n")
+
+        let picture = XCTAttachment(screenshot: last.picture)
+        picture.name = "\(shortName) at the failure"
+        picture.lifetime = .keepAlways
+        add(picture)
+        let text = XCTAttachment(string: note)
+        text.name = "What the server saw"
+        text.lifetime = .keepAlways
+        add(text)
+
+        let folder = URL(fileURLWithPath: Self.failureFolder, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? last.picture.pngRepresentation.write(to: folder.appendingPathComponent(shortName + ".png"))
+        try? Data(note.utf8).write(to: folder.appendingPathComponent(shortName + ".txt"))
+    }
+
+    /// Keeps a few words with the run's results, whether or not anything failed.
+    func saveNote(named name: String, _ text: String) {
+        let folder = URL(fileURLWithPath: Self.failureFolder, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? Data(text.utf8).write(to: folder.appendingPathComponent(name + ".txt"))
+    }
+
+    /// Adds lines to a note kept with the run's results (one file can be
+    /// built up by many tests).
+    func appendNote(named name: String, _ text: String) {
+        let folder = URL(fileURLWithPath: Self.failureFolder, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent(name + ".txt")
+        let old = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        try? Data((old + text + "\n").utf8).write(to: file)
+    }
+
+    // MARK: Launching, killing, backgrounding
+
+    /// Launches the app in UI-test mode.
+    /// - Parameters:
+    ///   - reset: wipe everything the app has stored first (a clean install).
+    ///     Without it the app starts with whatever it kept.
+    ///   - signedIn: with `reset`, start already signed in, with the token
+    ///     the fake server issued. Only the sign-in tests type a number and
+    ///     a code; one slow keystroke there cannot fail every other test.
+    ///   - transcript: the words the speech check "hears" in every clip.
+    ///     `nil` means it hears nothing (the spoken key is "unknown").
+    ///   - backgroundUploads: use the real background URLSession for uploads
+    ///     instead of the ordinary one the tests use by default.
+    ///   - metrics: have the app post its memory, disk and timing numbers
+    ///     (the performance tests).
+    func launch(
+        reset: Bool = true, signedIn: Bool = false, transcript: String? = ZestUITestCase.smithWords,
+        backgroundUploads: Bool = false, metrics: Bool = false
+    ) {
+        if reset {
+            self.transcript = transcript
+            self.backgroundUploads = backgroundUploads
+            self.metrics = metrics
+        }
+        var arguments = ["-ZestUITest", "1"]
+        if reset {
+            arguments += ["-ZestUITestReset", "1"]
+        }
+        app.launchArguments = arguments
+        var environment = ["ZEST_TEST_SERVER": server.baseURL]
+        if let words = self.transcript {
+            environment["ZEST_TEST_TRANSCRIPT"] = words
+        }
+        if self.backgroundUploads {
+            environment["ZEST_TEST_BACKGROUND_UPLOADS"] = "1"
+        }
+        if self.metrics {
+            environment["ZEST_TEST_METRICS"] = "1"
+        }
+        if let freeMB {
+            environment["ZEST_TEST_FREE_MB"] = String(freeMB)
+        }
+        if let days = ageDraftDays {
+            environment["ZEST_TEST_DRAFT_AGE_DAYS"] = String(days)
+            ageDraftDays = nil
+        }
+        if let call = interruption {
+            environment["ZEST_TEST_INTERRUPT_AT"] = String(call.at)
+            environment["ZEST_TEST_INTERRUPT_FOR"] = String(call.lasting)
+            environment["ZEST_TEST_INTERRUPT_AS"] = call.cause
+        }
+        if silentCamera {
+            environment["ZEST_TEST_SILENT_CAMERA"] = "1"
+        }
+        // The token is only ever handed over together with a reset: a
+        // restart must show what the app itself kept.
+        if reset, signedIn, let token = issuedToken {
+            environment["ZEST_TEST_TOKEN"] = token
+        }
+        app.launchEnvironment = environment
+        app.launch()
+    }
+
+    /// The words the speech check "hears" from the next start of the app
+    /// on (`relaunch()` keeps everything else as it was).
+    func hear(_ words: String?) {
+        transcript = words
+    }
+
+    /// The number in a stop card's round badge ("Stop 3" reads as 3), or
+    /// nil when the badge shows a tick or a clock instead.
+    func number(onCard customerId: Int) -> Int? {
+        let card = stop(customerId)
+        guard card.exists, let value = card.value as? String, value.hasPrefix("Stop ") else { return nil }
+        return Int(value.dropFirst(5))
+    }
+
+    /// Kills the app with no warning, the way a crash or a dead battery would.
+    func kill() {
+        app.terminate()
+        _ = app.wait(for: .notRunning, timeout: 10)
+    }
+
+    /// Starts the app again WITHOUT wiping anything: what it kept is the point.
+    func relaunch() {
+        launch(reset: false)
+    }
+
+    /// Home button, a pause, then back into the app.
+    func leaveAndComeBack() {
+        XCUIDevice.shared.press(.home)
+        pause(2)
+        app.activate()
+        _ = app.wait(for: .runningForeground, timeout: 15)
+    }
+
+    func setLocation(_ location: CLLocation) {
+        XCUIDevice.shared.location = XCUILocation(location: location)
+    }
+
+    func pause(_ seconds: TimeInterval) {
+        RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    // MARK: System questions
+
+    private static func answer(_ alert: XCUIElement) -> Bool {
+        if refusing {
+            // "Don’t Allow": iOS writes it with a curly apostrophe.
+            let no = alert.buttons.matching(NSPredicate(format: "label BEGINSWITH[c] %@", "Don")).firstMatch
+            if no.exists {
+                no.tap()
+                return true
+            }
+        }
+        for title in ["Allow While Using App", "Allow", "OK", "Allow Once", "Continue"] {
+            let button = alert.buttons[title]
+            if button.exists {
+                button.tap()
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Answers "Allow" to any system question that is up (location,
+    /// notifications).
+    /// - Parameter wait: how long to give a question to show up.
+    func allowSystemQuestions(wait: TimeInterval = 1) {
+        for round in 0..<3 {
+            let alert = springboard.alerts.firstMatch
+            let showing = (round == 0 && wait > 0) ? alert.waitForExistence(timeout: wait) : alert.exists
+            guard showing else { return }
+            if !ZestUITestCase.answer(alert) { return }
+            pause(0.6)
+        }
+    }
+
+    // MARK: Finding things
+
+    /// Any element by its identifier.
+    func element(_ identifier: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+    }
+
+    /// A big button, by the words on it ("SAVE").
+    func button(_ words: String) -> XCUIElement {
+        app.buttons[words]
+    }
+
+    /// A stop's card on My Route (or on the pick-a-stop list).
+    func stop(_ customerId: Int) -> XCUIElement {
+        app.buttons["stop-\(customerId)"]
+    }
+
+    /// A video's row on My Videos.
+    func videoRow(_ customerId: Int) -> XCUIElement {
+        app.buttons["video-row-\(customerId)"]
+    }
+
+    /// What an element says, or "" when it is not there.
+    func label(of item: XCUIElement) -> String {
+        item.exists ? item.label : ""
+    }
+
+    /// The short name in the top bar: "My Route", "Review".
+    var barTitle: String {
+        label(of: element("bar-title"))
+    }
+
+    /// The big question at the top of the page: "Save this video?".
+    var screenTitle: String {
+        label(of: element("screen-title"))
+    }
+
+    /// The card at the top of My Route: "Sam. Sent 1 of 5. Waiting 0."
+    var routeHeader: String {
+        label(of: element("route-header"))
+    }
+
+    /// True when something on screen says these words.
+    func hasText(_ part: String) -> Bool {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", part))
+            .firstMatch.exists
+    }
+
+    /// A few words about what is showing, for failure messages.
+    func screenSummary() -> String {
+        guard app.state == .runningForeground else { return "(the app is not in front)" }
+        let buttons = app.buttons.allElementsBoundByIndex.prefix(16).map { item -> String in
+            item.identifier.isEmpty ? item.label : item.identifier
+        }
+        return "bar \"\(barTitle)\", title \"\(screenTitle)\", buttons \(buttons)"
+    }
+
+    // MARK: Waiting
+
+    @discardableResult
+    func waitFor(
+        _ item: XCUIElement, _ what: String, timeout: TimeInterval = 20,
+        file: StaticString = #filePath, line: UInt = #line
+    ) -> XCUIElement {
+        if !item.waitForExistence(timeout: timeout) {
+            XCTFail("Did not find \(what) within \(Int(timeout)) s.", file: file, line: line)
+        }
+        return item
+    }
+
+    /// Polls until `condition` is true. Fails with `what` if it never is.
+    func waitUntil(
+        _ what: String, timeout: TimeInterval = 30,
+        file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool
+    ) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return }
+            pause(0.4)
+        }
+        if condition() { return }
+        XCTFail("Waited \(Int(timeout)) s but this never happened: \(what).", file: file, line: line)
+    }
+
+    func waitForBar(_ title: String, timeout: TimeInterval = 20, file: StaticString = #filePath, line: UInt = #line) {
+        waitUntil("the top bar says \"\(title)\"", timeout: timeout, file: file, line: line) { barTitle == title }
+    }
+
+    func waitForTitle(_ title: String, timeout: TimeInterval = 20, file: StaticString = #filePath, line: UInt = #line) {
+        waitUntil("the screen asks \"\(title)\"", timeout: timeout, file: file, line: line) { screenTitle == title }
+    }
+
+    func waitForText(_ part: String, timeout: TimeInterval = 15, file: StaticString = #filePath, line: UInt = #line) {
+        waitUntil("the screen says \"\(part)\"", timeout: timeout, file: file, line: line) { hasText(part) }
+    }
+
+    /// Waits until an element's words contain `part`.
+    func waitForLabel(
+        _ item: XCUIElement, _ what: String, contains part: String, timeout: TimeInterval = 30,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        waitUntil("\(what) says \"\(part)\"", timeout: timeout, file: file, line: line) {
+            label(of: item).localizedCaseInsensitiveContains(part)
+        }
+    }
+
+    /// Waits until the server holds exactly `count` whole, confirmed videos.
+    func waitForHeld(
+        count: Int = 1, timeout: TimeInterval = 60, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        waitUntil("the server holds \(count) whole, confirmed video(s)", timeout: timeout, file: file, line: line) {
+            server.state().videos.filter { $0.isHeld }.count == count
+        }
+    }
+
+    /// The phone knows where it is: My Route has put the stop it is standing
+    /// on first.
+    func waitForLocation(file: StaticString = #filePath, line: UInt = #line) {
+        waitForLabel(stop(Self.smith), "the first stop", contains: "Closest stop", timeout: 45, file: file, line: line)
+    }
+
+    // MARK: Tapping
+
+    /// Waits for it, scrolls it into view if it is off screen, and taps it.
+    func tap(
+        _ item: XCUIElement, _ what: String, timeout: TimeInterval = 20,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        waitFor(item, what, timeout: timeout, file: file, line: line)
+        waitUntilTappable(item)
+        bringIntoView(item)
+        item.tap()
+    }
+
+    /// Two quick taps, as a gloved thumb does by mistake.
+    func doubleTap(
+        _ item: XCUIElement, _ what: String, timeout: TimeInterval = 20,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        waitFor(item, what, timeout: timeout, file: file, line: line)
+        waitUntilTappable(item)
+        bringIntoView(item)
+        item.doubleTap()
+    }
+
+    /// A screen that has just appeared ignores touches for 0.4 s (so the
+    /// second tap of a double tap cannot answer it). Give it that moment.
+    func waitUntilTappable(_ item: XCUIElement) {
+        pause(0.45)
+        let deadline = Date().addingTimeInterval(1.5)
+        while Date() < deadline, item.exists, !item.isHittable {
+            pause(0.1)
+        }
+        if item.exists && !item.isHittable {
+            // Still not: a system question may be sitting over the app.
+            allowSystemQuestions(wait: 0)
+        }
+    }
+
+    /// After a video is saved (or the reminders offer is answered) the phone
+    /// may ask about notifications. Say yes.
+    func answerFirstSaveQuestion() {
+        allowSystemQuestions(wait: Self.answeredNotifications ? 0 : 3)
+        Self.answeredNotifications = true
+    }
+
+    /// Scrolls the page until the item can be tapped. Does nothing when it
+    /// already can be.
+    func bringIntoView(_ item: XCUIElement) {
+        let screen = app.windows.firstMatch.frame
+        guard screen.height > 0 else { return }
+        var tries = 0
+        while tries < 14, item.exists, !item.isHittable {
+            let middle = item.frame.midY
+            if middle > screen.height * 0.5 {
+                drag(fromY: 0.50, toY: 0.28)    // it is further down: move the page up
+            } else if middle < screen.height * 0.2 {
+                drag(fromY: 0.28, toY: 0.50)    // it is further up: move the page down
+            } else {
+                return                          // on screen; something else is in the way
+            }
+            tries += 1
+        }
+    }
+
+    private func drag(fromY: CGFloat, toY: CGFloat) {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: fromY))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: toY))
+        start.press(forDuration: 0.05, thenDragTo: end)
+    }
+
+    // MARK: The steps the tests share
+
+    /// A clean app, already signed in (no typing), on My Route.
+    /// - Parameter firstStop: a stop that must be on the list (the long
+    ///   route has other customers than the usual one).
+    func launchSignedIn(
+        transcript: String? = ZestUITestCase.smithWords, backgroundUploads: Bool = false, metrics: Bool = false,
+        firstStop: Int = ZestUITestCase.smith, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        launch(signedIn: true, transcript: transcript, backgroundUploads: backgroundUploads, metrics: metrics)
+        waitForRoute(firstStop: firstStop, file: file, line: line)
+        XCTAssertEqual(server.state().logins, 0, "Started signed in: nothing was typed.", file: file, line: line)
+    }
+
+    /// Signs in through the screen: the mobile number, then the right code.
+    func signIn(file: StaticString = #filePath, line: UInt = #line) {
+        typeMobileAndSend(file: file, line: line)
+        typeCode(Self.code, file: file, line: line)
+        waitForRoute(file: file, line: line)
+    }
+
+    /// Types the mobile number (without sending it).
+    /// - Parameters:
+    ///   - text: what to type; the ten digits unless a test says otherwise.
+    ///   - oneKeyAtATime: send each character as its own event, with no
+    ///     pause between them, the way a fast typist's keys arrive.
+    func typeMobile(
+        _ text: String = ZestUITestCase.mobile, oneKeyAtATime: Bool = false,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let field = app.textFields["contact-field"]
+        waitFor(field, "the mobile number field", timeout: 60, file: file, line: line)
+        waitUntilTappable(field)
+        field.tap()
+        if oneKeyAtATime {
+            for character in text {
+                field.typeText(String(character))
+            }
+        } else {
+            field.typeText(text)
+        }
+        // The field holds exactly what was typed: nothing lost, nothing moved.
+        let typed = (field.value as? String) ?? ""
+        XCTAssertEqual(
+            typed, text,
+            "The mobile number field holds \"\(typed)\" after typing \"\(text)\".", file: file, line: line
+        )
+    }
+
+    func typeMobileAndSend(file: StaticString = #filePath, line: UInt = #line) {
+        typeMobile(file: file, line: line)
+        tap(button("SEND MY CODE"), "SEND MY CODE", file: file, line: line)
+        waitForTitle("Type your code", file: file, line: line)
+    }
+
+    func typeCode(
+        _ digits: String, oneKeyAtATime: Bool = false, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let field = app.textFields["code-field"]
+        waitFor(field, "the code boxes", file: file, line: line)
+        waitUntilTappable(field)
+        field.tap()
+        if oneKeyAtATime {
+            for character in digits {
+                field.typeText(String(character))
+            }
+        } else {
+            field.typeText(digits)
+        }
+    }
+
+    /// How many times the app asked the server to check a code.
+    var verifyCalls: Int {
+        server.state().calls("POST", exactly: "/v1/auth/verify")
+    }
+
+    /// My Route is showing, with its stops loaded.
+    func waitForRoute(firstStop: Int = ZestUITestCase.smith, file: StaticString = #filePath, line: UInt = #line) {
+        waitFor(app.buttons["tab-route"], "My Route (its tab bar)", timeout: 40, file: file, line: line)
+        answerLocationQuestion()
+        waitFor(stop(firstStop), "the stops on My Route", timeout: 40, file: file, line: line)
+    }
+
+    /// Signing in is when the phone asks about location. Say yes (or no,
+    /// in the one test that refuses).
+    func answerLocationQuestion() {
+        allowSystemQuestions(wait: Self.answeredLocation ? 0 : 2.5)
+        Self.answeredLocation = true
+    }
+
+    /// A test that counts days (a clip "from yesterday", a route for
+    /// "today") gives a wrong answer if midnight falls in the middle of it.
+    /// Rather than fail once in a blue moon, it is skipped when it would
+    /// start that close to midnight, and says so.
+    func skipIfMidnightIsNear(within minutes: Int) throws {
+        let now = Date()
+        let calendar = Calendar.current
+        guard let midnight = calendar.nextDate(after: now, matching: DateComponents(hour: 0, minute: 0, second: 0), matchingPolicy: .nextTime) else { return }
+        let left = Int(midnight.timeIntervalSince(now) / 60)
+        try XCTSkipIf(left < minutes, "Midnight is \(left) minutes away and this test counts days: skipped, not failed. Run it again.")
+    }
+
+    /// Makes the phone forget its answer about location, so the next launch
+    /// asks again. The next test to sign in waits for the question.
+    func forgetLocationAnswer() {
+        app.resetAuthorizationStatus(for: .location)
+        Self.answeredLocation = false
+    }
+
+    /// The types of every audit event the server holds for one customer.
+    func eventTypes(for customerId: Int) -> [String] {
+        server.state().events.compactMap { event in
+            (event["customerId"] as? Int) == customerId ? event["type"] as? String : nil
+        }
+    }
+
+    /// From My Route: tap a stop, say THIS IS IT, land on the record screen.
+    func openRecorder(for customerId: Int, file: StaticString = #filePath, line: UInt = #line) {
+        tap(stop(customerId), "the card for stop \(customerId)", file: file, line: line)
+        waitForTitle("Is this the stop?", file: file, line: line)
+        tap(button("THIS IS IT"), "THIS IS IT", file: file, line: line)
+        waitFor(app.buttons["record-button"], "the red record button", file: file, line: line)
+    }
+
+    /// On the record screen: record a clip that stops by itself, through to
+    /// "Save this video?".
+    func recordClip(file: StaticString = #filePath, line: UInt = #line) {
+        tap(app.buttons["record-button"], "the red record button", file: file, line: line)
+        waitForTitle("Save this video?", timeout: 40, file: file, line: line)
+    }
+
+    /// On the review screen: SAVE, through "Saved", back to My Route.
+    func saveClip(file: StaticString = #filePath, line: UInt = #line) {
+        tap(button("SAVE"), "SAVE", file: file, line: line)
+        waitFor(app.buttons["tab-route"], "My Route after SAVE", timeout: 30, file: file, line: line)
+        answerFirstSaveQuestion()
+    }
+
+    /// Record and save one video for a stop, start to finish.
+    func recordAndSave(for customerId: Int, file: StaticString = #filePath, line: UInt = #line) {
+        openRecorder(for: customerId, file: file, line: line)
+        recordClip(file: file, line: line)
+        saveClip(file: file, line: line)
+    }
+
+    /// The one video the server should know of. Fails if there is not exactly one.
+    func theOnlyVideo(file: StaticString = #filePath, line: UInt = #line) -> ServerVideo {
+        let videos = server.state().videos
+        XCTAssertEqual(videos.count, 1, "The server should know of exactly one video.", file: file, line: line)
+        return videos.first ?? ServerVideo(raw: [:])
+    }
+}
