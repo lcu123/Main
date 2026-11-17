@@ -765,7 +765,8 @@ More to know:
 Follow [`APP-REVIEW.md`](APP-REVIEW.md). It lists the usual reasons Apple
 rejects apps and where this one stands on each, and gives the exact text for
 every box in App Store Connect: the description, the privacy answers, the demo
-sign-in for Apple's reviewer, and how to ask for an unlisted listing.
+sign-in for Apple's reviewer, and the public listing the owner chose (with
+what to answer if Apple asks why a company's own app is public).
 
 The three links Apple asks for are live now:
 

@@ -20,7 +20,7 @@ Apple renumbers now and then.
 | 9 | Recording without clear notice | 2.5.14 | Recording only starts on a tap. A thick red border, a RECORDING tag and a countdown ring stay on screen the whole time, with a sound and a buzz at start and stop. |
 | 10 | Declaring background abilities it does not use | 2.5.4 | None declared. Uploads use the system's background transfer service, which needs no declaration. |
 | 11 | An account you can create but cannot delete | 5.1.1(v) | Nobody creates an account in the app: sign-in is issued by the employer from FieldRoutes. The tech can sign out (removes that phone), and the privacy policy says how to have details deleted. Say so in the review notes. |
-| 12 | An app meant for one company, on the public store | 3.2 | Ask for **unlisted distribution**: the app passes normal review but only people with the link can find it. See below. |
+| 12 | An app meant for one company, on the public store | 3.2 | The owner chose a **public listing** (Nov 17, 2026). Apple often answers a company's own staff app with "Guideline 3.2 - Business" and a few questions. The true answers are ready below, and so is the way out if Apple still says no (an unlisted listing: same build, a form, no new review). |
 | 13 | Screenshots that do not show the real app | 2.3 | CI photographs the real app on a 6.9-inch iPhone simulator at App Store size (1320 × 2868). The current set is in [`screens/`](screens/00-contact-sheet.png); upload a few of those (My Route, Record, Recording, Save this video?, My Videos). The picture behind the record screens is a drawn stand-in, because a simulator has no camera. |
 | 14 | Too thin to be an app ("could be a web page") | 4.2 | It needs the camera, background upload, on-device speech and location. A web page cannot do those, which is why the brief chose a native app. |
 | 15 | A third-party login with no "Sign in with Apple" | 4.8 | Does not apply: there is no social or third-party login. |
@@ -102,21 +102,56 @@ These are the same six the app's own privacy manifest declares
 > the My Videos tab, which removes the device. Deletion requests are handled by the
 > employer as described in the privacy policy.
 >
-> We are requesting unlisted distribution because the app is only useful to
-> our own technicians.
+> The app is listed publicly so that our technicians, who use their own
+> iPhones, can install it from the App Store like any other app. A work
+> sign-in from Zest Lawn & Pest is needed to use it.
 
-## Unlisted distribution
+## Public listing
 
-The app is for Zest's own techs, so it should not show up in App Store search.
+The owner's choice (Nov 17, 2026): the app is on the App Store for anyone to
+find. A tech then installs it like any other app: open the App Store, search
+**Zest Video**, tap **Get**. No TestFlight, no invitation from Apple.
 
-1. Submit the app for review as usual and get it approved (or have it ready
-   for review).
-2. Fill in Apple's request form: <https://developer.apple.com/contact/request/unlisted-app/>.
-3. Once Apple switches it, anyone with the link can install it; nobody finds it
-   by searching.
+In App Store Connect:
 
-TestFlight needs none of this. Up to 100 internal testers can install the day
-the first build uploads, and that is how the pilot should run.
+- **Pricing and Availability:** Free. Countries: United States only is enough.
+- **Distribution:** Public (the default). Nothing else to ask for.
+
+What a stranger who finds it gets: the sign-in screen and nothing more. A code
+is texted only to a mobile number on a Zest technician's record, and the app
+never says whether a number is known.
+
+### If Apple writes back "Guideline 3.2 - Business"
+
+Apple often sends this when an app is for one company's own staff. It comes
+with questions. Answer them truly; these are the answers:
+
+| Apple asks | Answer |
+| --- | --- |
+| Is the app only for people from one company? | Yes: technicians of Zest Lawn & Pest. |
+| Is it for one company or a group of them? | One. |
+| What can the public do in it? | Nothing without a work sign-in. |
+| How does someone get an account? | The employer gives it: a technician on the company's schedule signs in with his mobile number. Nobody signs up in the app. |
+| Is anything sold or paid for in it? | No. |
+
+With those answers Apple may still ask for a private listing. Then take the
+way out, which needs no new build and no second review:
+
+1. Fill in Apple's request form for an **unlisted** app:
+   <https://developer.apple.com/contact/request/unlisted-app/>.
+2. Once Apple switches it, anyone with the link installs it from the App
+   Store in one tap; it just does not show up in search. For a tech that is
+   the same as public: tap the link, tap **Get**.
+
+Until Apple approves either one, TestFlight is how the app is installed. Up
+to 100 internal testers can install a build the day it uploads.
+
+### When Apple approves
+
+Change "Get the app" in [`TECH-GUIDE.md`](TECH-GUIDE.md) (and the Claude doc
+for techs) to the App Store steps above, and take out the two Apple emails
+and TestFlight. Techs who have the TestFlight build install the App Store
+one over it; they stay signed in.
 
 ## Before you press Submit
 
