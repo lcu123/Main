@@ -277,25 +277,143 @@ owner can switch it off in a second. It does nothing while `FR_WRITES` is off,
 and with `FR_WRITE_CUSTOMER_IDS` set it reaches only those customers.
 
 Sign-in codes are the only texts the server sends, through the office's Quo
-line. Each one asks Quo, in the same request (`"setInboxStatus": "done"`), to
+line: a tech's code for the app, and an office user's code for the office page
+(next section). Each one asks Quo, in the same request (`"setInboxStatus": "done"`), to
 file its conversation under Done, so sign-ins do not pile up in the office's
 shared inbox. Nothing else is asked of Quo: no second request, no look-up, no
-other conversation. It is the whole conversation with that tech's number that
-moves, and a reply from him brings it back. If Quo says no to the request
+other conversation. It is the whole conversation with that number that
+moves, and a reply from it brings it back. If Quo says no to the request
 (400, 403, 404 or 422: by its reference nothing is sent on any of them, and
 the field is the one new thing in it), the same text goes once more without
 the field, inside the same 15 seconds, and one line in the log says that
 conversation is open. On any other answer, or none, the text is not sent
-again, so a tech never gets two codes. Nothing passes a failed text on (the
-code still goes by email), so such a text is one line in the log too: what
+again, so nobody ever gets two codes. Nothing passes a tech's failed text on
+(the code still goes by email), so such a text is one line in the log too: what
 Quo answered, the last four digits of the number, and the switch to try if no
 code text has gone through since the field was added. A text Quo refused both
-with the field and without it has no line: the field was not why.
+with the field and without it has no such line: the field was not why. (An
+office user's failed text always has a line of its own, whatever Quo said and
+whichever way the switch is set: see the next section.)
 `QUO_MARK_DONE=off` leaves the field out and sends the text exactly as it went
 before, and a failed text is then as quiet as it was. It is an ordinary
 setting, on by default, and not one of the start-up overrides: it switches no
 check off. The first line of every start says which way it is (`text=on, filed
 under Done in Quo`), and so does the office page under Settings.
+
+## Office sign-in: by text, or by email
+
+The office page (`/office`) asks for one thing: "Mobile number or email".
+Something with an `@` in it goes the email way, as it always has: the code is
+emailed to an address on the office list. A mobile number goes the text way
+(the owner's ask of Nov 16, 2026: no mail service is connected on the live
+server, so an emailed code never reached him). The server texts a 6-digit code
+to that number over the office's Quo line, the same way a tech's code goes, and
+the code opens the same office session.
+
+- **Whose number.** A number belongs to one office user, and a user has one
+  (the table `office_phones`). Only an owner gives a user a number, changes it
+  or takes it away, on the **Office users** page. An owner's own number comes
+  from `VIDEO_OWNER_PHONES`, because he cannot type it on a page he cannot yet
+  sign in to. It is written `email=number`, with commas between entries, and
+  the email must be one of `VIDEO_OWNER_EMAILS`; with exactly one owner there
+  his number alone will do. It is put on the owner at every start and shows as
+  fixed on the page ("set in the server's settings"). If the number sat on
+  another user it is taken from them, and the audit trail says so. A bad entry
+  is skipped with one line in the log that names the variable and never what
+  was written in it; it never stops a start, and the other entries still
+  apply. Taking an entry out of the variable removes nothing by itself: the
+  number stays the owner's until an owner takes it away on the Office users
+  page, where it is then no longer fixed. The first line of every start says
+  how many owner numbers are set (`owner-phones=1`), never a number.
+- **One kind of code, two ways.** A texted code is the same kind of code as an
+  emailed one, filed under the user's email. So only the newest counts,
+  whichever way each was asked for; it works once, dies after 15 minutes and
+  locks after 5 wrong tries. A code is taken only at the code step of the way
+  it was asked for: a texted code is marked as texted (in `issued_by`, a
+  column that was there already), the text way's code step takes only those,
+  and the email way's takes only the others. Otherwise each step would tell on
+  the other: a wrong code typed at the email step would be answered "try
+  again" in place of "it ran out" the moment a text had gone to a number, and
+  so say whose number it is.
+- **Nothing is given away.** A number nobody has, the number of a user who was
+  removed and a listed number get the same page and the same answers, at both
+  steps. Only the listed one gets a text. For the others the server saves a
+  code that is sent to nobody, so that guesses at it are counted and locked
+  exactly as guesses at a real one are. It is filed under a hash of the number
+  that is keyed with `VIDEO_SECRET` (a bare hash of ten digits can be turned
+  back into the number in minutes). Every answer about a number takes at
+  least two seconds (`auth.TEXT_ANSWER_SECONDS`): only a listed number's
+  answer waits for Quo, and without that floor the clock would tell the two
+  apart on every ask.
+  Two exceptions, both on purpose. When Quo refuses a text or does not answer,
+  the page says a code may not come, and only a listed number ever gets as far
+  as Quo: the rule that a page never says a text went when the server knows it
+  may not have won over sameness there. And a Quo that takes longer than the
+  two seconds shows on the clock. Both are held down by the limits below. To
+  close the first one too, every number would have to get the plain code page
+  whatever Quo said, and the owner whose text failed would be told nothing;
+  that is a choice for the owner, not made here.
+- **Limits.** Ten asks from one address and five to one number in 15 minutes,
+  and 30 code tries from one address. They are the text way's own, so nothing
+  done on the text way uses up the email way's limits. What the two ways do
+  share is "only the newest code counts": someone who knows a listed number
+  can ask for a text, and that retires a code that was emailed a moment
+  before (its user asks again). Wrong guesses do not cross over: they count
+  only against a code of the step they are typed at.
+  What this adds up to, and it is the same shape the email way always had:
+  someone who knows a user's number can have five codes texted to it in 15
+  minutes, with five guesses at each, about 2,400 guesses a day at a
+  six-digit code. Knowing the email as well doubles it. The text half is
+  loud (the user's phone gets every code); the email half is silent. There is
+  no cap per day, because a cap could be used up by a stranger to keep a user
+  out for the day. The same stranger can already keep a user off the text way
+  for as long as he keeps at it (use up the number's five asks, and burn the
+  five tries on each code). The page that refuses a sixth ask keeps the box
+  for the code, so the user can still type the newest one he got.
+- **The office's own line is refused.** A number that is the line the codes
+  are texted from (`QUO_FROM_NUMBER`) gets no text and a plain sentence, the
+  same whoever has it: nobody has seen Quo text a line from itself, and a code
+  texted to that line would be read by everyone on it. An owner cannot give it
+  to anyone on the Office users page. If `VIDEO_OWNER_PHONES` holds it, the
+  start says so in one line and the Office users page says so beside it.
+- **Taking a number away stops it at once.** So does changing it, and so does
+  the variable moving it to an owner. Any code that user was texted before
+  stops working in the same save. An emailed code is left alone: it went to
+  the user's inbox, and only the email way's code step takes it. It does not
+  end a session that is open: removing the person does, and the page says so.
+- **When no text can be sent.** With texting not set up the page says so for
+  every number. When Quo refuses or does not answer it says a code may not
+  come (after a lost answer the text may have gone, so it does not say that it
+  did not), keeps the box for the code on that page, and writes one line to
+  the log with what Quo answered and the last four digits, every time: the
+  owner this happens to cannot sign in to read the audit trail. The email way
+  needs no Quo and has limits of its own. It is the way back in, where an
+  emailed code reaches an inbox.
+- **No page points to an email that cannot come.** The server ran its first
+  weeks with no mail service (`mail=log`: an "emailed" code is one line in the
+  server's log), which is why the text way was built. So every message and
+  hint that names the email way does so only when a mail service is connected
+  (`auth.email_way`). Without one the pages say that this server cannot send
+  email yet, and the start warnings say the same. The email way itself is as
+  it was: whoever types an email on such a server is still told a code was
+  emailed, and it is in the log.
+- **What is written down.** The Office users page, the audit trail and the log
+  carry the last four digits of a number and never more; the log never
+  carries a code on the text way. A database error is printed without the
+  values of its statement (`hide_parameters`), because those are what people
+  typed. The text is one message: `123456 is your
+  Zest Lawn & Pest office code. It works once, for 15 minutes. Do not share
+  it.` The code leads, as in a tech's text, so a phone offers it above the
+  keyboard, and "office" tells the two texts apart. It goes through the same
+  sender, so its conversation is filed under Done in Quo by the same rule.
+  That also means the text stays in Quo, in the conversation with that
+  number, where everyone who can open the office line can read it: for its
+  15 minutes a code is as private as that Quo line and no more
+  (`docs/video/GO-LIVE.md`, step 4, has what that means for the owner).
+
+A database made before this existed needs nothing done to it: a start adds the
+one missing table. No table from before gained a column.
+`tests/test_video_office_text.py` pins all of the above.
 
 ## What survives a restart
 
@@ -353,7 +471,7 @@ What lives only in memory, and what a restart costs:
 
 | In memory | What a restart costs |
 | --- | --- |
-| Rate limits per address | They start again from zero. The lock after 5 wrong tries on a login code is in the database. |
+| Rate limits per address and per number | They start again from zero. The lock after 5 wrong tries on a login code is in the database. |
 | When FieldRoutes was last read, and the service names | A handful of reads at the next start, eight at most of the 3,000 a day: the day's stops (and yesterday's once more), the tech list, the service names, and the routes on a day with an unassigned appointment. No customer is read again. |
 | Job timers | Every job runs once at start, the daily clean-up included. Each works from times saved in the database, so nothing is early, late or done twice. |
 | The settings cache and the FieldRoutes quota count | Read again from the database, and from FieldRoutes' next answer. |
@@ -741,6 +859,18 @@ Not proven until it runs on real phones with real accounts:
   this itself. If the field turns out not to work, Quo documents a second
   way, not built: `POST /v1/conversations/{id}/mark-as-done` with the ID from
   the send's answer.
+- Office sign-in by text, on the live server. It was built on Nov 16, 2026 and
+  has run only against the stand-in Quo of the tests. Not seen yet: an office
+  code text reaching a real phone, Safari offering that code above the
+  keyboard on the code step, and its conversation going to Done. One thing is
+  not known at all, and the server does not find out: what Quo does with a
+  text from a line to itself. A number that is the very line the codes are
+  texted from (`QUO_FROM_NUMBER`) is refused on the sign-in page in plain
+  words, and if `VIDEO_OWNER_PHONES` holds it the start says so in one line
+  and goes on; that owner needs a mobile number that is not the office line.
+  Also not known: how long Quo takes to answer a send on a normal day. Every
+  answer about a number waits two seconds so that this does not show; a Quo
+  that is slower than that would show.
 - `review/create` against the live account. `note/create` and `task/create`
   use the same params the MCP server already verified live.
 - Whether `emailReminders = 0` in FieldRoutes is a fair stand-in for "opted

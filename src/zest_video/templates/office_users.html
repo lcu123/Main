@@ -3,13 +3,36 @@
 {% block title %}Office users{% endblock %}
 {% block body %}
 <h1>Office users</h1>
-<p class="muted">People on this list sign in with a code emailed to them. Staff see the day, pull or move videos, clear flags and manage phones. Owners also get settings, stats, this page and the audit trail.</p>
+<p class="muted">People on this list sign in with a 6-digit code. It is texted to the mobile number set for them here, or emailed to them. Only an owner can set a number, change it or take it away. Staff see the day, pull or move videos, clear flags and manage phones. Owners also get settings, stats, this page and the audit trail.</p>
+{% if not texting %}<div class="banner info">This server cannot send texts yet{% if email_way == "inbox" %}, so for now every code comes by email{% elif email_way == "log" %}, and it cannot send email yet either: for now a code is only written to the server's log{% else %}, and it cannot send email yet either: for now no code reaches anyone{% endif %}. A number set here starts to work the day texting is switched on.</div>
+{% elif email_way != "inbox" %}<div class="banner info">This server cannot send email yet, so only someone with a mobile number here can sign in.</div>{% endif %}
 <table class="stack">
-  <tr><th>Email</th><th>Role</th><th>Change</th></tr>
+  <tr><th>Email</th><th>Role</th><th>Mobile number for sign-in</th><th>Change</th></tr>
   {% for u in users %}
+  {% set number = phones.get(u.email) %}
   <tr>
     <td data-l="Email">{{ u.email }}{% if not u.active %} <span class="pill off">removed</span>{% endif %}</td>
     <td data-l="Role">{{ u.role }}{% if u.email in fixed %} <small>(set on the server)</small>{% endif %}</td>
+    <td data-l="Mobile number for sign-in">
+      {# Only the last four digits are ever shown. #}
+      {% if number %}Number ending <b>{{ number[-4:] }}</b>{% else %}<span class="muted">{{ "none: signs in by email" if email_way == "inbox" else "none" }}</span>{% endif %}
+      {% if number and number == office_line %}
+      <small>This is the office's own line, the one the codes are texted from, so no code is texted to it. This person needs a mobile number of their own.</small>
+      {% endif %}
+      {% if u.email in fixed_phones %}
+      <small>(set in the server's settings)</small>
+      {% elif u.active or number %}
+      <form class="inline" method="post" action="/office/users/phone">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="email" value="{{ u.email }}">
+        {% if u.active %}
+        <input type="tel" name="phone" autocomplete="off" size="14" maxlength="24" placeholder="{{ 'New number' if number else 'Mobile number' }}" aria-label="Mobile number for {{ u.email }}" required>
+        <button class="ghost" type="submit">{{ "Change number" if number else "Save number" }}</button>
+        {% endif %}
+        {% if number %}<button class="danger" type="submit" name="remove" value="1" formnovalidate>Take number away</button>{% endif %}
+      </form>
+      {% endif %}
+    </td>
     <td>
       {% if u.email not in fixed and u.email != user.email %}
       <form class="inline" method="post" action="/office/users">
@@ -19,8 +42,8 @@
           <option value="staff" {{ "selected" if u.role == "staff" }}>staff</option>
           <option value="owner" {{ "selected" if u.role == "owner" }}>owner</option>
         </select>
-        <button class="ghost" type="submit">{{ "Save" if u.active else "Add back" }}</button>
-        {% if u.active %}<button class="danger" type="submit" name="remove" value="1">Remove</button>{% endif %}
+        <button class="ghost" type="submit">{{ "Save role" if u.active else "Add back" }}</button>
+        {% if u.active %}<button class="danger" type="submit" name="remove" value="1">Remove person</button>{% endif %}
       </form>
       {% endif %}
     </td>
@@ -35,4 +58,5 @@
   <select name="role" aria-label="Role"><option value="staff">staff</option><option value="owner">owner</option></select>
   <button type="submit">Add</button>
 </form>
+<p class="muted">Add the person first. Then type their mobile number in their row, and they can sign in by text.</p>
 {% endblock %}

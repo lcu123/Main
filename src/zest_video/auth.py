@@ -2,13 +2,19 @@
 
 Techs: type the phone or email on their FieldRoutes record, get a 6-digit
 code by text and email, stay signed in on that phone for good.
-Office: an emailed code for addresses on the allow-list, then a session cookie.
+Office: a code for people on the allow-list, then a session cookie. The code is
+texted to the mobile number an owner set for that person (`office_phones`), or
+emailed to their address. Both ways end in the same kind of code and the same session.
 
 A code works once, dies after 15 minutes and locks after 5 wrong tries.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import hmac
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -18,7 +24,8 @@ from typing import Any
 import sqlalchemy as sa
 
 from . import db, security
-from .core import ApiError, Ctx, audit
+from .config import hush
+from .core import ApiError, Ctx, add_event, audit
 from .fr import FieldRoutesError
 from .notify import DeliveryError, Email
 from .render import render
@@ -114,22 +121,32 @@ async def _new_code(ctx: Ctx, purpose: str, subject: str, issued_by: str | None 
     return code
 
 
-async def _check_code(ctx: Ctx, purpose: str, subject: str, code: str) -> None:
-    """Raise ApiError unless `code` is the live code for this subject. Marks it used."""
+# `issued_by` on an office code that was asked for with a mobile number (`_check_code`).
+TEXTED = "text"
+
+
+async def _check_code(ctx: Ctx, purpose: str, subject: str, code: str, *, texted: bool | None = None) -> None:
+    """Raise ApiError unless `code` is the live code for this subject. Marks it used.
+
+    `texted` is for an office code, which has two code steps: True looks only at a code
+    that was texted, False only at one that was emailed. Left out, any live code counts
+    (a tech's, and a decoy). So a code is taken only at the code step of the way it was
+    asked for, and neither step's answer says anything about the other way."""
     now = db.now()
+    live = (
+        sa.select(db.login_codes)
+        .where(db.login_codes.c.purpose == purpose, db.login_codes.c.subject == subject)
+        .where(db.login_codes.c.used_at.is_(None), db.login_codes.c.expires_at > now)
+    )
+    if texted is True:
+        live = live.where(db.login_codes.c.issued_by == TEXTED)
+    elif texted is False:
+        live = live.where(sa.or_(db.login_codes.c.issued_by.is_(None), db.login_codes.c.issued_by != TEXTED))
     # The wrong-try count must be committed before we raise: an exception inside the
     # transaction would roll the count back and the 5-try lock would never trip.
     failure: ApiError | None = None
     async with ctx.engine.begin() as conn:
-        row = (
-            await conn.execute(
-                sa.select(db.login_codes)
-                .where(db.login_codes.c.purpose == purpose, db.login_codes.c.subject == subject)
-                .where(db.login_codes.c.used_at.is_(None), db.login_codes.c.expires_at > now)
-                .order_by(db.login_codes.c.id.desc())
-                .limit(1)
-            )
-        ).first()
+        row = (await conn.execute(live.order_by(db.login_codes.c.id.desc()).limit(1))).first()
         if row is None:
             failure = ApiError(401, "bad_code", "That code is not right or it ran out. Ask for a new code.", triesLeft=0)
         elif row.tries >= security.CODE_MAX_TRIES:
@@ -340,7 +357,8 @@ class OfficeUser:
 
 
 async def ensure_owners(ctx: Ctx) -> None:
-    """Owners named in VIDEO_OWNER_EMAILS always exist and stay owners."""
+    """Owners named in VIDEO_OWNER_EMAILS always exist and stay owners, and each has the
+    mobile number VIDEO_OWNER_PHONES gives him."""
     now = db.now()
     async with ctx.engine.begin() as conn:
         for email in ctx.cfg.owner_emails:
@@ -353,6 +371,63 @@ async def ensure_owners(ctx: Ctx) -> None:
                 await conn.execute(
                     sa.update(db.office_users).where(db.office_users.c.email == email).values(role="owner", active=True)
                 )
+    await ensure_owner_phones(ctx)
+
+
+async def ensure_owner_phones(ctx: Ctx) -> None:
+    """Put each number from VIDEO_OWNER_PHONES on its owner. An owner cannot type his own
+    number on the Users page before he can sign in, so this is where his comes from.
+
+    Run at every start, and by two servers side by side at a deploy, so every step is
+    safe to repeat: a number that is already his is left alone, an audit entry is written
+    only by the server whose own change it was, and the row goes in with `insert_once`.
+
+    The variable wins. A number that sat on somebody else is taken from them, and a number
+    the owner had before is replaced. Taking an entry out of the variable removes nothing:
+    the number stays his until an owner takes it away on the Users page."""
+    for email, phone in ctx.cfg.owner_phones:
+        async with ctx.engine.begin() as conn:
+            table = db.office_phones
+            holder = (await conn.execute(sa.select(table).where(table.c.phone == phone))).first()
+            if holder is not None and holder.email == email:
+                continue
+            if holder is not None:
+                taken = await conn.execute(
+                    sa.delete(table).where(table.c.phone == phone, table.c.email == holder.email)
+                )
+                if taken.rowcount:
+                    await _retire_office_codes(conn, holder.email)
+                    await add_event(
+                        conn, "system", "env", "office_phone_removed",
+                        detail={"email": holder.email, "ends": phone[-4:], "moved_to": email, "by": "VIDEO_OWNER_PHONES"},
+                    )
+            mine = (await conn.execute(sa.select(table).where(table.c.email == email))).first()
+            if mine is not None and mine.phone == phone:
+                continue  # the other server put it there a moment ago
+            if mine is not None:
+                await conn.execute(sa.delete(table).where(table.c.email == email, table.c.phone == mine.phone))
+            added = await db.insert_once(conn, table, dict(phone=phone, email=email, added_at=db.now(), added_by="env"))
+            if added:
+                await _retire_office_codes(conn, email)
+                detail = {"email": email, "ends": phone[-4:], "by": "VIDEO_OWNER_PHONES"}
+                if mine is not None:
+                    detail["was"] = mine.phone[-4:]
+                await add_event(conn, "system", "env", "office_phone_set", detail=detail)
+
+
+async def _retire_office_codes(conn: Any, email: str) -> None:
+    """Inside a save that is open: no code this user was texted before now works any more.
+    A number that is taken away or changed must stop at once, and a code texted to it a
+    minute ago is part of that. So is one texted in the very moment a number was taken
+    away, which is why a number that is put on someone retires them too. A code that was
+    emailed is left alone: it went to the user's inbox, and only the email way's code
+    step takes it."""
+    await conn.execute(
+        sa.update(db.login_codes)
+        .where(db.login_codes.c.purpose == "office", db.login_codes.c.subject == email)
+        .where(db.login_codes.c.issued_by == TEXTED, db.login_codes.c.used_at.is_(None))
+        .values(used_at=db.now())
+    )
 
 
 async def request_office_code(ctx: Ctx, email: str, ip: str) -> None:
@@ -391,7 +466,11 @@ async def verify_office_code(ctx: Ctx, email: str, code: str, ip: str) -> str:
     wait = ctx.limiter.retry_after(f"overify-ip:{ip}", 30, 900)
     if wait:
         raise ApiError(429, "slow_down", "Too many tries. Wait a few minutes.", retry_after=wait)
-    await _check_code(ctx, "office", email, code)
+    await _check_code(ctx, "office", email, code, texted=False)
+    return await _open_office_session(ctx, email)
+
+
+async def _open_office_session(ctx: Ctx, email: str, detail: dict[str, Any] | None = None) -> str:
     token = security.new_token()
     now = db.now()
     async with ctx.engine.begin() as conn:
@@ -403,8 +482,232 @@ async def verify_office_code(ctx: Ctx, email: str, code: str, ip: str) -> str:
                 expires_at=now + timedelta(days=OFFICE_SESSION_DAYS),
             )
         )
-    await audit(ctx, "office", email, "login")
+    await audit(ctx, "office", email, "login", detail=detail)
     return token
+
+
+# -- office, the text way: a code texted to the number an owner set for that user ---------
+#
+# The code is the same kind of code as on the email way: purpose "office", subject the
+# user's email. So "only the newest code counts", the 15 minutes and the lock after 5 wrong
+# tries hold for it unchanged, and a code asked for one way retires one asked for the
+# other. A texted code is marked (`TEXTED`) and is taken only at the text way's code step;
+# an emailed one only at the email way's. Otherwise each step would tell on the other:
+# a wrong code typed at the email step would be answered "try again" in place of "it ran
+# out" the moment a text had gone to a number, and so say whose number it is.
+#
+# Nothing is given away about who is on the list. A number nobody has, the number of a
+# user who was removed, and a listed number get the same page and the same answers, at
+# the first step and at the code step, and each answer takes as long (`TEXT_ANSWER_SECONDS`).
+# Only the listed, active one gets a text. For the others a code that nobody is sent is
+# saved (a "decoy"), so that guessing at it is counted and locked exactly as guessing at
+# a real one is.
+#
+# One exception, on purpose: when Quo refuses a text or does not answer, the page says a
+# code may not come, and only a listed number ever gets as far as Quo. The page never
+# says a text went when the server knows it may not have. The email way and a tech's
+# sign-in have always told the truth in the same way. (The same goes for a Quo that takes
+# longer to answer than `TEXT_ANSWER_SECONDS`.)
+#
+# Every message here that points to the email way does so only on a server where an
+# emailed code reaches an inbox (`email_way`). The live server ran for its first weeks
+# with no mail service, which is why the text way exists: a page that sent a person from
+# a text that did not come to an email that cannot come would leave them where they began.
+
+# Every answer about a number that could be on the list takes at least this long. A
+# listed number's answer comes after a round trip to Quo and any other number's does
+# not, and the time that takes must not tell the two apart.
+TEXT_ANSWER_SECONDS = 2.0
+
+NOT_A_CONTACT = "Type your mobile number or your email."
+NOT_A_TEXT_NUMBER = "That is not a mobile number. Type all 10 digits and nothing else, like 916-555-0142."
+NOT_A_NUMBER = "That is not a mobile number. Type all 10 digits."
+NUMBER_TAKEN = "That number is already on another office user. Take it away there first."
+NUMBER_TAKEN_FIXED = "That number is an owner's, set in the server's settings. Use another number."
+NUMBER_FIXED = "That number is set in the server's settings and cannot be changed here."
+NUMBER_IS_OFFICE_LINE = (
+    "That is the office's own line, the one the codes are texted from. Use the person's own mobile number."
+)
+TEXT_FAILED = (
+    "Something went wrong sending the text, so a code may not come. If one comes, type it below. If none comes "
+    "in a minute, ask for a new one."
+)
+
+
+def email_way(ctx: Ctx) -> str:
+    """What typing an email on the sign-in page leads to on this server. "inbox": a mail
+    service is connected and the code reaches an inbox. "log": the code is only printed in
+    the server's log (VIDEO_MAIL_BACKEND=log, for the first days). "": no email at all."""
+    if ctx.mailer.delivers:
+        return "inbox"
+    return "log" if ctx.mailer.configured else ""
+
+
+def _no_email(ctx: Ctx) -> str:
+    """Said where a message would otherwise point to the email way."""
+    if email_way(ctx) == "log":
+        return "This server cannot send email yet: a code asked for by email is only written to the server's log."
+    return "This server cannot send email yet."
+
+
+def _no_texting(ctx: Ctx) -> str:
+    if email_way(ctx) == "inbox":
+        return "This server cannot send texts yet. Type your email here, and the code comes by email."
+    if email_way(ctx) == "log":
+        return ("This server cannot send texts yet, and it cannot send email yet either. A code asked for by "
+                "email is only written to the server's log.")
+    return "This server cannot send texts yet, and it cannot send email yet either."
+
+
+def _text_failed(ctx: Ctx) -> str:
+    if email_way(ctx) == "inbox":
+        return f"{TEXT_FAILED} Or start again and type your email: the code then comes by email."
+    return f"{TEXT_FAILED} {_no_email(ctx)}"
+
+
+def _office_line(ctx: Ctx) -> str:
+    """For someone who types the very line the codes are texted from."""
+    words = "That is the office's own line. The codes are texted from it, so one cannot be texted to it. "
+    return words + ("Type your own mobile number, or your email." if email_way(ctx) == "inbox"
+                    else "Type your own mobile number.")
+
+
+def _wait(seconds: int) -> str:
+    minutes = max(1, -(-int(seconds) // 60))
+    return "1 minute" if minutes == 1 else f"{minutes} minutes"
+
+
+def is_office_line(ctx: Ctx, phone: str) -> bool:
+    """Is this the line the codes are texted from (QUO_FROM_NUMBER)? Nobody has seen Quo
+    text a line from itself, and a code texted to the office's own line would land in the
+    inbox everyone on that line reads, not on one person's phone. So it is never tried."""
+    return bool(phone) and phone == security.normalize_phone(ctx.cfg.quo_from)
+
+
+def office_code_text(ctx: Ctx, code: str) -> str:
+    """The text an office user gets. The code leads, as in a tech's text, so the phone
+    offers it above the keyboard. "office" is what tells the two texts apart for someone
+    who gets both. The same words as the subject of the emailed office code."""
+    return f"{code} is your {ctx.cfg.brand_name} office code. It works once, for 15 minutes. Do not share it."
+
+
+async def _office_user_by_phone(ctx: Ctx, phone: str) -> Any | None:
+    """The active office user this number signs in, or None."""
+    async with ctx.engine.connect() as conn:
+        return (
+            await conn.execute(
+                sa.select(db.office_users.c.email)
+                .join(db.office_phones, db.office_phones.c.email == db.office_users.c.email)
+                .where(db.office_phones.c.phone == phone, db.office_users.c.active.is_(True))
+            )
+        ).first()
+
+
+def _decoy(ctx: Ctx, phone: str) -> str:
+    """What a code nobody is sent is filed under, so that a number a stranger typed is
+    not kept. Keyed with the server's secret: a bare hash of ten digits can be turned
+    back into the number by trying them all, which takes minutes."""
+    return hmac.new(ctx.cfg.secret.encode(), f"decoy:{phone}".encode(), hashlib.sha256).hexdigest()
+
+
+def _say(ctx: Ctx, line: str) -> None:
+    print(f"zest-video: {hush(line, ctx.cfg)}", file=sys.stderr, flush=True)
+
+
+async def request_office_text_code(ctx: Ctx, contact: str, ip: str) -> str:
+    """Text a code to an office user's mobile number. Returns the ten digits, for the page
+    that asks for the code. The page is the same whoever the number belongs to.
+
+    An ApiError that carries `phone` is one the code step must be shown with: a text may
+    have gone, or an earlier one is still good, so the box for the code belongs on the
+    page that says what went wrong."""
+    typed = (contact or "").replace("\x00", "")
+    phone = security.normalize_phone(typed)
+    if not phone:
+        # Which of the two it says depends only on what was typed: something with digits
+        # in it was meant as a number (one digit short, no area code, "ext 5" after it).
+        meant_as_a_number = sum(ch.isdigit() for ch in typed) >= 3
+        raise ApiError(400, "bad_request", NOT_A_TEXT_NUMBER if meant_as_a_number else NOT_A_CONTACT)
+    # The next two are about this server and not about the number's owner. They are said
+    # before anyone is looked up, so they are the same answer whoever has that number.
+    if not ctx.texter.configured:
+        raise ApiError(503, "server_error", _no_texting(ctx))
+    if is_office_line(ctx, phone):
+        raise ApiError(400, "bad_request", _office_line(ctx))
+    # Limits of their own, in the shape of the email way's. Not shared with it: the email
+    # way is the way back in, and nothing done here may use up its limits.
+    wait = ctx.limiter.retry_after(f"otext-ip:{ip}", 10, 900)
+    if wait:
+        words = f"Too many tries. Wait {_wait(wait)}"
+        words += ", or type your email and the code comes by email." if email_way(ctx) == "inbox" else "."
+        raise ApiError(429, "slow_down", words, retry_after=wait)
+    wait = ctx.limiter.retry_after(f"otext-to:{phone}", 5, 900)
+    if wait:
+        # Anybody can ask for a number five times, and so use up what its owner may ask.
+        # The newest code he was texted is still good, so he is given the box to type it
+        # in. The same answer for every number, listed or not.
+        raise ApiError(
+            429, "slow_down",
+            f"No new code was sent: this number has been asked for too often. Type the newest code it got, or "
+            f"wait {_wait(wait)}.",
+            retry_after=wait, phone=phone,
+        )
+    started = time.monotonic()
+    try:
+        return await _text_office_code(ctx, phone)
+    finally:
+        await asyncio.sleep(max(0.0, TEXT_ANSWER_SECONDS - (time.monotonic() - started)))
+
+
+async def _text_office_code(ctx: Ctx, phone: str) -> str:
+    user = await _office_user_by_phone(ctx, phone)
+    if user is None:
+        await _new_code(ctx, "decoy", _decoy(ctx, phone))
+        await audit(ctx, "system", "login", "code_request_unknown", detail={"kind": "office_phone"})
+        return phone
+    code = await _new_code(ctx, "office", user.email, issued_by=TEXTED)
+    try:
+        await ctx.texter.send(phone, office_code_text(ctx, code))
+    except DeliveryError as exc:
+        # The texter's own words are not passed on, to the page or to the log: they may
+        # repeat the request, and the code and the whole number are in it. After a lost
+        # answer the text may have gone all the same, so nothing says that it did not.
+        #
+        # One line in the log, every time. The owner this happens to cannot sign in to
+        # read the audit trail, and the texter itself says nothing when Quo refuses a text
+        # both with and without its Done field (400, 403, 404, 422: the likely answers for
+        # a number that once replied STOP), or when QUO_MARK_DONE is off. Only what Quo
+        # answered and the last four digits.
+        ends = phone[-4:]
+        if exc.status is None:
+            what = (f"An office sign-in code text for the number ending {ends} got no answer from Quo, so nobody "
+                    "knows whether it went.")
+        else:
+            what = f"Quo answered {exc.status} to an office sign-in code text for the number ending {ends}."
+        _say(ctx, f"{what} The sign-in page said a code may not come.")
+        await audit(ctx, "office", user.email, "code_requested", detail={"by": "text", "ends": ends, "delivered": []})
+        raise ApiError(503, "server_error", _text_failed(ctx), phone=phone) from None
+    await audit(ctx, "office", user.email, "code_requested", detail={"by": "text", "ends": phone[-4:], "delivered": ["text"]})
+    return phone
+
+
+async def verify_office_text_code(ctx: Ctx, contact: str, code: str, ip: str) -> str:
+    """The code step of the text way. A number that signs nobody in fails here exactly as
+    a wrong code does."""
+    phone = security.normalize_phone((contact or "").replace("\x00", ""))
+    code = "".join(ch for ch in str(code) if ch.isdigit())
+    wait = ctx.limiter.retry_after(f"otverify-ip:{ip}", 30, 900)
+    if wait:
+        raise ApiError(429, "slow_down", f"Too many tries. Wait {_wait(wait)}.", retry_after=wait)
+    no = ApiError(401, "bad_code", "That code is not right or it ran out. Ask for a new code.", triesLeft=0)
+    if not phone:
+        raise no
+    user = await _office_user_by_phone(ctx, phone)
+    if user is None:
+        await _check_code(ctx, "decoy", _decoy(ctx, phone), code)  # raises, and counts the try, like any wrong code
+        raise no  # one guess in a million matches a code nobody was sent. It opens nothing.
+    await _check_code(ctx, "office", user.email, code, texted=True)
+    return await _open_office_session(ctx, user.email, {"by": "text", "ends": phone[-4:]})
 
 
 async def office_user(ctx: Ctx, session_token: str) -> OfficeUser | None:
@@ -448,3 +751,85 @@ async def set_office_user(ctx: Ctx, email: str, role: str, active: bool, by: str
         if not active:
             await conn.execute(sa.delete(db.office_sessions).where(db.office_sessions.c.email == email))
     await audit(ctx, "office", by, "office_user_changed", detail={"email": email, "role": role, "active": active})
+
+
+def fixed_office_phones(ctx: Ctx) -> dict[str, str]:
+    """Owners whose number comes from VIDEO_OWNER_PHONES. It cannot be changed on a page."""
+    return dict(ctx.cfg.owner_phones)
+
+
+async def set_office_phone(ctx: Ctx, email: str, number: str, by: str) -> str:
+    """An owner gives an office user the mobile number he signs in with, or changes it.
+    Returns its last four digits, for the page to say. The audit entry carries no more
+    than those four either."""
+    email = (email or "").replace("\x00", "").strip().lower()[:254]
+    phone = security.normalize_phone((number or "").replace("\x00", ""))
+    if not phone:
+        raise ApiError(400, "bad_request", NOT_A_NUMBER)
+    if is_office_line(ctx, phone):
+        raise ApiError(400, "bad_request", NUMBER_IS_OFFICE_LINE)
+    if email in fixed_office_phones(ctx):
+        raise ApiError(400, "bad_request", NUMBER_FIXED)
+    table = db.office_phones
+    failure: ApiError | None = None
+    async with ctx.engine.begin() as conn:
+        user = (
+            await conn.execute(
+                sa.select(db.office_users.c.email).where(db.office_users.c.email == email, db.office_users.c.active.is_(True))
+            )
+        ).first()
+        holder = (await conn.execute(sa.select(table).where(table.c.phone == phone))).first()
+        mine = (await conn.execute(sa.select(table).where(table.c.email == email))).first()
+        if user is None:
+            failure = ApiError(400, "bad_request", "That person is not on the office list. Add them first.")
+        elif holder is not None and holder.email != email:
+            # "Take it away there first" is no help when it sits on an owner by the variable:
+            # there is nothing on his row to take it away with.
+            fixed = fixed_office_phones(ctx).get(holder.email) == phone
+            failure = ApiError(400, "bad_request", NUMBER_TAKEN_FIXED if fixed else NUMBER_TAKEN)
+        elif holder is None and (mine is None or mine.phone != phone):
+            # (Each read above sees the database as it is at that moment. So `mine` can
+            # already hold this very number, put there between the two reads by the same
+            # form sent twice. Then there is nothing left to do.)
+            if mine is not None:
+                # By its old number too: sent twice (a double click), the second one must
+                # not take off what the first has just put on.
+                await conn.execute(sa.delete(table).where(table.c.email == email, table.c.phone == mine.phone))
+            if await db.insert_once(conn, table, dict(phone=phone, email=email, added_at=db.now(), added_by=by)):
+                await _retire_office_codes(conn, email)
+                detail = {"email": email, "ends": phone[-4:]}
+                if mine is not None:
+                    detail["was"] = mine.phone[-4:]
+                await add_event(conn, "office", by, "office_phone_set", detail=detail)
+            else:
+                # Somebody was first by a moment. The same form sent twice: it is his
+                # already, and that is all there is to say. Anything else is refused, and
+                # raised inside the save on purpose: his old number, taken off just above,
+                # is put back with the rest of it.
+                now_on = (await conn.execute(sa.select(table).where(table.c.phone == phone))).first()
+                if now_on is None:
+                    raise ApiError(400, "bad_request", "Somebody changed that person's number at the same moment. "
+                                   "Look at the list and try again.")
+                if now_on.email != email:
+                    raise ApiError(400, "bad_request", NUMBER_TAKEN)
+    if failure is not None:
+        raise failure
+    return phone[-4:]
+
+
+async def remove_office_phone(ctx: Ctx, email: str, by: str) -> bool:
+    """An owner takes a user's number away. It signs nobody in from this moment, and a
+    code texted to it a minute ago is dead too. True when there was one to take."""
+    email = (email or "").replace("\x00", "").strip().lower()[:254]
+    if email in fixed_office_phones(ctx):
+        raise ApiError(400, "bad_request", NUMBER_FIXED)
+    table = db.office_phones
+    async with ctx.engine.begin() as conn:
+        mine = (await conn.execute(sa.select(table).where(table.c.email == email))).first()
+        if mine is None:
+            return False
+        gone = await conn.execute(sa.delete(table).where(table.c.email == email, table.c.phone == mine.phone))
+        if gone.rowcount:
+            await _retire_office_codes(conn, email)
+            await add_event(conn, "office", by, "office_phone_removed", detail={"email": email, "ends": mine.phone[-4:]})
+    return bool(gone.rowcount)

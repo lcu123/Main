@@ -6,6 +6,24 @@
   <h1>Office sign-in</h1>
   {% if error %}<div class="banner err">{{ error }}</div>{% endif %}
   {% if step == "code" %}
+  {% if phone is defined %}
+  {# The text way. "We just texted it" is said only on the page that follows an ask, never
+     beside a message that says a text may not have gone, or that none was sent. #}
+  {% if not error %}<p>If <b>{{ phone | phone }}</b> is on the office list, we just texted it a 6-digit code.</p>{% endif %}
+  <form method="post" action="/office/verify">
+    <input type="hidden" name="phone" value="{{ phone }}">
+    <label for="code">Code{% if error %} for {{ phone | phone }}{% endif %}</label>
+    <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" maxlength="7" autofocus required>
+    <button type="submit">Sign in</button>
+  </form>
+  {# A new code, for the same number, without typing it again: after five wrong tries, or
+     when no text came. It goes through the same door as the first ask, limits and all. #}
+  <form method="post" action="/office/login" style="margin-top:10px">
+    <input type="hidden" name="contact" value="{{ phone }}">
+    <button class="ghost" type="submit">Text me a new code</button>
+  </form>
+  <p class="muted" style="margin-top:14px">No text after a minute? Ask for a new one. A new code stops the old one. {% if email_way == "inbox" %}Or <a href="/office/login">start again</a> and type your email: the code then comes by email.{% else %}<a href="/office/login">Use another number</a>{% endif %}</p>
+  {% else %}
   <p>If <b>{{ email }}</b> is on the office list, we just emailed it a 6-digit code.</p>
   <form method="post" action="/office/verify">
     <input type="hidden" name="email" value="{{ email }}">
@@ -13,13 +31,17 @@
     <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" maxlength="7" autofocus required>
     <button type="submit">Sign in</button>
   </form>
-  <p class="muted" style="margin-top:14px"><a href="/office/login">Use a different email</a></p>
+  <p class="muted" style="margin-top:14px"><a href="/office/login">Use a different email or a mobile number</a></p>
+  {% endif %}
   {% else %}
   <form method="post" action="/office/login">
-    <label for="email">Your work email</label>
-    <input id="email" name="email" type="email" autocomplete="email" autofocus required>
-    <button type="submit">Email me a code</button>
+    <label for="contact">Mobile number or email</label>
+    <input id="contact" name="contact" type="text" inputmode="email" autocomplete="tel" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="254" value="{{ typed | default('') }}" autofocus required>
+    <button type="submit">Send me a code</button>
   </form>
+  {# What is under the box is what is true on this server: it names a way in only when a
+     code that goes that way reaches somebody. #}
+  <p class="muted" style="margin-top:14px">{% if texting %}Type the mobile number the owner set for you and the code comes by text.{% else %}This server cannot send texts yet.{% endif %} {% if email_way == "inbox" %}Type your work email and {{ "it" if texting else "the code" }} comes by email.{% else %}{{ "Email is not set up on this server yet." if texting else "It cannot send email yet either." }}{% endif %}</p>
   {% endif %}
 </div>
 {% endblock %}

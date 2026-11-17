@@ -78,8 +78,10 @@ login_codes = sa.Table(
     "login_codes",
     metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-    sa.Column("purpose", sa.String(10), nullable=False),  # tech | office
-    sa.Column("subject", sa.String(254), nullable=False, index=True),  # tech id or office email
+    # tech | office | decoy (a code nobody was sent: `auth.request_office_text_code`)
+    sa.Column("purpose", sa.String(10), nullable=False),
+    # tech id, or office email; for a decoy, a hash of the number that was typed
+    sa.Column("subject", sa.String(254), nullable=False, index=True),
     sa.Column("code_hash", sa.String(64), nullable=False),
     sa.Column("created_at", UTCDateTime, nullable=False),
     sa.Column("expires_at", UTCDateTime, nullable=False),
@@ -232,6 +234,21 @@ office_sessions = sa.Table(
     sa.Column("expires_at", UTCDateTime, nullable=False),
 )
 
+# The mobile number an office user signs in with: the server texts the code to it. A number
+# belongs to one user (the key), and a user has one number (`email` is unique). Digits
+# only, as `security.normalize_phone` gives them. `added_by` is the owner who set it on the
+# Users page, or "env" for an owner's number from VIDEO_OWNER_PHONES.
+# A table of its own, and not a column on `office_users`: there are no migrations, and
+# `create_all` adds a missing table to the live database but never a column.
+office_phones = sa.Table(
+    "office_phones",
+    metadata,
+    sa.Column("phone", sa.String(20), primary_key=True),
+    sa.Column("email", sa.String(254), nullable=False, unique=True),  # office_users.email
+    sa.Column("added_at", UTCDateTime, nullable=False),
+    sa.Column("added_by", sa.String(254), nullable=False, default=""),
+)
+
 # FieldRoutes writes wait here and retry, so an API outage never loses a note,
 # a score or a task. `dedupe` keeps a retry from writing twice. A `comment` is the video's
 # line for FieldRoutes' own after-service email: it has a deadline in its payload, and
@@ -279,13 +296,17 @@ async def insert_once(conn: Any, table: sa.Table, values: dict[str, Any]) -> boo
 
 
 def make_engine(url: str) -> AsyncEngine:
+    # `hide_parameters`: a statement that fails (the database restarting under a request, a
+    # lock that timed out) is printed by the web server with the values it was run with,
+    # and those are what people typed: a phone number, an email, a code's hash. With this
+    # the error keeps its statement and drops the values.
     if url.startswith("sqlite"):
         kwargs: dict[str, Any] = {"connect_args": {"timeout": 30}}
         if ":memory:" in url:
             # One shared connection, or every checkout would see its own empty database.
             kwargs["poolclass"] = StaticPool
-        return create_async_engine(url, **kwargs)
-    return create_async_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)
+        return create_async_engine(url, hide_parameters=True, **kwargs)
+    return create_async_engine(url, hide_parameters=True, pool_pre_ping=True, pool_size=5, max_overflow=5)
 
 
 async def create_all(engine: AsyncEngine) -> None:

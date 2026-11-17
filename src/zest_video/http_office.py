@@ -2,8 +2,9 @@
 few actions staff need (pull, move, note, issue a code, cut off a phone). Owners also
 get settings, office users, per-tech stats and the audit trail.
 
-Server-rendered HTML with plain forms. Sign-in is an emailed code for addresses on
-the allow-list; every POST carries a CSRF token tied to the session.
+Server-rendered HTML with plain forms. Sign-in is a code for people on the allow-list,
+texted to the mobile number an owner set for them or emailed to their address; every
+POST carries a CSRF token tied to the session.
 """
 
 from __future__ import annotations
@@ -106,6 +107,20 @@ SETTING_HELP = {
     "email_intro": "First lines of the email. {tech}, {address} and {service} are filled in.",
     "prompts": "What the tech reads while recording, one per line. {name} becomes the customer's first name.",
 }
+
+
+# What a number pasted from a phone's contact list brings with it: marks that set the
+# reading direction and cannot be seen, spaces that are not the space bar's, and dashes
+# that are not the minus key's. It looks right and is not ten digits and a few signs.
+_UNSEEN = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+_ODD_SPACES = re.compile("[\u00a0\u2007\u2009\u202f]")
+_ODD_DASHES = re.compile("[\u2010-\u2015\u2212]")
+
+
+def tidy_number(raw: Any) -> str:
+    """A mobile number as a person typed or pasted it, with what cannot be seen taken out."""
+    text = _UNSEEN.sub("", str(raw or "").replace("\x00", ""))
+    return _ODD_DASHES.sub("-", _ODD_SPACES.sub(" ", text)).strip()[:254]
 
 
 def _valid_day(raw: str | None, default: str) -> str:
@@ -374,6 +389,10 @@ def routes(ctx: Ctx) -> list[Route]:
                 csrf=security.csrf_token(ctx.cfg.secret, user.session) if user else "",
                 email_mode=ctx.cfg.email_mode if ctx.mailer.delivers else "off",
                 mail_delivers=ctx.mailer.delivers,
+                # "inbox", "log" or "": what typing an email on the sign-in page leads to here.
+                # A page points to the email way only where a code reaches an inbox.
+                email_way=auth.email_way(ctx),
+                texting=bool(ctx.texter.configured),
                 email_test_to=ctx.cfg.email_test_to,
                 tz=ctx.cfg.tz,
                 fr_email_minutes=_fr_email.get(),
@@ -426,22 +445,49 @@ def routes(ctx: Ctx) -> list[Route]:
 
     async def login(request: Request) -> Response:
         if request.method == "GET":
-            return html("office_login.html", step="email")
+            return html("office_login.html", step="ask")
         form = await request.form()
-        email = str(form.get("email") or "").replace("\x00", "").strip().lower()[:254]
+        # One box: "Mobile number or email". `email` is the name it had while it took an
+        # email only, and a page left open from then still posts it.
+        typed = str(form.get("contact") or form.get("email") or "").replace("\x00", "").strip()[:254]
+        if "@" in typed:
+            email = typed.lower()
+            try:
+                await auth.request_office_code(ctx, email, client_ip(request))
+            except ApiError as exc:
+                return html("office_login.html", step="ask", error=exc.message, status=exc.status)
+            return html("office_login.html", step="code", email=email)
+        # No @ in it: the text way. The page that follows is the same whoever has that number.
+        typed = tidy_number(typed)
         try:
-            await auth.request_office_code(ctx, email, client_ip(request))
+            phone = await auth.request_office_text_code(ctx, typed, client_ip(request))
         except ApiError as exc:
-            return html("office_login.html", step="email", error=exc.message, status=exc.status)
-        return html("office_login.html", step="code", email=email)
+            if exc.extra.get("phone"):
+                # A text may have gone all the same (Quo's answer was lost), or an earlier
+                # code is still good (the number was asked for too often). So the box for
+                # the code is on the page that says what went wrong.
+                return html("office_login.html", step="code", phone=exc.extra["phone"], error=exc.message,
+                            status=exc.status)
+            # Something that is not a number stays in the box, so a slip can be seen and put right.
+            return html("office_login.html", step="ask", error=exc.message, status=exc.status,
+                        typed="" if security.normalize_phone(typed) else typed)
+        return html("office_login.html", step="code", phone=phone)
 
     async def verify(request: Request) -> Response:
         form = await request.form()
-        email = str(form.get("email") or "").replace("\x00", "").strip().lower()[:254]
-        try:
-            token = await auth.verify_office_code(ctx, email, str(form.get("code") or ""), client_ip(request))
-        except ApiError as exc:
-            return html("office_login.html", step="code", email=email, error=exc.message, status=exc.status)
+        code = str(form.get("code") or "")
+        phone = security.normalize_phone(str(form.get("phone") or "").replace("\x00", ""))
+        if form.get("phone"):
+            try:
+                token = await auth.verify_office_text_code(ctx, phone, code, client_ip(request))
+            except ApiError as exc:
+                return html("office_login.html", step="code", phone=phone, error=exc.message, status=exc.status)
+        else:
+            email = str(form.get("email") or "").replace("\x00", "").strip().lower()[:254]
+            try:
+                token = await auth.verify_office_code(ctx, email, code, client_ip(request))
+            except ApiError as exc:
+                return html("office_login.html", step="code", email=email, error=exc.message, status=exc.status)
         response = RedirectResponse("/office", status_code=303)
         response.set_cookie(
             COOKIE, token, max_age=auth.OFFICE_SESSION_DAYS * 86400, httponly=True, secure=secure_cookie,
@@ -628,8 +674,29 @@ def routes(ctx: Ctx) -> list[Route]:
             return back(request, "/office/users", msg="Saved.")
         async with ctx.engine.connect() as conn:
             users = (await conn.execute(sa.select(db.office_users).order_by(db.office_users.c.email))).all()
+            phones = (await conn.execute(sa.select(db.office_phones))).all()
         return html("office_users.html", user, users=users, fixed=set(ctx.cfg.owner_emails),
+                    phones={p.email: p.phone for p in phones}, fixed_phones=set(auth.fixed_office_phones(ctx)),
+                    office_line=security.normalize_phone(ctx.cfg.quo_from),
                     msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""))
+
+    async def user_phone(request: Request, user: auth.OfficeUser) -> Response:
+        """Give an office user the mobile number he signs in with, change it, or take it away."""
+        form = await request.form()
+        email = str(form.get("email") or "")
+        try:
+            if form.get("remove") is not None:
+                took = await auth.remove_office_phone(ctx, email, user.email)
+                # It ends codes, not a session that is open: say so, or an owner who took the
+                # number of a lost phone away would think that person is signed out.
+                msg = ("Taken away. That number gets no more codes. Someone who is signed in already stays signed "
+                       "in: remove the person to end that.") if took else "There was no number to take away."
+            else:
+                ends = await auth.set_office_phone(ctx, email, tidy_number(form.get("phone")), user.email)
+                msg = f"Saved. The number ending {ends} now gets that person's sign-in code by text."
+        except ApiError as exc:
+            return back(request, "/office/users", err=exc.message)
+        return back(request, "/office/users", msg=msg)
 
     async def stats_page(request: Request, user: auth.OfficeUser) -> Response:
         try:
@@ -670,6 +737,7 @@ def routes(ctx: Ctx) -> list[Route]:
         Route("/office/devices/{device_id}/cut", page(cut_device), methods=["POST"]),
         Route("/office/settings", page(settings_page, owner=True), methods=["GET", "POST"]),
         Route("/office/users", page(users_page, owner=True), methods=["GET", "POST"]),
+        Route("/office/users/phone", page(user_phone, owner=True), methods=["POST"]),
         Route("/office/stats", page(stats_page, owner=True)),
         Route("/office/audit", page(audit_page, owner=True)),
     ]

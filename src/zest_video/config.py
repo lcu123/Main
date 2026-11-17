@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
+from .security import normalize_phone
+
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
@@ -58,6 +60,50 @@ def _int_set(name: str) -> frozenset[int] | None:
         except ValueError:
             continue
     return frozenset(out)
+
+
+def read_owner_phones(raw: str, owner_emails: tuple[str, ...]) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
+    """VIDEO_OWNER_PHONES: the mobile number each owner signs in to the office page with.
+
+    An owner cannot type his own number on the office page before he can sign in, so his
+    comes from here. Entries have commas between them. Each is `email=number`, where the
+    email is one of VIDEO_OWNER_EMAILS. A number with no email in front is allowed only
+    when exactly one owner is named there, and is that owner's.
+
+    Returns the good entries as (email, ten digits), and one plain line for each entry
+    that was skipped. A bad entry never stops a start and never spoils the others. A line
+    names the variable and says which entry it is by its place in the list. It never
+    repeats what was written there. (It does not promise an emailed code: whether one
+    reaches an inbox depends on the mail service, which this function knows nothing of.)"""
+    entries = [part.strip() for part in raw.split(",") if part.strip()]
+    good: list[tuple[str, str]] = []
+    notes: list[str] = []
+    for place, entry in enumerate(entries, 1):
+        email, named, number = entry.rpartition("=")
+        email = email.strip().lower()
+        phone = normalize_phone(number)
+        why = ""
+        if not named and len(owner_emails) != 1:
+            why = ("it has no email in front of the number. That is allowed only when VIDEO_OWNER_EMAILS names "
+                   "exactly one owner. Write it as email=number")
+        elif not named:
+            email = owner_emails[0]
+        elif email not in owner_emails:
+            why = "the email in it is not one of the owners in VIDEO_OWNER_EMAILS"
+        if not why and not phone:
+            why = "the number in it is not a mobile number of 10 digits"
+        if not why and any(email == e for e, _ in good):
+            why = "an entry before it already gives that owner a number"
+        if not why and any(phone == p for _, p in good):
+            why = "an entry before it already gives that number to another owner"
+        if why:
+            notes.append(
+                f"WARNING: VIDEO_OWNER_PHONES, entry {place} of {len(entries)}, was skipped: {why}. Every other "
+                "entry still applies, and the email way is not affected."
+            )
+        else:
+            good.append((email, phone))
+    return tuple(good), tuple(notes)
 
 
 # With no database set, a laptop gets a file next to where the server was started.
@@ -183,6 +229,12 @@ class Config:
     # inbox (`notify.Texter`). An ordinary setting, not one of the overrides below: it
     # switches no check off, and either way the code is texted.
     quo_mark_done: bool = True
+
+    # VIDEO_OWNER_PHONES, read by `read_owner_phones`: (owner's email, ten digits) for each
+    # good entry, and one plain line for each entry that was skipped. `auth.ensure_owners`
+    # puts each number on its owner at every start.
+    owner_phones: tuple[tuple[str, str], ...] = ()
+    owner_phone_notes: tuple[str, ...] = ()
 
     # Where this is running, and the three loud overrides (see `check_start` and app.start_up).
     platform: str = ""  # "Railway" when Railway's own variables are in the environment
@@ -427,6 +479,8 @@ def hush(text: str, cfg: Config) -> str:
     """Cut every secret this server was given out of a line that is bound for the log."""
     secrets = [cfg.database_url, cfg.s3_secret_key, cfg.resend_api_key, cfg.resend_webhook_secret,
                cfg.quo_api_key, cfg.apns_key_p8, cfg.secret]
+    # Not secrets, but a whole phone number has no place in a log either.
+    secrets += [phone for _, phone in cfg.owner_phones]
     # The database password, as it is written in the address and as the driver hands it on.
     written = cfg.database_url.partition("://")[2].rpartition("@")[0].partition(":")[2]
     secrets += [written, unquote(written)]
@@ -444,6 +498,8 @@ def load() -> Config:
     if mail_backend not in ("resend", "log", "off"):
         mail_backend = "off"
     office = _env("FR_OFFICE_ID")
+    owner_emails = tuple(e.lower() for e in _list("VIDEO_OWNER_EMAILS"))
+    owner_phones, owner_phone_notes = read_owner_phones(_env("VIDEO_OWNER_PHONES"), owner_emails)
     return Config(
         database_url=_database_url(),
         base_url=(_env("VIDEO_BASE_URL") or _railway_origin() or "http://localhost:8080").rstrip("/"),
@@ -483,7 +539,7 @@ def load() -> Config:
         apns_key_id=_env("APNS_KEY_ID"),
         apns_team_id=_env("APNS_TEAM_ID"),
         apns_bundle_id=_env("APNS_BUNDLE_ID") or "com.zestlawnpest.video",
-        owner_emails=tuple(e.lower() for e in _list("VIDEO_OWNER_EMAILS")),
+        owner_emails=owner_emails,
         demo_contact=_env("VIDEO_DEMO_CONTACT").lower(),
         demo_code=_env("VIDEO_DEMO_CODE"),
         secret=_env("VIDEO_SECRET") or "dev-only-secret-change-me",
@@ -492,6 +548,8 @@ def load() -> Config:
         app_store_url=_env("VIDEO_APP_STORE_URL"),
         privacy_contact=_env("VIDEO_PRIVACY_CONTACT"),
         quo_mark_done=_bool("QUO_MARK_DONE", True),
+        owner_phones=owner_phones,
+        owner_phone_notes=owner_phone_notes,
         platform="Railway" if any(_env(name) for name in RAILWAY_MARKS) else "",
         allow_throwaway_storage=_bool("VIDEO_ALLOW_THROWAWAY_STORAGE"),
         start_with_files_missing=_bool("VIDEO_START_WITH_FILES_MISSING"),

@@ -19,7 +19,13 @@ from .config import Config, hush
 
 
 class DeliveryError(Exception):
-    pass
+    """A message that did not go, or may not have. `status` is what the service answered
+    with, when it answered at all: a number is safe to put in a log line, where the
+    service's own words are not (they may repeat the request)."""
+
+    def __init__(self, *args: Any, status: int | None = None):
+        super().__init__(*args)
+        self.status = status
 
 
 class AlreadyTaken(DeliveryError):
@@ -150,7 +156,9 @@ QUO_SAID_NO = (400, 403, 404, 422)
 
 
 class Texter:
-    """Login codes by text through the office's Quo line. Off unless both vars are set.
+    """Login codes by text through the office's Quo line: a tech's code for the app, and an
+    office user's code for the office page (`auth.request_office_text_code`). Off unless
+    both vars are set.
 
     Every text opens a conversation in the office's shared Quo inbox, and the sign-in code
     is the only text this server sends. So the send itself asks Quo to file that
@@ -169,11 +177,17 @@ class Texter:
     answer all the while, so the second try gets only the time the refusal left over:
     the two together wait no longer than the one did before.
 
-    A text that failed is not passed on by its caller (`auth._deliver_code`: the code still
-    goes by email), so nobody would see it if the field were what Quo choked on in a way
-    that is not tried again. So such a failure is one line in the log, with the switch
+    A tech's text that failed is not passed on by its caller (`auth._deliver_code`: the code
+    still goes by email), so nobody would see it if the field were what Quo choked on in a
+    way that is not tried again. So such a failure is one line in the log, with the switch
     that sends the text as it went before. It is said only when that switch could matter:
-    the field was on the request, and the same text without it was not tried."""
+    the field was on the request, and the same text without it was not tried.
+
+    The office page tells its user when his text failed, and writes a line of its own to
+    the log every time (`auth.request_office_text_code`): the owner it happens to cannot
+    sign in to read the audit trail. So a failed office text can have two lines here, this
+    class's about the Done switch and that one. `DeliveryError.status` is what Quo
+    answered, for that line."""
 
     def __init__(self, cfg: Config, *, transport: httpx.AsyncBaseTransport | None = None):
         self.cfg = cfg
@@ -236,7 +250,7 @@ class Texter:
         else:
             resp = await self._post(message)
         if resp.status_code >= 300:
-            raise DeliveryError(f"text provider said {resp.status_code}: {resp.text[:300]}")
+            raise DeliveryError(f"text provider said {resp.status_code}: {resp.text[:300]}", status=resp.status_code)
 
 
 class MemoryTexter:

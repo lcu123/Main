@@ -491,6 +491,9 @@ async def make_env(tmp_path: Any, **cfg_changes: Any) -> Env:
         email_test_to="",
         email_customer_ids=None,
         owner_emails=(OWNER,),
+        # Never the machine's own VIDEO_OWNER_PHONES. A test that wants an owner's number says so.
+        owner_phones=(),
+        owner_phone_notes=(),
         demo_contact=DEMO_CONTACT,
         demo_code=DEMO_CODE,
         secret="test-secret",
@@ -521,6 +524,10 @@ async def make_env(tmp_path: Any, **cfg_changes: Any) -> Env:
             await conn.run_sync(db.metadata.drop_all)
     await db.create_all(ctx.engine)
     await auth.ensure_owners(ctx)
+    # On the office page every answer about a mobile number takes at least two seconds, so
+    # that the time does not say whose number it is. A test does not wait for that; the one
+    # that measures it sets its own (tests/test_video_office_text.py).
+    auth.TEXT_ANSWER_SECONDS = 0.0
     app = build_app(ctx, run_jobs=False)
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE)
     return Env(ctx, fake, app, http, storage, mailer, texter, pusher)

@@ -42,7 +42,9 @@ carriers to send texts, so this only needs a key.
    (Techs & phones) shows who is missing one.
 
 How it is kept safe: a code is only ever sent to the number already on a
-tech's own record, never to a number someone types in. It works once, dies
+tech's own record, never to a number someone types in. (The office page works
+the same way: a code goes only to a number an owner has put on the office
+list. Step 4 has that.) It works once, dies
 after 15 minutes, and locks after 5 wrong tries. Only active technicians can
 get one. The phone then stays signed in, and the office can cut off any phone
 at once.
@@ -69,7 +71,9 @@ To leave code texts in the inbox, set `QUO_MARK_DONE=off` on `zest-video`.
 
 ## 3. Email sender — owner, about 15 minutes
 
-The server emails the customer's video link, and office sign-in codes.
+The server emails the customer's video link, and office sign-in codes for
+anyone who types an email on the office sign-in page instead of a mobile
+number (step 4).
 
 1. Make an account at <https://resend.com>.
 2. Add the domain `zestlawnpest.com`. Resend shows a few DNS records (SPF and
@@ -81,12 +85,94 @@ The server emails the customer's video link, and office sign-in codes.
    `Zest Lawn & Pest <video@zestlawnpest.com>`, and `VIDEO_MAIL_REPLY_TO` to the
    office inbox, so customer replies land with the office.
 
-## 4. Office sign-in — owner
+## 4. Office sign-in — owner, about 5 minutes
 
-In Railway, on `zest-video`, set `VIDEO_OWNER_EMAILS` to your email (more than
-one: put commas between them). Then open
-`https://zest-video-production.up.railway.app/office`, type that email, and
-enter the code that arrives. Add office staff under **Office users**.
+You sign in to the office page with a 6-digit code. It comes by text to your
+mobile number, or by email. Until step 3 is done no email can arrive, so the
+text is the only way in, and the pages say so: none of them tells you to type
+your email while no email can come.
+
+Before you start, one question to answer: **which phone will the text land
+on?** Give the mobile number of that phone. Do not give the office's own Quo
+line (the number the codes are texted from). The server does not text a code
+to that line, and the sign-in page says so to whoever types it.
+
+1. In Railway, on `zest-video`, set `VIDEO_OWNER_EMAILS` to your email (more
+   than one owner: put commas between them). The email is still your name on
+   the office list, and the email way works once step 3 is done.
+2. In the same place, add `VIDEO_OWNER_PHONES` with your mobile number, written
+   like `916-555-0142`. With more than one owner, write each as
+   `email=number` with commas between them, like
+   `you@example.com=916-555-0142,partner@example.com=916-555-0143`. Set it
+   once. Railway restarts the server, and the number is yours from that start
+   on.
+3. Open `https://zest-video-production.up.railway.app/office`, type that
+   mobile number, press **Send me a code**, and type the code from the text.
+   The page takes about two seconds to answer. That is on purpose: every
+   number gets its answer after the same wait, so the wait does not tell a
+   stranger whose number is on the list.
+4. Add office staff under **Office users**: add the person by email first,
+   then type their mobile number in their row and press **Save number**. From
+   then on they sign in by text the same way. Only an owner can set a number,
+   change it or take it away.
+
+Who else can read your code:
+
+- **Everyone who can open the office line in Quo.** The code is a text sent
+  from that line, so it is in that line's history in Quo: filed under Done,
+  not hidden, and found by search. For 15 minutes it signs in as the person it
+  was sent to. So a person on that Quo line who types your mobile number on
+  the sign-in page can read the code in Quo and sign in as you, with settings,
+  office users and the audit trail. You get the text too, so a code you did
+  not ask for is the sign. Signing in by text is only as private as that Quo
+  line. If people you would not make an owner can read it, say so before this
+  is switched on: the codes can be sent from a Quo number only you can see
+  (`QUO_FROM_NUMBER`; a tech's code then comes from that number too), or you
+  sign in by email once step 3 is done.
+
+Things to know:
+
+- If you type the office's own Quo line, the page says: "That is the office's
+  own line. The codes are texted from it, so one cannot be texted to it." If
+  that line is the number in `VIDEO_OWNER_PHONES`, the server's log warns at
+  every start, and the Office users page says so beside your number. Put your
+  own mobile number in the variable.
+- Your own number shows on the Office users page as "set in the server's
+  settings" and cannot be changed there. To change it, change
+  `VIDEO_OWNER_PHONES` in Railway.
+- Taking your number out of `VIDEO_OWNER_PHONES` does not remove it by
+  itself. After that restart it is no longer fixed, and you take it away on
+  the Office users page.
+- If the number you set was on a staff user, it is taken from them and is
+  yours. The audit trail says so.
+- A mistake in `VIDEO_OWNER_PHONES` never stops the server. That entry is
+  skipped, and one line in the log says which entry (first, second, ...) and
+  why. The first line of every start says how many owner numbers are set
+  (`owner-phones=1`).
+- Taking a number away stops it at once, a code texted a minute ago included.
+  It does not sign out someone who is signed in already: press **Remove
+  person** for that.
+- The Office users page, the audit trail and the log only ever show the last
+  four digits of a number.
+- No text? When the server could not send one, the page says so, and one line
+  in the server's log in Railway says what Quo answered (search the log for
+  "office sign-in code text"). The page keeps the box for the code, because a
+  text can still come after such a message. **Text me a new code** asks again
+  for the same number. A new code stops the old one.
+- Typing your email is the other way in once step 3 is done. Before that an
+  emailed code reaches no inbox: it is only printed in the server's log in
+  Railway, which only you can read, and the pages do not send you there.
+- Someone who knows your number can have codes sent to it: five in 15
+  minutes at most. They cannot read them. If the page then says "this number
+  has been asked for too often", type the newest code you got. A stream of
+  codes you did not ask for means someone is trying; tell Claude.
+- Each code text files the conversation between the office line and that
+  mobile number under Done in Quo, the same as a tech's code (step 2). If the
+  office texts with that number on the same line, that thread goes to Done
+  with each code and is back in the inbox at the next reply.
+- It has not been tried on the live server yet. The first real sign-in is the
+  test: type your number, get the text, type the code. Then look in Quo: the
+  code's conversation should be under Done, like a tech's.
 
 ## 5. Put the code on the main branch — owner says go, Claude does it
 

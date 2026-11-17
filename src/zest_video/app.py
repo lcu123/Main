@@ -43,6 +43,7 @@ from .config import Config, StartRefused, check_start, hush, load, overrides_on,
 from .core import Ctx
 from .fr import FieldRoutes
 from .notify import Pusher, Texter, make_mailer
+from .security import normalize_phone
 from .storage import FOUND, MISSING, REFUSALS, UNKNOWN, MemoryStorage, S3Storage
 
 # How long a start keeps asking a database that does not answer before it gives up.
@@ -443,7 +444,8 @@ def main() -> None:
     # Gate 1, before anything is built or listens: a real deployment that would keep
     # records in a file or videos in memory stops here, with one plain message.
     try:
-        notes = check_start(cfg) + switch_notes()
+        # A bad entry in VIDEO_OWNER_PHONES is one more note, never a refusal.
+        notes = check_start(cfg) + switch_notes() + list(cfg.owner_phone_notes)
         ctx = build_ctx(cfg)
     except StartRefused as exc:
         print(exc.message, file=sys.stderr, flush=True)
@@ -468,7 +470,8 @@ def main() -> None:
         f"records={'Postgres' if cfg.database_url.startswith('postgresql') else 'A LOCAL FILE (not for real use)'}; "
         f"videos={'bucket' if cfg.storage_configured else 'MEMORY (gone when this stops; not for real use)'}; "
         f"mail={cfg.mail_backend}; customer-email={cfg.email_mode}; "
-        f"text={texting}; push={'on' if cfg.push_configured else 'off'}; "
+        # How many owners have a mobile number for the office page. A count, never a number.
+        f"text={texting}; owner-phones={len(cfg.owner_phones)}; push={'on' if cfg.push_configured else 'off'}; "
         f"fr-writes={'on' if cfg.fr_writes else 'off'}; demo={'on' if cfg.demo_enabled else 'off'}; "
         f"overrides={', '.join(overrides_on(cfg)) or 'none'}",
         file=sys.stderr,
@@ -476,6 +479,26 @@ def main() -> None:
     )
     for note in notes:
         say(note)
+    # What is said about the email way is what is true on this server. With no mail service
+    # connected an emailed code reaches no inbox, and a line that sent the reader there
+    # would send him to the dead end the text way was built to get around.
+    if ctx.mailer.delivers:
+        by_email = "An emailed code still works."
+    elif ctx.mailer.configured:
+        by_email = ("No mail service is connected either (mail=log): a code asked for by email is only printed "
+                    "in this log.")
+    else:
+        by_email = "No mail service is connected either, so no code can be emailed."
+    if cfg.owner_phones and texting == "off":
+        say("WARNING: VIDEO_OWNER_PHONES is set, but texting is off (QUO_API_KEY and QUO_FROM_NUMBER are not both "
+            f"set), so no office code can be texted. {by_email}")
+    elif normalize_phone(cfg.quo_from) in [phone for _, phone in cfg.owner_phones]:
+        # Nobody has seen Quo text a line from itself, and a code texted to the office's own
+        # line would be read by everyone on it. So the sign-in page does not try.
+        say("WARNING: a number in VIDEO_OWNER_PHONES is the same as QUO_FROM_NUMBER, the line the codes are texted "
+            "from. No code is texted to that line: the sign-in page says so to whoever types it. That owner gets "
+            "no code by text until VIDEO_OWNER_PHONES holds a mobile number of his own that is not the office "
+            f"line. {by_email}")
     if cfg.secret == "dev-only-secret-change-me" and cfg.base_url.startswith("https://"):
         say("WARNING: set VIDEO_SECRET to a long random value")
     # Gate 2, still before the web server exists, so a stop signal stops the wait at once.
