@@ -1,0 +1,3 @@
+# Copied in from the app by run.sh each time it runs.
+Sources/Phone/CameraService.swift
+Sources/Simulator/CameraService.swift

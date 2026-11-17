@@ -19,6 +19,15 @@ import XCTest
 /// What this does NOT show is iOS itself interrupting the real camera when
 /// a real call rings, and that the reason it gives is the one the app
 /// expects. Only a real phone and a real call can show that.
+///
+/// **A camera that stops with no word at all** (the last five tests). The
+/// first build on a real phone opened the record screen black, still
+/// offering TAP TO RECORD, and answered every tap with "The video stopped
+/// too soon. Please record it again.": the capture session had stopped and
+/// the app went on believing it was ready. The stand-in's session can now
+/// be stopped the same way (`UITestMode`, point 13): no notice, the status
+/// untouched. What notices, what the screen says meanwhile and what a tap
+/// does is the code a phone runs.
 final class InterruptionUITests: ZestUITestCase {
     private var record: XCUIElement { app.buttons["record-button"] }
     private var recordingSign: XCUIElement { element("recording-pill") }
@@ -278,5 +287,200 @@ final class InterruptionUITests: ZestUITestCase {
         saveClip()
         waitForHeld()
         XCTAssertEqual(theOnlyVideo().completes, [200], "And the clip that was on the phone is sent.")
+    }
+
+    // MARK: A camera that stops behind the screen's back
+
+    /// What the words under the record button say. (They are the button's
+    /// value: TAP TO RECORD, STARTING CAMERA, CAMERA OFF, GET READY.)
+    private var underTheButton: String {
+        record.exists ? ((record.value as? String) ?? "") : ""
+    }
+
+    /// The line the owner's phone showed on every tap. It is for a clip
+    /// that really was cut short, and must never answer a tap that
+    /// started nothing.
+    private static let stoppedTooSoon = "stopped too soon"
+
+    /// The black record screen. The camera was started on "Is this the
+    /// stop?" and has stopped since, with no word to the app. The record
+    /// screen must not open offering TAP TO RECORD over it: it asks the
+    /// camera, says STARTING CAMERA while the camera comes back by itself,
+    /// and only then offers the button. Nobody touches anything, nobody
+    /// goes BACK, and no line about a video that "stopped" is shown.
+    func testTheRecordScreenOpensOnACameraThatStoppedAndBringsItBackByItself() {
+        cameraStops = "open"
+        cameraRestartSeconds = 8
+        launchSignedIn()
+        openRecorder(for: Self.smith)
+
+        XCTAssertFalse(record.isEnabled, "The camera is not running: the record button must wait, not be offered.")
+        XCTAssertEqual(underTheButton, "STARTING CAMERA", "The screen says what is happening.")
+        XCTAssertFalse(element("record-problem").exists, "Nothing has gone wrong that he needs to read about.")
+
+        waitUntil("the camera came back by itself, with no touch", timeout: 60) { self.record.isEnabled }
+        XCTAssertEqual(underTheButton, "TAP TO RECORD")
+        XCTAssertFalse(element("record-problem").exists)
+        XCTAssertFalse(element("camera-away").exists)
+
+        // One tap records, and the clip runs its course.
+        tap(record, "the red record button")
+        waitFor(recordingSign, "the red RECORDING sign", timeout: 10)
+        waitForTitle("Save this video?", timeout: 40)
+        XCTAssertFalse(element("cut-note").exists, "Nothing stopped this clip early.")
+        saveClip()
+        waitForHeld()
+        XCTAssertEqual(theOnlyVideo().registers, 1)
+
+        sendTheAuditTrail()
+        waitUntil("the server holds the record_stop event", timeout: 60) { !self.recordStops(for: Self.smith).isEmpty }
+        let stops = recordStops(for: Self.smith)
+        XCTAssertEqual(stops.count, 1, "One tap, one clip: \(stops)")
+        XCTAssertNil((stops.first?["detail"] as? [String: Any])?["endedBy"], "And nothing cut it short.")
+    }
+
+    /// The camera stops while the record screen is open and nobody is
+    /// touching it. Within about a second the screen stops offering the
+    /// button and says STARTING CAMERA; the camera comes back by itself;
+    /// then one tap records.
+    func testACameraThatStopsWhileTheRecordScreenIsOpenIsBroughtBackWithNoTouch() {
+        cameraStops = "3"
+        cameraRestartSeconds = 8
+        launchSignedIn()
+        openRecorder(for: Self.smith)
+
+        waitUntil("the screen noticed that the camera had stopped, and the button waits", timeout: 30) { !self.record.isEnabled }
+        XCTAssertEqual(underTheButton, "STARTING CAMERA", "The screen says what is happening.")
+        XCTAssertFalse(element("record-problem").exists, "No line about a video: none was being recorded.")
+
+        waitUntil("the camera came back by itself, with no touch", timeout: 60) { self.record.isEnabled }
+        XCTAssertEqual(underTheButton, "TAP TO RECORD")
+        recordClip()
+        XCTAssertFalse(element("cut-note").exists)
+        saveClip()
+        waitForHeld()
+        XCTAssertEqual(theOnlyVideo().registers, 1)
+    }
+
+    /// The owner's own case, at its worst moment: the screen says TAP TO
+    /// RECORD, and the camera stops just as he taps. That tap still
+    /// records: the camera is started again on the spot, the red RECORDING
+    /// sign comes up, and the clip is saved and sent. "The video stopped
+    /// too soon" is never shown. The audit trail says the camera had to be
+    /// started at the tap.
+    func testATapOnACameraThatHasJustStoppedStillRecords() {
+        cameraStops = "tap"
+        launchSignedIn()
+        openRecorder(for: Self.smith)
+        XCTAssertTrue(record.isEnabled, "The camera is ready.")
+
+        tap(record, "the red record button")
+        waitFor(recordingSign, "the red RECORDING sign: this very tap records", timeout: 15)
+        XCTAssertFalse(element("record-problem").exists, "No line: the tap recorded.")
+        waitForTitle("Save this video?", timeout: 40)
+        XCTAssertFalse(element("cut-note").exists, "Nothing stopped this clip early.")
+        saveClip()
+        waitForHeld()
+        let video = theOnlyVideo()
+        XCTAssertEqual(video.customerId, Self.smith)
+        XCTAssertEqual(video.registers, 1)
+        XCTAssertEqual(video.completes, [200])
+
+        sendTheAuditTrail()
+        waitUntil("the server holds the record_stop event", timeout: 60) { !self.recordStops(for: Self.smith).isEmpty }
+        let stops = recordStops(for: Self.smith)
+        XCTAssertEqual(stops.count, 1, "One tap, one clip: \(stops)")
+        let detail = stops.first?["detail"] as? [String: Any]
+        XCTAssertNil(detail?["endedBy"], "Nothing cut it short: \(String(describing: detail))")
+        XCTAssertEqual(detail?["camera"] as? String, "started at the tap", "The trail says what the camera needed.")
+    }
+
+    /// The same tap, and this time the camera will not start for a moment.
+    /// Nothing was recorded, so nothing "stopped too soon": the line says
+    /// "The camera did not start. Tap again.", nothing red was ever shown,
+    /// the camera comes back by itself, and the next tap records. The audit
+    /// trail calls the first tap "not_started", not a clip of no seconds.
+    func testATapThatStartsNothingSaysSoAndNeverBlamesAClip() {
+        cameraStops = "tap"
+        cameraDeadSeconds = 0.6
+        launchSignedIn()
+        openRecorder(for: Self.smith)
+
+        tap(record, "the red record button")
+        waitForLabel(
+            element("record-problem"), "the line on the camera screen",
+            contains: "The camera did not start. Tap again.", timeout: 15
+        )
+        XCTAssertFalse(label(of: element("record-problem")).contains(Self.stoppedTooSoon), "No clip is blamed: none began.")
+        XCTAssertFalse(recordingSign.exists, "Red only while really recording.")
+        XCTAssertFalse(ring.exists)
+        XCTAssertNotEqual(screenTitle, "Save this video?", "There is nothing to save.")
+        XCTAssertTrue(server.state().videos.isEmpty)
+
+        waitUntil("the camera came back by itself", timeout: 60) { self.record.isEnabled }
+        XCTAssertEqual(underTheButton, "TAP TO RECORD")
+        tap(record, "the red record button")
+        waitFor(recordingSign, "the red RECORDING sign", timeout: 10)
+        XCTAssertFalse(element("record-problem").exists, "A new recording clears the line.")
+        waitForTitle("Save this video?", timeout: 40)
+        XCTAssertFalse(element("cut-note").exists)
+        saveClip()
+        waitForHeld()
+        let video = theOnlyVideo()
+        XCTAssertEqual(video.registers, 1, "One video: the tap that recorded.")
+
+        sendTheAuditTrail()
+        waitUntil("the server holds both record_stop events", timeout: 60) { self.recordStops(for: Self.smith).count >= 2 }
+        let stops = recordStops(for: Self.smith)
+        let first = stops.first?["detail"] as? [String: Any]
+        XCTAssertEqual(first?["endedBy"] as? String, "not_started", "The first tap: \(String(describing: first))")
+        XCTAssertEqual(first?["kept"] as? String, "no")
+        XCTAssertEqual(first?["seconds"] as? String, "0.0")
+        XCTAssertTrue(((first?["camera"] as? String) ?? "").hasPrefix("stopped"), "And why: \(String(describing: first))")
+        XCTAssertNotEqual(stops.first?["videoId"] as? String, video.id)
+        let second = stops.last?["detail"] as? [String: Any]
+        XCTAssertNil(second?["endedBy"], "The second tap recorded to its limit: \(String(describing: second))")
+        XCTAssertEqual(stops.last?["videoId"] as? String, video.id)
+    }
+
+    /// A camera that will not start at all. After a few tries of its own
+    /// the app stops and says so on a page of its own: "Camera problem",
+    /// "The camera could not start.", TRY AGAIN and BACK. No record button
+    /// is offered over a camera that is not there. TRY AGAIN asks again,
+    /// and once the camera can start the record screen is back and a tap
+    /// records.
+    func testACameraThatWillNotStartSaysSoAndTryAgainBringsItBack() {
+        cameraStops = "open"
+        cameraDeadSeconds = 7
+        launchSignedIn()
+        tap(stop(Self.smith), "the card for stop \(Self.smith)")
+        waitForTitle("Is this the stop?")
+        tap(button("THIS IS IT"), "THIS IS IT")
+
+        waitForTitle("Camera problem", timeout: 30)
+        XCTAssertTrue(hasText("The camera could not start."), "It says so in plain words.")
+        XCTAssertTrue(button("TRY AGAIN").exists && button("BACK").exists, "One way on and one way back.")
+        XCTAssertFalse(record.exists, "No record button over a camera that is not running.")
+        XCTAssertFalse(hasText(Self.stoppedTooSoon))
+
+        // TRY AGAIN, as often as it takes for the camera to be there again.
+        var presses = 0
+        let deadline = Date().addingTimeInterval(90)
+        while !(record.exists && record.isEnabled), Date() < deadline {
+            if button("TRY AGAIN").exists {
+                tap(button("TRY AGAIN"), "TRY AGAIN")
+                presses += 1
+            }
+            pause(1.5)
+        }
+        XCTAssertTrue(record.exists && record.isEnabled, "TRY AGAIN was pressed \(presses) time(s) and the camera never came back.")
+        XCTAssertGreaterThanOrEqual(presses, 1)
+        XCTAssertEqual(underTheButton, "TAP TO RECORD")
+        XCTAssertTrue(hasText("Smith, Jane"), "It is still the stop he picked.")
+
+        recordClip()
+        saveClip()
+        waitForHeld()
+        XCTAssertEqual(theOnlyVideo().registers, 1)
     }
 }

@@ -2,6 +2,8 @@ name: iOS
 
 # Builds and tests the Zest Video iPhone app (ios/).
 #   core        pure-logic package on Linux (fast)
+#   camera      the camera service itself on Linux, against a capture session
+#               a script steers (ios/CameraHarness)
 #   app         real Xcode build + unit tests on an iPhone simulator
 #   screens     pictures of every screen, taken in the simulator (artifact "screens")
 #   ui-tests    end-to-end tests: the real app in the simulator against a fake
@@ -75,6 +77,25 @@ jobs:
       - name: Test the logic package
         working-directory: ios/ZestCore
         run: swift test
+
+  # CameraService.swift, unchanged, compiled on Linux against small stand-ins
+  # for the parts of AVFoundation and UIKit it uses, and played through what
+  # a phone can do to a capture session: stop it with no word, interrupt it,
+  # fail it, refuse to record. The app target only compiles on a Mac and the
+  # simulator has no camera, so nothing else runs the code a phone runs.
+  # Build 27's black record screen shows up here in seconds. Kept apart from
+  # "core" on purpose: the upload to TestFlight waits for "core", and must
+  # not wait for a job that keeps time.
+  camera:
+    name: Camera logic (Linux, a stand-in capture session)
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.testflight) && !contains(github.event.head_commit.message, '[no-sim]') }}
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the camera service through what a phone can do to its camera
+        run: bash ios/CameraHarness/run.sh
 
   app:
     name: App build + tests (${{ matrix.os }})

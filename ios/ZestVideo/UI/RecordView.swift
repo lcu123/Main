@@ -32,7 +32,9 @@ struct RecordView: View {
                     showSettings: true
                 )
             case .failed(let text):
-                problem(title: "Camera problem", text: text, showSettings: false)
+                // The camera would not start after several tries. TRY AGAIN
+                // asks for it once more; so does coming back to the app.
+                problem(title: "Camera problem", text: text, showSettings: false, tryAgain: true)
             case .idle, .starting, .ready, .recording:
                 live
             }
@@ -44,6 +46,11 @@ struct RecordView: View {
         .onAppear {
             // Keep the screen awake while the camera is up.
             UIApplication.shared.isIdleTimerDisabled = true
+            // Not only "start it if it is off": the camera is asked whether
+            // it really is running, whatever it said a moment ago on "Is
+            // this the stop?", and started again if it is not. Until it
+            // says yes this screen reads STARTING CAMERA and its button
+            // waits (see `CameraService.prepare`).
             camera.prepare()
         }
         .onDisappear {
@@ -53,7 +60,8 @@ struct RecordView: View {
             // Back from a call or the home screen: bring the camera back.
             // (When the phone only borrowed the camera with the app still
             // on the screen, a call that was declined, say, the camera
-            // comes back by itself: see `CameraService`.)
+            // comes back by itself: see `CameraService`, which also looks
+            // at the camera once a second while this screen is up.)
             if phase == .active && app.recordPhase == .idle {
                 camera.prepare()
             }
@@ -190,9 +198,14 @@ struct RecordView: View {
                         .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(camera.status != .ready || app.recordPhase != .idle)
+                    // Offered only while the camera says it is running
+                    // (`.ready` is never a remembered state: see
+                    // `CameraService`). Otherwise it waits, dimmed, and the
+                    // words under it say what is happening.
+                    .disabled(!CameraRule.offersRecord(ready: camera.status == .ready, armed: app.recordPhase != .idle))
                     .opacity(camera.status == .ready ? 1 : 0.5)
                     .accessibilityLabel("Record")
+                    .accessibilityValue(readyLabel)
                     .accessibilityHint("Starts a \(app.config.maxSeconds) second video. It stops by itself.")
                     .accessibilityIdentifier("record-button")
 
@@ -246,11 +259,12 @@ struct RecordView: View {
         }
     }
 
+    /// TAP TO RECORD only while the camera is running; GET READY between
+    /// the tap and the first frame; otherwise what is happening: STARTING
+    /// CAMERA, or CAMERA OFF while a call or another app has it (it comes
+    /// back by itself).
     private var readyLabel: String {
-        if app.recordPhase != .idle { return "GET READY" }
-        if camera.status == .ready { return "TAP TO RECORD" }
-        // A call, or another app, has the camera: it comes back by itself.
-        return camera.away == nil ? "STARTING CAMERA" : RecordingRule.cameraAwayLabel
+        CameraRule.label(ready: camera.status == .ready, armed: app.recordPhase != .idle, away: camera.away != nil)
     }
 
     private var flipButton: some View {
@@ -273,7 +287,9 @@ struct RecordView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(camera.status != .ready)
+        // (Not between the tap and the first frame: a flip then would end
+        // the clip that is just starting.)
+        .disabled(camera.status != .ready || app.recordPhase != .idle)
         .accessibilityLabel(camera.usingFrontCamera ? "Flip to back camera" : "Flip to front camera")
         .accessibilityIdentifier("flip-button")
     }
@@ -349,7 +365,7 @@ struct RecordView: View {
 
     // MARK: No camera / no permission
 
-    private func problem(title: String, text: String, showSettings: Bool) -> some View {
+    private func problem(title: String, text: String, showSettings: Bool, tryAgain: Bool = false) -> some View {
         Screen(bar: "Record", onBack: { app.backToToday() }, title: title) {
             BodyText(text)
         } footer: {
@@ -358,6 +374,11 @@ struct RecordView: View {
                     if let url = URL(string: UIApplication.openSettingsURLString) {
                         UIApplication.shared.open(url)
                     }
+                }
+            }
+            if tryAgain {
+                BigButton(title: "TRY AGAIN", kind: .primary) {
+                    camera.prepare()
                 }
             }
             BigButton(title: "BACK", kind: .plain) {

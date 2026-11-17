@@ -59,6 +59,20 @@ import ZestCore
 ///    ("press RECORD AGAIN") and a tap that the double-tap shield kept
 ///    (`SettleFirst`). A failed test's report then says where the app
 ///    went, and whether a tap that did nothing ever reached a button.
+/// 13. `ZEST_TEST_CAMERA_STOPS` has the stand-in camera's session stop
+///    behind the screen's back, once per launch: no notice, and the status
+///    still says "ready". That is what a real session did on the first real
+///    phone (a black record screen that still offered TAP TO RECORD, and
+///    every tap answered with "The video stopped too soon."). `open` stops
+///    it on the way into the record screen, `tap` at the moment the record
+///    button is tapped, and a number that many seconds after the record
+///    screen opened. `ZEST_TEST_CAMERA_RESTART_SECONDS` makes each start
+///    after that take as long as a real one can, so the waiting screen can
+///    be looked at, and `ZEST_TEST_CAMERA_DEAD_SECONDS` makes starts fail
+///    for that long. The stand-in has no camera, but its "session" is asked
+///    and started by the same code a phone runs (`CameraService`), so what
+///    notices the stop, what the screen says and what a tap does is real.
+///    What is NOT tested this way is why a real session stops.
 ///
 /// `-ZestUITestReset 1` wipes everything the app has stored first, so a test
 /// starts from a clean install. With `ZEST_TEST_TOKEN` in the environment
@@ -80,6 +94,9 @@ enum UITestMode {
     static let interruptForVariable = "ZEST_TEST_INTERRUPT_FOR"
     static let interruptAsVariable = "ZEST_TEST_INTERRUPT_AS"
     static let silentCameraVariable = "ZEST_TEST_SILENT_CAMERA"
+    static let cameraStopsVariable = "ZEST_TEST_CAMERA_STOPS"
+    static let cameraRestartVariable = "ZEST_TEST_CAMERA_RESTART_SECONDS"
+    static let cameraDeadVariable = "ZEST_TEST_CAMERA_DEAD_SECONDS"
 
     static var isOn: Bool { flag(argument) }
 
@@ -131,6 +148,45 @@ enum UITestMode {
     /// must notice and end the recording itself.
     static var silentCamera: Bool {
         isOn && ProcessInfo.processInfo.environment[silentCameraVariable] == "1"
+    }
+
+    /// When the stand-in camera's session is to stop behind the screen's
+    /// back (once per launch).
+    enum CameraStop: Equatable {
+        /// On the way into the record screen.
+        case onOpen
+        /// At the moment the record button is tapped.
+        case onTap
+        /// This many seconds after the record screen opened.
+        case after(TimeInterval)
+    }
+
+    static var cameraStops: CameraStop? {
+        guard isOn else { return nil }
+        let raw = ProcessInfo.processInfo.environment[cameraStopsVariable] ?? ""
+        switch raw {
+        case "":
+            return nil
+        case "open":
+            return .onOpen
+        case "tap":
+            return .onTap
+        default:
+            guard let seconds = TimeInterval(raw), seconds >= 0 else { return nil }
+            return .after(seconds)
+        }
+    }
+
+    /// How long each start of the stand-in session takes after that stop.
+    static var cameraRestartSeconds: TimeInterval {
+        guard isOn, let seconds = TimeInterval(ProcessInfo.processInfo.environment[cameraRestartVariable] ?? "") else { return 0 }
+        return min(max(0, seconds), 30)
+    }
+
+    /// For how long after that stop the stand-in session will not start.
+    static var cameraDeadSeconds: TimeInterval {
+        guard isOn, let seconds = TimeInterval(ProcessInfo.processInfo.environment[cameraDeadVariable] ?? "") else { return 0 }
+        return min(max(0, seconds), 60)
     }
 
     /// The same clip, filmed `days` days earlier. (Its stop's check-in

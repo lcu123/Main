@@ -684,9 +684,9 @@ Proven:
   launches every screen in the iPhone simulator and photographs it.
 - App, end to end in the simulator: UI tests tap through every screen and
   button against a fake server and check both the screen and what the server
-  received (103 in all; 99 have run and passed, and the four added on Nov 16,
-  2026, the sign-in steps with the keyboard up and with a message on them,
-  are in the list below until they have). They cover sign-in by text code,
+  received (108 in all; 103 have run and passed, and the five added on Nov 16,
+  2026, the camera that stops with no word, are in the list below until they
+  have). They cover sign-in by text code,
   the route list, record → "Save this video?" → SAVE, record again, delete
   inside the 10 minutes, the two-keys warning, double taps, and the
   failures: the app killed in the
@@ -822,6 +822,27 @@ Not proven until it runs on real phones with real accounts:
   [`GO-LIVE.md`](GO-LIVE.md) lists the six checks, a few minutes each.
 - A TestFlight build on a real phone: installed, signed in, a video recorded and uploaded. The upload to
   App Store Connect is proven (build 1.0.0 (27), Nov 16, 2026); nothing after it is.
+- The camera coming back by itself. On a later visit to the record screen
+  the same day, build 27 on the owner's iPhone showed it black, still
+  offered TAP TO RECORD, and answered every tap with "The video stopped too
+  soon."; BACK and the stop again cured it. The capture session had stopped
+  and the app went on believing it was ready. The app now asks the session
+  each time instead of remembering, starts it again by itself, and a tap
+  that starts nothing says "The camera did not start. Tap again."
+  (`ios/README.md`, "The camera stops with no word"). Why the session
+  stopped on that phone is not known. The fix was written where no iPhone
+  build could be made: its rule is tested, the camera code was run against
+  a stand-in for the phone's capture session (where build 27's code shows
+  the same symptoms and the new code does not), and five UI tests stop the
+  simulator's stand-in camera the same way. It is proven on the phone when
+  the owner records several stops in a row, with the phone locked and the
+  app left in between, and never has to go BACK. One case is still open: a
+  camera that says it is running and shows no picture cannot be told from
+  a working one before a tap, so the record screen may still open black
+  with TAP TO RECORD once. That tap now says "The camera did not start.
+  Tap again." and the camera is stopped and started afresh; the next tap
+  should record. If that happens, the audit trail of that build says which
+  it was.
 - The sign-in steps with the keyboard up. Build 27 on the owner's iPhone had
   its two pinned buttons over half of the number field and all of the line
   under it, and over the foot of the six code boxes: no test and no picture
@@ -835,11 +856,12 @@ Not proven until it runs on real phones with real accounts:
   largest sizes the number is not read back under the field while it is
   typed, to leave the help line and SEND MY CODE their room. All of it was
   written where nothing could build or run it, and its sizes are sums from
-  the app's own numbers, not measurements. It is proven in the simulator once
-  the iOS workflow has built it and the four tests have passed, the three
-  keyboard ones without skipping themselves, on every phone and text size
-  the Sizes jobs run them on; and on a phone once the next TestFlight build
-  has been signed in to.
+  the app's own numbers, not measurements. The iOS workflow has since built
+  it (run 29, Nov 16, 2026): the four tests passed, the three keyboard ones
+  without skipping themselves, and the two pictures with the keyboard up
+  were taken and measured on every iPhone and text size the Sizes jobs run
+  (on the iPad they are skipped on purpose). It is proven on a phone once
+  the next TestFlight build has been signed in to.
 - Sending through Resend, the bounce webhook's payload and push through APNs.
   Each is built to the provider's documentation and has never run with real
   keys.

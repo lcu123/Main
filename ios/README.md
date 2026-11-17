@@ -40,6 +40,8 @@ ios/
     Resources/           Assets (icon, colors), privacy manifest, entitlements.
   ZestVideoTests/        Unit tests that run on the simulator.
   ZestVideoUITests/      End-to-end tests: the real app, driven in the simulator.
+  CameraHarness/         Linux only, not in the Xcode project: the camera service run
+                         against a capture session a script steers (see Tests).
   Scripts/               fake_server.py (the UI tests' server); for the pictures:
                          pick_simulator.py, take_screens.sh, screens_job.sh,
                          contact_sheet.py, is_blank.py and measure_contrast.py.
@@ -194,7 +196,7 @@ No third-party code. Apple frameworks only, system font, one bundled image
 
 ## When the day goes wrong
 
-Three things happen on a real route. For each: nothing is lost, the app is
+Four things happen on a real route. For each: nothing is lost, the app is
 never stuck, and the tech is told in one plain line.
 
 ### A call (or anything else) stops a recording
@@ -240,6 +242,119 @@ how long the clip ran, what ended it and whether it was kept.
 
 Control Centre, the notification shade and a low-battery alert do not stop
 the camera: the clip runs on and the ring keeps true time.
+
+### The camera stops with no word (the black record screen)
+
+Build 27 on the owner's iPhone, the first on a real phone, recorded one
+video and then opened the record screen black: FLIP, the name, the red
+button and TAP TO RECORD as usual, no picture, and "The video stopped too
+soon. Please record it again." on every tap. BACK and the stop again cured
+it. The capture session had stopped. `CameraService` had set its status to
+"ready" when the session started and never asked again: `prepare()`
+returned at once on "ready", the tap found no session and reported a clip
+cut short, and only `shutDown()` (BACK) ever cleared the status. Why the
+session stopped on that phone is not known; no simulator shows it. The app
+no longer depends on knowing.
+
+**"Ready" is never remembered now.** It is worked out from what the
+session says at that moment, by one rule (`CameraRule.settle` in ZestCore,
+tested on Linux), in one place (`CameraService.settle`):
+
+| The session says | The screen | The app, by itself |
+| --- | --- | --- |
+| running | TAP TO RECORD | nothing |
+| stopped, and a screen wants it | STARTING CAMERA, the button waits | starts it again, at once, then twice more 0.7 s apart |
+| still stopped after three tries | "Camera problem. The camera could not start." with TRY AGAIN and BACK | stops trying until TRY AGAIN, or until the app comes back to the front |
+| interrupted by the phone (a call, another app, the app off the screen) | CAMERA OFF, with the line that says why | waits; the phone gives it back, and the camera is started as soon as it does |
+| running, and no screen wants it | (no camera screen is up) | stops it |
+
+The session is asked whenever a screen asks for the camera (`prepare()`:
+on "Is this the stop?", on the way into the record screen, as the record
+screen appears, and when the app comes back to the front), whenever the
+phone says anything about it (interrupted, over, an error, started,
+stopped), after every recording, and once a second for as long as a screen
+wants the camera. So the record screen cannot open on a remembered
+"ready" (the status is corrected before the screen is drawn) and cannot go
+on offering the button over a dead camera for longer than about a second.
+
+**A tap never fails as a clip.** The tap looks at the session once more on
+the camera's own queue, starts it there if it has stopped, and records:
+one tap, one clip, a moment later than usual with GET READY showing. If it
+will not start, or the phone refuses to record on a session that says it
+is running, the tap ends as *never began*: no end beep, one line, "The
+camera did not start. Tap again.", and the camera is brought back. A
+session that says it is running and records nothing all the same is
+stopped and started afresh, which is what BACK and the stop again did:
+after a refusal; after a recording that never began and never answered
+(given up on a few seconds past its time, `giveUpRecording`); and when
+the file output still holds a recording nobody is waiting for (`busy`:
+that recording is ended with the session). "The video stopped too soon."
+is kept for a recording that did begin and was cut.
+
+**Still open: a session that says it is running and shows no picture.**
+Nothing the app can ask tells that from a working camera before a tap, so
+the record screen can still open black with TAP TO RECORD under the
+button. What has changed is what the tap does: the file output refuses,
+or never answers; the tap ends as *never began*; the session is stopped
+and started afresh, which is all that BACK did; and the next tap should
+record. Whether that is what build 27 met on the owner's phone is not
+known. A stopped session and a refusing one gave the same line there, and
+its audit trail cannot tell them apart afterwards: the two differ by a
+third of a second and the trail's times are whole seconds. From this
+build on it can: `record_stop`
+says `not_started` with `refused …` or `silent` in its `camera` line for
+this case, and `stopped` (or a clip with `started at the tap`) for a
+session that had stopped. One wait is left as it was: a recording that
+never begins and never answers is given up on only when the clip's time
+and four seconds more are over, with GET READY showing all that while.
+
+Fixed with it, each found by reading and each able to leave the camera
+off or on wrongly:
+
+- `shutDown()` followed at once by `prepare()` (RECORD AGAIN tapped fast)
+  left STARTING CAMERA up for ever: `prepare()` believed the old "ready"
+  while the stop was still on its way. Every `prepare()` now puts a start
+  behind whatever is on the camera queue.
+- `shutDown()` did not stop an *interrupted* session (it only looked at
+  "running"). The phone starts such a session again by itself when the
+  interruption ends, so the camera and microphone came back on under
+  "Save this video?" or My Route, and the next stop took that old session
+  over without a start of its own. It is stopped now; a session found
+  running with no screen wanting it is stopped; and a new use of the
+  camera always begins with its own start.
+- A runtime error or a short interruption in the middle of a clip left
+  nobody to restart the camera when the clip was handed over. The session
+  is looked at after every recording.
+- "The camera is off…" could stay on the screen over a working camera
+  (the reason was cleared only by one notice). It goes when the session
+  runs. And a session that says it is running is running, whatever else
+  it says: if a phone ever reports "running" and "interrupted" at once
+  (it is not known whether "interrupted" outlives the stop that BACK and
+  "Save this video?" send), the button is lit, nothing says the camera
+  is off, and a tap records.
+- A recording that never began and never answered was given up on with
+  its session left as it was. The next tap found the file output still
+  busy with it and was refused, and so was every tap after it until
+  BACK. Now the give-up stops that session and starts it afresh, and a
+  tap that still finds the file output busy ends the old recording with
+  the session, says "The camera did not start. Tap again." once, and
+  the tap after it records.
+- FLIP could be tapped between the tap on the button and the first frame,
+  ending the clip that was just starting.
+
+`record_stop` in the audit trail says `endedBy: not_started` for a tap
+that started nothing, and carries a `camera` line with what the phone said
+(`stopped`, `refused -11803`, `error -11819 41s ago`, `started at the
+tap`). Nothing else can be read off a tech's phone afterwards, and it is
+how the next case will name its own cause.
+
+None of this has run on a phone. What checked it here: the rule's tests
+(`CameraRuleTests`), and the service itself run on Linux against a
+stand-in for the capture session (`CameraHarness`, under Tests below).
+Build 27's `CameraService.swift`, put through the same stand-in, shows the
+owner's symptoms exactly: "ready" over a stopped session, the same line
+on every tap, cured by BACK. This one does not. On the simulator the UI
+tests stop the stand-in camera's session the same way.
 
 ### The office changes the route
 
@@ -348,7 +463,7 @@ in that file).
 cd ios/ZestCore && swift test
 ```
 
-runs the logic tests anywhere, Linux included (295 tests). Among them are
+runs the logic tests anywhere, Linux included (311 tests). Among them are
 rules about the app's own source, checked by reading the files
 (`AppSourceRulesTests`): no photo-library key or call, no share sheet,
 Apple frameworks only, and every pair of colours the screens use has the
@@ -361,6 +476,34 @@ unsaved clip carries what it needs to be checked and sent on a later day
 (`DraftStoreTests`), and the settings of the background upload session, so
 a later edit cannot quietly make uploads wait for Wi-Fi
 (`UploadSessionTests`).
+
+```bash
+bash ios/CameraHarness/run.sh
+```
+
+runs the camera service on Linux (CI job `camera`; about a minute and a
+half). The app target only compiles on a Mac and the simulator has no
+camera, so the part of `Services/CameraService.swift` that a phone runs
+was run by nothing until a phone did, and the first one found the black
+record screen. Here that file is compiled unchanged against small
+stand-ins for the pieces of AVFoundation and UIKit it uses
+(`CameraHarness/Sources/AVFoundation`, `.../UIKit`), with a capture
+session and a file output a script steers, and played through what a
+phone can do: the session stops with no word (as the record screen opens,
+while it is open, at the tap), will not start, is interrupted as it
+starts or without a notice, is left interrupted at BACK and started again
+by the phone, says it is running and interrupted at once, fails with a
+runtime error before or during a clip, the file output refuses to record
+(on a running session, as a call takes the camera, on a full phone),
+never answers, or never ends a clip it began, start and stop are asked
+for on top of each other. 30 scenarios as a phone compiles the file, and
+13 with its simulator-only code switched on, where the stand-in recorder
+is driven the way the UI tests drive it (so the camera's side of a UI
+test can be checked in seconds, without a Mac). It is **not**
+AVFoundation: it shows what the app does when a session behaves in a
+given way, never that a real session does. A name used in
+`CameraService.swift` that the stand-ins lack stops the job with a
+compile error: add the name to the stand-in.
 
 ## UI tests
 
@@ -430,7 +573,17 @@ Launched with `-ZestUITest 1`, the app is the real app with these differences:
    RECORD AGAIN") and any tap the double-tap shield kept. A failure report
    lists them under "the app's screens", so a tap that did nothing can be
    told apart: the app moved, the button felt it and nothing happened,
-   the shield kept it, or the touch never reached the app.
+   the shield kept it, or the touch never reached the app. Each change of
+   the camera's status is posted the same way ("camera starting to ready").
+8. The stand-in camera has a stand-in "session" too, and everything that
+   asks it, starts it and decides what the screen says is the code a phone
+   runs. `ZEST_TEST_CAMERA_STOPS` stops that session behind the screen's
+   back, once per launch, with no notice and the status still "ready":
+   `open` on the way into the record screen, `tap` as the record button is
+   tapped, or a number of seconds after the record screen opened.
+   `ZEST_TEST_CAMERA_RESTART_SECONDS` makes each later start take that
+   long, and `ZEST_TEST_CAMERA_DEAD_SECONDS` makes starts fail for that
+   long.
 
 `-ZestUITestReset 1` wipes what the app has stored. With `ZEST_TEST_TOKEN` in
 the environment that clean install starts already signed in (the fake server
@@ -456,7 +609,7 @@ The two in `ScreensUITests` also keep a picture of the step as they found
 it, in the pass's reports (`keyboard-up.<screen>.<device>.info.jpg`), and
 a test that skips keeps one of the screen with no keyboard on it.
 
-**What is covered** (103 tests):
+**What is covered** (108 tests):
 
 | Class | What it proves |
 | --- | --- |
@@ -464,7 +617,7 @@ a test that skips keeps one of the screen with no keyboard on it.
 | `RouteUITests` | header counts, nearest stop first, both tabs, locked stop, WRONG STOP, the far-away warning |
 | `RecordUITests` | record → SAVE → one register, the whole file once, one complete; FLIP, BACK, ending early; RECORD AGAIN; the recommend switch; the two-keys warning both ways; another customer's name said where the place and the time fit still asks ("It sounded like…"), a forgotten name at the right house does not; change and delete inside ten minutes; not-on-my-list (SENT TO OFFICE, no promise of an email, deletable for ten minutes and not after); double taps; and that the audit events (record, retake, override) really reach the server for the right customer |
 | `KillUITests` | the app killed mid-recording, on review, mid-upload, before "complete" is answered, and right after SAVE: after it is started again there is exactly one video on the server |
-| `InterruptionUITests` | a call two seconds into a clip: one line on the camera screen, nothing red left, the button waits and comes back by itself, nothing sent, RECORD works again and one video arrives; a call nine seconds in: "Save this video?" with "A call or alarm stopped this video early.", SAVE sends it once, and `record_stop` says `endedBy: call_or_alarm`; RECORD AGAIN while the call is still on waits for the camera and then records; another app taking the camera is said exactly, with no call blamed; the home button mid-clip keeps what was filmed; a camera that never reports the end is ended by the app |
+| `InterruptionUITests` | a call two seconds into a clip: one line on the camera screen, nothing red left, the button waits and comes back by itself, nothing sent, RECORD works again and one video arrives; a call nine seconds in: "Save this video?" with "A call or alarm stopped this video early.", SAVE sends it once, and `record_stop` says `endedBy: call_or_alarm`; RECORD AGAIN while the call is still on waits for the camera and then records; another app taking the camera is said exactly, with no call blamed; the home button mid-clip keeps what was filmed; a camera that never reports the end is ended by the app. And the black record screen: a camera that stopped before the record screen opened is not offered (STARTING CAMERA, the button waits), comes back with no touch, and then one tap records; the same when it stops while the screen is open; a tap on a camera that stops at that very moment still records, and `record_stop` says `camera: started at the tap`; a tap when it will not start says "The camera did not start. Tap again.", shows nothing red, never says a video "stopped too soon", logs `endedBy: not_started`, and the next tap records; a camera that will not start at all gets its own page with TRY AGAIN, which brings it back |
 | `RouteDayUITests` | the office changes the route: a stop cancelled while it is open says so in one line, still records, and its video is sent as filmed (the customer he picked, the list's appointments) and taken; the same from a stale list with no signal; against a server that refuses the stop the same clip goes to the office (two register calls, one upload, SENT TO OFFICE, no more calls after); the list follows a stop cancelled, added and put back, once with no touch, and the numbers follow; a filmed stop taken off and put back keeps its video; a video the server holds for the office (`withOffice`) reads SENT TO OFFICE with "The office is looking at this video.", offers no RECORD AGAIN or DELETE, and reads SENT ✓ again once the stop is back; RECORD AGAIN after the stop left the list replaces the video for the same customer; a video the server refuses outright stays on the phone, says to call the office, and goes when the server takes it; and stops filmed out of order each go to their own customer with the numbers unmoved. No call in any of them names a customer the tech did not pick |
 | `NetworkUITests` | 500s, no server, an expired upload address, "not uploaded", signed out by the server, update required, a stop locked by the server, starting with no signal; "Do not delete this app" while a video waits, gone once it is sent |
 | `LongDayUITests` | the brief's own number: twenty videos saved in a row with no server, all twenty arriving once each and in order when it is back, the phone left holding no files, and My Videos saying WAITING, never SENT, until each one is really there. What it may cost: with no signal only the oldest video is tried, again after 5, 10, 20, 40... seconds, and those tries reach nothing; once the signal is back each video is one register, one upload, one complete, and nothing is asked twice |
@@ -551,6 +704,12 @@ transfer service works for a signed build. It cannot turn the run red.
   recorder; that iOS sends the notices the app listens for, with the
   reasons it expects, that the cut file plays, and that the camera
   restarts when the call ends are all untested until a real phone is rung;
+- why a real capture session stops, or says it is running and shows
+  nothing. The tests stop the stand-in's session; what the app does about
+  it is real, what iOS did to cause it on the owner's phone is not known.
+  A session that says it is running and gives no picture cannot be told
+  from a good one before a tap: the tap that the phone refuses is what
+  gets it stopped and started afresh;
 - saving a clip while the phone is locked or a call has the screen (the
   export runs in background time iOS may cut short);
 - AirPods, CarPlay or a headset joining or leaving in the middle of a clip.
@@ -564,6 +723,7 @@ Those need a real phone.
 | Job | Runs on | Does |
 | --- | --- | --- |
 | `core` | Linux | `swift test` for ZestCore |
+| `camera` | Linux | `CameraHarness/run.sh`: the camera service against a capture session a script steers. Not a gate for `testflight` (it keeps time, and an upload must not wait on that) |
 | `app` | macOS | generates the project, builds for an iPhone simulator, runs the unit tests |
 | `screens` | macOS | takes a picture of every screen in the simulator; download the `screens` artifact |
 | `ui-tests` | macOS, jobs `a`, `b`, `d` and `e` side by side (plus `c`, informational) | starts the fake server, runs the UI tests in the simulator; on a failure, the log names the test, the assertion and what the server saw |

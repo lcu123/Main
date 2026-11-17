@@ -892,7 +892,14 @@ final class AppModel: ObservableObject {
 
     /// One tap (or a volume button): start the clip.
     func startRecording() {
-        guard recordPhase == .idle, camera.status == .ready, let target else { return }
+        guard recordPhase == .idle, let target else { return }
+        guard camera.status == .ready else {
+            // A volume button while the camera is not ready (the button on
+            // the screen waits then). There is nothing to record with yet:
+            // the camera is asked for again, and nothing is said.
+            camera.prepare()
+            return
+        }
         // The same check once more at the button: the phone may have filled
         // up while the camera was open (or a clip that did not save is
         // being recorded again).
@@ -957,6 +964,30 @@ final class AppModel: ObservableObject {
         // Handed over once only (the camera, or the watch for a silent one).
         guard recordingID == pending.id else { return }
         recordingID = nil
+
+        // The tap started nothing: the camera was not running and could
+        // not be started in time, or the phone would not record. There is
+        // no clip, so nothing "stopped too soon" and nothing is saved. The
+        // camera is already being brought back (see `CameraService`); one
+        // plain line says to tap again.
+        if let why = end.neverBegan {
+            Files.remove(Files.video(pending.movieFileName))
+            draftStore.clearPending()
+            recordPhase = .idle
+            Haptics.warning()
+            events.log(
+                .recordStop, videoId: pending.id, customerId: pending.target.customerId,
+                detail: CameraRule.notStartedDetail(why: why)
+            )
+            if route == .record {
+                recordProblem = CameraRule.didNotStartLine(away: camera.away)
+            } else if route == .today {
+                // He went BACK before the camera answered: nobody wants it.
+                camera.shutDown()
+            }
+            return
+        }
+
         recordPhase = .saving
         Haptics.thump()
         Sounds.endRecording()
@@ -985,7 +1016,7 @@ final class AppModel: ObservableObject {
 
         let made = await makeDraft(from: ended)
         recordPhase = .idle
-        settle(made, pending: ended)
+        settle(made, pending: ended, camera: end.camera)
     }
 
     private enum Made {
@@ -1053,7 +1084,9 @@ final class AppModel: ObservableObject {
     /// `RecordingRule`): "Save this video?", with a line if it was cut
     /// short; or, cut too short to be worth sending, one line on the
     /// camera screen and the record button again.
-    private func settle(_ made: Made, pending: PendingRecording) {
+    /// - Parameter camera: what the phone's camera said about this clip, if
+    ///   it said anything; it goes into the audit trail with `record_stop`.
+    private func settle(_ made: Made, pending: PendingRecording, camera said: String? = nil) {
         let customerId = pending.target.customerId
         switch made {
         case .draft(_, let seconds):
@@ -1061,7 +1094,7 @@ final class AppModel: ObservableObject {
             case .review:
                 events.log(
                     .recordStop, videoId: pending.id, customerId: customerId,
-                    detail: RecordingRule.auditDetail(seconds: seconds, cut: pending.cut, kept: true)
+                    detail: RecordingRule.auditDetail(seconds: seconds, cut: pending.cut, kept: true, camera: said)
                 )
                 // "Save this video?" straight away, not a card to go and
                 // find. (Unless another screen is asking something.)
@@ -1072,15 +1105,17 @@ final class AppModel: ObservableObject {
             case .recordAgain(let message):
                 events.log(
                     .recordStop, videoId: pending.id, customerId: customerId,
-                    detail: RecordingRule.auditDetail(seconds: seconds, cut: pending.cut, kept: false)
+                    detail: RecordingRule.auditDetail(seconds: seconds, cut: pending.cut, kept: false, camera: said)
                 )
                 discardDraft(log: false)
                 say(message)
             }
         case .nothing:
+            // A recording that did begin and left nothing usable. (A tap
+            // that started nothing never gets here: see `finishRecording`.)
             events.log(
                 .recordStop, videoId: pending.id, customerId: customerId,
-                detail: RecordingRule.auditDetail(seconds: 0, cut: pending.cut ?? .unknown, kept: false)
+                detail: RecordingRule.auditDetail(seconds: 0, cut: pending.cut ?? .unknown, kept: false, camera: said)
             )
             say(pending.cut.map { RecordingRule.tooShort($0) } ?? RecordingRule.notSaved)
         case .keptForLater:

@@ -146,6 +146,9 @@ Find what the screen says, then do what is next to it.
 | Is this the right stop? | Right house and right customer: tap **SAVE ANYWAY**. Wrong stop: tap **PICK THE RIGHT STOP**. |
 | You look far from this address | At the right house: tap **YES, STILL RIGHT**. |
 | Camera is turned off | Tap **OPEN SETTINGS**. Switch on Camera and Microphone. Go back and tap the stop again. |
+| STARTING CAMERA or CAMERA OFF under the red button | Wait. The camera comes back by itself. |
+| The camera did not start. Tap again. | Tap the red button again. |
+| Camera problem | Tap **TRY AGAIN**. Still there: tap **BACK** and tap the stop again. Then call the office. |
 | WAITING TO SEND | Nothing. It sends when you have signal. Open the app and leave it open a minute. |
 | SENT TO OFFICE | Nothing. Your video is safe and the office has it. |
 | 1 video not saved yet | Tap **FINISH IT**, then **SAVE**. |

@@ -469,10 +469,11 @@ class State:
                 lines.append("the office changed the route after request %d (%.1fs): %s" % (
                     change["after"], change["t"], json.dumps(change["change"], sort_keys=True)))
             # Where the app went (each change of screen, each big button a
-            # finger came down on, and any tap its double-tap shield kept),
-            # apart from what it said of its uploads.
+            # finger came down on, any tap its double-tap shield kept, and
+            # what the camera said: "camera starting to ready"), apart from
+            # what it said of its uploads.
             def of_screens(note):
-                return note["note"].startswith(("screen ", "shield", "press "))
+                return note["note"].startswith(("screen ", "shield", "press ", "camera"))
             screens = [note for note in self.notes if of_screens(note)]
             uploads = [note for note in self.notes if not of_screens(note)]
             if screens:

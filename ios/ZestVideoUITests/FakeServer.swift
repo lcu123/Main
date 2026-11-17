@@ -246,9 +246,12 @@ struct ServerState {
     /// after its screen appeared"), and screens that "appeared" twice.
     var shieldNotes: [String] { notes.filter { $0.hasPrefix("shield") } }
 
-    /// What the app said about its uploads only.
+    /// What the app said about its uploads only. (Not its screens, its
+    /// buttons, or what its camera said: "camera starting to ready".)
     var uploadNotes: [String] {
-        notes.filter { !$0.hasPrefix("screen ") && !$0.hasPrefix("shield") && !$0.hasPrefix("press ") }
+        notes.filter {
+            !$0.hasPrefix("screen ") && !$0.hasPrefix("shield") && !$0.hasPrefix("press ") && !$0.hasPrefix("camera")
+        }
     }
 
     /// The numbers the app posted for the performance tests, in order. Each

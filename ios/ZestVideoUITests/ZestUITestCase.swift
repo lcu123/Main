@@ -57,6 +57,17 @@ class ZestUITestCase: XCTestCase {
     /// The stand-in camera never says a recording is over (it neither
     /// stops at the limit nor answers the ring): the app has to end it.
     var silentCamera = false
+    /// The stand-in camera's session stops behind the screen's back, once
+    /// per launch, with no notice and with the app still believing it is
+    /// ready: "open" on the way into the record screen, "tap" at the moment
+    /// the record button is tapped, or a number of seconds after the record
+    /// screen opened. (What a real session did on the first real phone.)
+    var cameraStops: String?
+    /// After that stop, each start of the camera takes this long, as a
+    /// real one can: long enough to look at the screen while it waits.
+    var cameraRestartSeconds: Double?
+    /// After that stop, the camera will not start at all for this long.
+    var cameraDeadSeconds: Double?
     /// Answer "Don't Allow" to the phone's questions instead of "Allow".
     /// (One test refuses location; it puts this back in its tear-down.)
     static var refusing = false
@@ -264,6 +275,15 @@ class ZestUITestCase: XCTestCase {
         }
         if silentCamera {
             environment["ZEST_TEST_SILENT_CAMERA"] = "1"
+        }
+        if let stops = cameraStops {
+            environment["ZEST_TEST_CAMERA_STOPS"] = stops
+            if let seconds = cameraRestartSeconds {
+                environment["ZEST_TEST_CAMERA_RESTART_SECONDS"] = String(seconds)
+            }
+            if let seconds = cameraDeadSeconds {
+                environment["ZEST_TEST_CAMERA_DEAD_SECONDS"] = String(seconds)
+            }
         }
         // The token is only ever handed over together with a reset: a
         // restart must show what the app itself kept.

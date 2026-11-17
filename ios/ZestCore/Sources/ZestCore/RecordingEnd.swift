@@ -152,11 +152,18 @@ public enum RecordingRule {
 
     /// What `record_stop` says in its `detail`: how long the clip ran, what
     /// ended it and whether it was kept.
-    public static func auditDetail(seconds: Double, cut: RecordingCut?, kept: Bool) -> [String: String] {
+    /// - Parameter camera: what the phone's camera said about this clip,
+    ///   when it said anything (its own error number, or that it had to be
+    ///   started again at the tap). Nothing else can be read from a tech's
+    ///   phone afterwards. Left out when there is nothing to say.
+    public static func auditDetail(seconds: Double, cut: RecordingCut?, kept: Bool, camera: String? = nil) -> [String: String] {
         var detail = ["seconds": String(format: "%.1f", max(0, seconds))]
         if let cut {
             detail["endedBy"] = cut.rawValue
             detail["kept"] = kept ? "yes" : "no"
+        }
+        if let camera, !camera.isEmpty {
+            detail["camera"] = camera
         }
         return detail
     }
