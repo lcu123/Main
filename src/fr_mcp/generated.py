@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Callable
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .client import FieldRoutesClient, FieldRoutesError, is_read_action
+from .client import FieldRoutesClient, FieldRoutesError, is_read_action, write_block_reason
 
 _JSON_TYPES: dict[str, type] = {
     "integer": int,
@@ -134,6 +134,9 @@ def _register_one(
             raise ToolError(f"{tool_name}: delete actions are disabled (set FR_ALLOW_DELETE=1 to enable).")
         if is_charge and str(kwargs.get("doCharge")) in ("1", "true", "True") and not allow_charges():
             raise ToolError(f"{tool_name}: real card charges are disabled (set FR_ALLOW_CHARGES=1 to enable).")
+        blocked = write_block_reason(entity, action) if is_write else None
+        if blocked:
+            raise ToolError(f"{tool_name}: refused by this deployment -- {blocked}. Do this in FieldRoutes instead.")
         params = {k: v for k, v in kwargs.items() if k in param_names and v is not None}
         if is_write and resolve_write_customer is not None and check_customer_allowed is not None:
             check_customer_allowed(tool_name, await resolve_write_customer(entity, params))

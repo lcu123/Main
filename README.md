@@ -63,9 +63,9 @@ Optionally, set `FR_EXPOSE_ENTITIES` or `FR_EXPOSE_ALL` to add one typed tool pe
 The MCP URL is the password. Anyone holding it has the access below, so treat it like one.
 
 1. **Secret path.** The endpoint is `https://<host>/<MCP_PATH_SECRET>/mcp`. Everything else 404s. claude.ai's connector UI can't send headers, which is why the secret lives in the path.
-2. **Bearer token** (`MCP_BEARER_TOKEN`), optional, for clients that can send headers.
+2. **Bearer token** (`MCP_BEARER_TOKEN`), optional, for clients that can send headers. Compared in constant time; comma-separate two tokens to rotate without downtime. Every response is sent `Cache-Control: no-store`, and request bodies over `MCP_MAX_BODY_BYTES` (1 MiB) are refused.
 3. **Least-privilege API key.** Make a dedicated FieldRoutes key for this server. Don't grant delete or payment processing.
-4. **Kill switches.** `FR_WRITES=off` makes the deployment read-only. Deletes need `FR_ALLOW_DELETE=1`. Real card charges need `FR_ALLOW_CHARGES=1`. Both stay off.
+4. **Kill switches.** `FR_WRITES=off` makes the deployment read-only. Three families of risky writes stay blocked unless their own switch is `1`: deletes and replace-all actions (`FR_ALLOW_DELETE`), every payment and payment-profile write including refunds (`FR_ALLOW_CHARGES`), and staff-account writes (`FR_ALLOW_STAFF_ADMIN`). `FR_WRITE_ENDPOINTS` can narrow a deployment further to a list of `entity/action` pairs. All of this is enforced inside the FieldRoutes client, so curated tools, `call`, generated tools and the video server obey it alike.
 5. **Write allowlist.** `FR_WRITE_CUSTOMER_IDS=10000` lets writes through only for those customers; the server resolves appointment, subscription, note and task IDs back to their customer and refuses anything it can't map. This is how you test full write capability against the live office without touching a real customer.
 6. **Confirmation.** Tools that cancel, complete, freeze a subscription or overwrite Red Notes tell Claude to confirm with you first.
 7. **Attribution.** Every write carries `FR_DEFAULT_EMPLOYEE_ID`, so bot activity is visible in FieldRoutes' changelog.
@@ -126,11 +126,12 @@ When all ten pass, remove `FR_WRITE_CUSTOMER_IDS` and the server is live.
 | `FR_DEFAULT_TASK_CATEGORY_ID` | Task Category for `create_task` when the call doesn't give one (FieldRoutes requires one; `lookups(kind="task_categories")` lists the office's). |
 | `FR_WRITES` | `on` (default) or `off`. |
 | `FR_WRITE_CUSTOMER_IDS` | Comma-separated customer IDs writes are allowed for. Unset = all. |
-| `FR_ALLOW_DELETE`, `FR_ALLOW_CHARGES` | Unlock deletes and real card charges. Leave at 0. |
+| `FR_ALLOW_DELETE`, `FR_ALLOW_CHARGES`, `FR_ALLOW_STAFF_ADMIN` | Unlock deletes and replace-all, payment writes, staff-account writes. Leave at 0. |
+| `FR_WRITE_ENDPOINTS` | Optional list of the only `entity/action` writes this deployment may send. |
 | `FR_DAILY_READ_LIMIT`, `FR_DAILY_WRITE_LIMIT` | Quota the server holds itself to (default 3000 each). |
 | `FR_EXPOSE_ENTITIES`, `FR_EXPOSE_ALL`, `FR_EXPOSE_VERBOSE` | Generated per-endpoint tools. |
 | `MCP_TRANSPORT` | `http` for Railway; unset for stdio. |
-| `PORT`, `MCP_PATH_SECRET`, `MCP_BEARER_TOKEN` | HTTP hosting and access control. |
+| `PORT`, `MCP_PATH_SECRET`, `MCP_BEARER_TOKEN`, `MCP_MAX_BODY_BYTES` | HTTP hosting and access control. |
 | `TZ` | Office time zone, e.g. `America/Los_Angeles`. |
 
 ## Development

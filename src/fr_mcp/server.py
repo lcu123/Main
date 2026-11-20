@@ -9,6 +9,7 @@ tool returns full records.
 from __future__ import annotations
 
 import json
+import hmac
 import os
 import sys
 from datetime import date, timedelta
@@ -23,7 +24,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
 from . import __version__
-from .client import FieldRoutesClient, FieldRoutesError
+from .client import FieldRoutesClient, FieldRoutesError, write_block_reason
 from .generated import is_read_action, register_generated_tools
 
 SPEC: dict[str, Any] = json.loads(resources.files("fr_mcp").joinpath("fieldroutes_spec.json").read_text())
@@ -335,6 +336,8 @@ async def _resolve_write_customer(entity: str, params: dict[str, Any]) -> int | 
     and resolve to None -- which the allowlist then treats as unresolved and
     refuses, not as "safe to skip".
     """
+    if _write_allowlist() is None:  # nothing to check against, so don't spend a read finding out
+        return None
     for key in ("customerID", "customerIDs"):
         if key in params:
             value = params[key]
@@ -632,13 +635,16 @@ async def get(entity: str, ids: list[int], include: dict[str, Any] | None = None
 
 @_tool
 async def call(entity: str, action: str, params: dict[str, Any] | None = None) -> str:
-    """Call any FieldRoutes endpoint directly (see describe_endpoint for params). Writes need FR_WRITES=on; delete needs FR_ALLOW_DELETE=1; payment/create with doCharge=1 needs FR_ALLOW_CHARGES=1. Confirm with the user before anything that cancels, charges, or deletes."""
+    """Call any FieldRoutes endpoint directly (see describe_endpoint for params). Writes need FR_WRITES=on; deletes and replace-all need FR_ALLOW_DELETE, payment writes FR_ALLOW_CHARGES, staff-account writes FR_ALLOW_STAFF_ADMIN. Confirm with the user before anything that cancels, charges, or deletes."""
     key = f"{entity}/{action}"
     if key not in SPEC["endpoints"]:
         raise ToolError(f"Unknown endpoint {key!r}; see list_endpoints.")
     params = dict(params or {})
     if not is_read_action(action):
         _require_writes("call")
+        blocked = write_block_reason(entity, action)
+        if blocked:  # refuse before the customer lookup below spends a read on a doomed write
+            raise ToolError(f"call({key}): refused by this deployment -- {blocked}. Do this in FieldRoutes instead.")
         _require_customer_allowed(f"call({key})", await _resolve_write_customer(entity, params))
     if action == "delete" and not _allow_delete():
         raise ToolError("call: delete actions are disabled (set FR_ALLOW_DELETE=1 to enable).")
@@ -1630,20 +1636,118 @@ def _mcp_path() -> str:
     return f"/{secret}/mcp" if secret else "/mcp"
 
 
-class _BearerAuth:
-    """Optional second lock: require `Authorization: Bearer <MCP_BEARER_TOKEN>` on everything but /healthz."""
+# Sent on every HTTP response. Tool results carry customer names, addresses and phone
+# numbers, so nothing on the way (a proxy, a browser) may keep a copy.
+_SECURITY_HEADERS = (
+    (b"cache-control", b"no-store"),
+    (b"x-content-type-options", b"nosniff"),
+    (b"referrer-policy", b"no-referrer"),
+    (b"x-frame-options", b"DENY"),
+)
+_DEFAULT_MAX_BODY = 1_048_576  # an MCP request is a few KB of JSON; 1 MiB is generous
 
-    def __init__(self, app: Any, token: str):
+
+def _bearer_tokens() -> list[bytes]:
+    """`MCP_BEARER_TOKEN`, comma-separated: two values at once let a token be rotated without
+    cutting anyone off (add the new one, move clients over, remove the old one)."""
+    raw = os.environ.get("MCP_BEARER_TOKEN", "")
+    return [t.strip().encode() for t in raw.split(",") if t.strip()]
+
+
+def _max_body() -> int:
+    try:
+        value = int(os.environ.get("MCP_MAX_BODY_BYTES", "") or _DEFAULT_MAX_BODY)
+    except ValueError:
+        return _DEFAULT_MAX_BODY
+    return value if value > 0 else _DEFAULT_MAX_BODY
+
+
+class _Hardening:
+    """Outermost ASGI layer for the HTTP transport.
+
+    - Bearer check (when `MCP_BEARER_TOKEN` is set) on everything but /healthz, compared in
+      constant time on the raw header bytes: no timing signal, and a non-UTF-8 header gets a
+      401 instead of crashing into a 500.
+    - Request bodies over `MCP_MAX_BODY_BYTES` are refused with 413 before the app sees them.
+    - Every response gets `_SECURITY_HEADERS`.
+    """
+
+    def __init__(self, app: Any, tokens: list[bytes], max_body: int):
         self.app = app
-        self.token = token
+        self.tokens = tokens
+        self.max_body = max_body
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope["type"] == "http" and scope.get("path") != "/healthz":
-            headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers") or []}
-            if headers.get("authorization") != f"Bearer {self.token}":
-                await JSONResponse({"error": "unauthorized"}, status_code=401)(scope, receive, send)
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_secure(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                present = {k.lower() for k, _ in message.get("headers") or []}
+                message = {**message, "headers": [*(message.get("headers") or []),
+                                                  *(h for h in _SECURITY_HEADERS if h[0] not in present)]}
+            await send(message)
+
+        if self.tokens and scope.get("path") != "/healthz" and not self._authorized(scope):
+            await JSONResponse(
+                {"error": "unauthorized"}, status_code=401, headers={"WWW-Authenticate": "Bearer"}
+            )(scope, receive, send_secure)
+            return
+
+        declared = self._content_length(scope)
+        if declared is not None and declared > self.max_body:
+            await JSONResponse({"error": "request too large"}, status_code=413)(scope, receive, send_secure)
+            return
+        # Read the body up front (bounded), so a chunked upload with no Content-Length can't
+        # stream past the cap either, then hand the app a receive that replays it.
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                break  # client went away; let the app see that on its own receive
+            size += len(message.get("body", b""))
+            if size > self.max_body:
+                await JSONResponse({"error": "request too large"}, status_code=413)(scope, receive, send_secure)
                 return
-        await self.app(scope, receive, send)
+            chunks.append(message.get("body", b""))
+            if not message.get("more_body"):
+                break
+        replayed = False
+
+        async def replay() -> dict[str, Any]:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": b"".join(chunks), "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay, send_secure)
+
+    def _authorized(self, scope: dict[str, Any]) -> bool:
+        presented = b""
+        for name, value in scope.get("headers") or []:
+            if name.lower() == b"authorization":
+                presented = value
+                break
+        scheme, _, token = presented.partition(b" ")
+        if scheme.lower() != b"bearer" or not token:
+            return False
+        ok = False
+        for expected in self.tokens:  # check every one so the time taken doesn't say which matched
+            ok |= hmac.compare_digest(token.strip(), expected)
+        return ok
+
+    @staticmethod
+    def _content_length(scope: dict[str, Any]) -> int | None:
+        for name, value in scope.get("headers") or []:
+            if name.lower() == b"content-length":
+                try:
+                    return int(value)
+                except ValueError:
+                    return None
+        return None
 
 
 @mcp.custom_route("/healthz", methods=["GET"])
@@ -1659,8 +1763,7 @@ def build_http_app() -> Any:
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
         host="0.0.0.0",
     )
-    token = os.environ.get("MCP_BEARER_TOKEN", "").strip()
-    return _BearerAuth(app, token) if token else app
+    return _Hardening(app, _bearer_tokens(), _max_body())
 
 
 def main() -> None:

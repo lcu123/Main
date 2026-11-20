@@ -295,8 +295,14 @@ async def test_generic_call_guards(fake: FakeFR, monkeypatch: pytest.MonkeyPatch
         await server.call("note", "delete", {"noteID": 800})
     with pytest.raises(ToolError, match="FR_ALLOW_CHARGES"):
         await server.call("payment", "create", {"customerID": 1, "amount": 10, "doCharge": 1, "paymentMethod": 3})
+    # doCharge=0 records a "paid" payment with no money moving, which lowers the customer's
+    # balance: it's a payment write too, so it needs the same switch (audit finding W2).
+    with pytest.raises(ToolError, match="FR_ALLOW_CHARGES"):
+        await server.call("payment", "create", {"customerID": 1, "amount": 10, "doCharge": 0, "paymentMethod": 2})
+    monkeypatch.setenv("FR_ALLOW_CHARGES", "1")
     await server.call("payment", "create", {"customerID": 1, "amount": 10, "doCharge": 0, "paymentMethod": 2})
     assert _last(fake, "payment", "create").one("doCharge") == "0"
+    monkeypatch.delenv("FR_ALLOW_CHARGES")
 
     monkeypatch.setenv("FR_ALLOW_DELETE", "1")
     out = loads(await server.call("note", "delete", {"noteID": 800}))

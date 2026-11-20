@@ -79,6 +79,60 @@ class FieldRoutesError(Exception):
         self.response = response
 
 
+class WriteNotAllowed(FieldRoutesError):
+    """A write this deployment refuses to send at all (see `write_block_reason`). Raised before
+    anything goes to FieldRoutes, so no quota is spent and nothing needs looking up afterwards."""
+
+
+# Writes that move money or touch staff logins. Nothing in routing, quoting or the video
+# server needs them, and none can be undone through the API, so each family stays off unless
+# its own switch is set on that deployment.
+_MONEY_ENTITIES = frozenset({"payment", "paymentProfile"})
+_MONEY_ENDPOINTS = frozenset({"customer/createPaymentProfile", "customer/updatePaymentProfile"})
+_STAFF_ENTITIES = frozenset({"employee", "group", "skill"})
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def write_endpoint_allowlist() -> frozenset[str] | None:
+    """`FR_WRITE_ENDPOINTS`: comma-separated `entity/action` pairs. When set, every other write
+    is refused. Unset or blank means no list (every write not blocked below may go)."""
+    raw = os.environ.get("FR_WRITE_ENDPOINTS", "")
+    items = frozenset(x.strip() for x in raw.split(",") if x.strip())
+    return items or None
+
+
+def write_block_reason(entity: str, action: str) -> str | None:
+    """Why this deployment refuses `entity/action` as a write, or None if it may be sent.
+
+    Checked inside `FieldRoutesClient.call()`, which every curated tool, the generic `call`
+    tool, generated tools and the video server go through, so no path can get around it.
+    Matches action *families*, not exact names: the old exact-name checks let `deleteAddOn`,
+    `setAddOns` (delete-all-and-replace) and `payment/createRefund` straight through."""
+    if is_read_action(action):
+        return None
+    key = f"{entity}/{action}"
+    allow = write_endpoint_allowlist()
+    if allow is not None and key not in allow:
+        return f"{key} is not in this deployment's FR_WRITE_ENDPOINTS list"
+    if (action.startswith("delete") or (action.startswith("set") and action.endswith("AddOns"))) and not _env_flag(
+        "FR_ALLOW_DELETE"
+    ):
+        return f"{key} deletes or replaces data, and deletes are off (FR_ALLOW_DELETE)"
+    if (entity in _MONEY_ENTITIES or key in _MONEY_ENDPOINTS) and not _env_flag("FR_ALLOW_CHARGES"):
+        return f"{key} moves money or payment details, and payment writes are off (FR_ALLOW_CHARGES)"
+    if entity in _STAFF_ENTITIES and not _env_flag("FR_ALLOW_STAFF_ADMIN"):
+        return f"{key} changes staff accounts, and staff admin is off (FR_ALLOW_STAFF_ADMIN)"
+    return None
+
+
+# Transport errors raised before a single byte of the request left this machine. Only these
+# are safe to resend for a write; after any other failure FieldRoutes may already have saved it.
+_NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+
 class RateLimiter:
     """Sliding-window limiter: at most `limit` calls in any rolling `window` seconds.
 
@@ -311,6 +365,13 @@ class FieldRoutesClient:
         first: a timeout or a 5xx then raises at once instead of sending it again.
         """
         is_read = is_read_action(action)
+        blocked = write_block_reason(entity, action)
+        if blocked:
+            raise WriteNotAllowed(
+                f"{entity}/{action}: refused by this deployment -- {blocked}. Do this in FieldRoutes instead.",
+                entity=entity,
+                action=action,
+            )
         self.usage.check(is_read)
         body_params = dict(params or {})
         body_params["authenticationKey"] = self.auth_key
@@ -324,6 +385,11 @@ class FieldRoutesClient:
         url = f"{self.base_url}/{entity}/{action}"
         last_exc: Exception | None = None
         tries = self.max_retries if attempts is None else max(1, attempts)
+        # A write is resent only when the earlier try provably never left (`_NOT_SENT`). A
+        # timeout or 5xx can come back after FieldRoutes saved it, and a second customer,
+        # note or contract email can't be deleted through the API. An explicit `attempts`
+        # keeps the old behaviour for callers that have decided for themselves.
+        careful = not is_read and attempts is None
 
         for attempt in range(tries):
             await self.rate_limiter.acquire()
@@ -333,6 +399,14 @@ class FieldRoutesClient:
                 )
             except httpx.TransportError as exc:
                 last_exc = exc
+                if careful and not isinstance(exc, _NOT_SENT):
+                    raise FieldRoutesError(
+                        f"{entity}/{action}: OUTCOME UNKNOWN -- the connection failed after the request "
+                        f"was sent ({type(exc).__name__}), so FieldRoutes may have saved it. Look the "
+                        f"record up before trying again.",
+                        entity=entity,
+                        action=action,
+                    ) from exc
                 if attempt + 1 < tries:
                     await asyncio.sleep(0.5 * (2**attempt))
                     continue
@@ -340,6 +414,13 @@ class FieldRoutesClient:
                     f"{entity}/{action}: transport error: {exc}", entity=entity, action=action
                 ) from exc
 
+            if resp.status_code >= 500 and careful:
+                raise FieldRoutesError(
+                    f"{entity}/{action}: OUTCOME UNKNOWN -- FieldRoutes answered HTTP {resp.status_code}, "
+                    f"which can happen after a write was saved. Look the record up before trying again.",
+                    entity=entity,
+                    action=action,
+                )
             if resp.status_code >= 500 and attempt + 1 < tries:
                 await asyncio.sleep(0.5 * (2**attempt))
                 continue
